@@ -6,7 +6,7 @@ import { Chat } from "./Chat";
 import { Compose } from "./Compose";
 import { DEMO_CHANNEL, demoApi } from "./demo";
 import { useRuns, useWatch } from "./flow";
-import { AgentMark, IconBell, IconBranch, IconChart, IconChat, IconGear, IconInbox, IconPlus, IconSearch, IconTerminal, Logo } from "./icons";
+import { AgentMark, IconBell, IconBranch, IconChart, IconChat, IconGear, IconInbox, IconPlus, IconSearch, IconTerminal, AppIcon } from "./icons";
 import { Metrics } from "./Metrics";
 import { Review } from "./Review";
 import { Avatar, Empty, Kbd, MiniRail, ToastProvider } from "./ui";
@@ -138,7 +138,7 @@ export function App() {
         <div className="sky" aria-hidden />
         <header className="top">
           <a className="brand" href="#/">
-            <Logo size={22} />
+            <AppIcon size={28} />
             <span className="wordmark">willnew</span>
             {demo ? <span className="tag">데모</span> : null}
           </a>
@@ -306,7 +306,6 @@ function Inbox({ runs, onNew }: { runs: Run[] | null; onNew: () => void }) {
   return (
     <div className="inbox">
       <div className="inbox-head">
-        <Logo size={26} />
         <h1>내 차례</h1>
         <span className="mono turn-n">{g.turn.length}</span>
       </div>
