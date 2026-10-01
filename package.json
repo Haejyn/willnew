@@ -1,0 +1,37 @@
+{
+  "name": "willnew",
+  "version": "0.1.0",
+  "description": "팀 AI 에이전트 플랫폼 — 채팅으로 일을 맡기면 계획 에이전트가 나누고, 코딩 에이전트 여러 개가 격리된 워크트리에서 동시에 처리·검증·자기 수정하고, 사람이 승인해 반영. 팀별 사용 지표까지.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "willnew": "dist/server/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server/cli.ts serve",
+    "dev:web": "vite --config web/vite.config.ts",
+    "build": "tsc -p tsconfig.json && vite build --config web/vite.config.ts",
+    "start": "node dist/server/cli.js serve",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.10"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

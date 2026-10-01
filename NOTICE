@@ -1,0 +1,12 @@
+willnew
+
+The source code in this repository is licensed under the MIT License (see LICENSE).
+
+Not covered by that license:
+- The name "willnew" and its logo.
+- The private theme shown in the screenshots and GIF under docs/ (colors, typography,
+  icon artwork). It is not included in this repository.
+
+Third-party:
+- web/src/theme/public/icons.ts contains icon paths from Lucide (https://lucide.dev),
+  ISC License, Copyright (c) Lucide Icons and Contributors.
