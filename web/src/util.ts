@@ -72,7 +72,7 @@ export const STATUS_KO: Record<string, string> = {
   queued: "대기",
   running: "작업 중",
   checking: "검증 중",
-  retrying: "자가 수정",
+  retrying: "자기 수정",
   done: "완료",
   failed: "실패",
   cancelled: "취소",
@@ -164,10 +164,13 @@ export function shortenPaths(text: string, worktree?: string): string {
 
 /**
  * Suggested winner: among finished agents whose check passed, the fastest; cost breaks near-ties
- * (within 10% of the fastest time, the cheaper one wins).
+ * (within 10% of the fastest time, the cheaper one wins). Results that left the tests alone come first.
  */
 export function suggestWinner(run: Run): string | null {
-  const ok = run.agents.filter((a) => a.status === "done" && a.check?.status === "passed");
+  if (run.review?.agentId && run.review.status !== "none") return run.review.agentId;
+  const passed = run.agents.filter((a) => a.status === "done" && a.check?.status !== "failed" && (a.diff?.files ?? 0) > 0);
+  const clean = passed.filter((a) => !a.diff?.testsTouched?.length);
+  const ok = clean.length ? clean : passed;
   if (!ok.length) return null;
   const dur = (a: AgentRun) => a.durationMs ?? Number.MAX_SAFE_INTEGER;
   const fastest = Math.min(...ok.map(dur));
@@ -180,6 +183,22 @@ export function suggestWinner(run: Run): string | null {
   return near[0]?.id ?? null;
 }
 
+/** Why the suggestion — one sentence a reviewer can check against the table. */
+export function winnerReason(run: Run, winnerId: string | null): string {
+  const w = run.agents.find((a) => a.id === winnerId);
+  if (!w) return "검증을 통과한 결과가 없어요.";
+  const others = run.agents.filter((a) => a.id !== w.id && a.status === "done" && a.check.status !== "failed");
+  const bent = run.agents.filter((a) => a.diff?.testsTouched?.length);
+  const bits: string[] = [];
+  if (!others.length) bits.push(run.agents.length > 1 ? "검증을 통과한 건 이 결과뿐이에요." : "검증을 통과했어요.");
+  else {
+    const o = others[0];
+    const speed = o.durationMs && w.durationMs ? o.durationMs / w.durationMs : 1;
+    bits.push(`둘 다 통과했어요. ${w.label} 이 ${speed >= 1.5 ? `${speed.toFixed(1)}배 빠르고` : "비슷하게 빠르고"}${(w.diff?.insertions ?? 0) + (w.diff?.deletions ?? 0) <= (o.diff?.insertions ?? 0) + (o.diff?.deletions ?? 0) ? " 변경이 더 작아요." : " 비용이 낮아요."}`);
+  }
+  if (bent.length && !bent.includes(w)) bits.push(`${bent.map((a) => a.label).join(", ")} 은 테스트를 고쳐서 뒤로 뺐어요.`);
+  return bits.join(" ");
+}
 export function runCounts(run: Run) {
   const c = { total: run.agents.length, active: 0, done: 0, passed: 0, failed: 0 };
   for (const a of run.agents) {

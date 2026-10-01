@@ -24,7 +24,7 @@ export default defineConfig({
     port: 5173,
     fs: { allow: [root, themeDir] },
     proxy: {
-      "/api": { target: "http://127.0.0.1:7777", changeOrigin: true },
+      "/api": { target: "http://127.0.0.1:7777", changeOrigin: true, ws: true },
     },
   },
 });

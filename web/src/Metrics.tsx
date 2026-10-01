@@ -1,7 +1,8 @@
 import { AgentMark } from "./icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdapterMetrics, Api, Metrics as M } from "./api";
-import { AdapterBadge, CheckBadge, Empty, ErrorBox, Spinner } from "./ui";
+import { isDemo } from "./api";
+import { Empty, ErrorBox, Spinner, Tag } from "./ui";
 import { TEAM_KO, adapterName, fmtCost, fmtDuration, fmtPct, fmtTokens, relTime } from "./util";
 
 type Key = "passRate" | "medianDurationMs" | "avgCost" | "avgTokens" | "avgFilesChanged";
@@ -53,6 +54,7 @@ export function Metrics({ api }: { api: Api }) {
     <div className="page wide">
       <div className="page-head">
         <h1>지표</h1>
+        {isDemo() ? <span className="tag">데모 · 2026-09-30 실측 3건</span> : null}
       </div>
 
       {error && !data ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={load} /> : null}
@@ -66,10 +68,10 @@ export function Metrics({ api }: { api: Api }) {
       {data && t && t.requests > 0 ? (
         <>
           <div className="kpis five">
-            <Kpi label="요청" value={String(t.requests)} />
+            <Kpi label="맡긴 일" value={String(t.requests)} />
             <Kpi label="자동 해결률" value={fmtPct(t.autoResolved / t.requests)} />
             <Kpi label="승인율" value={decided ? fmtPct(t.approved / decided) : "—"} />
-            <Kpi label="절약 시간" value={`${t.estHoursSaved.toFixed(1)}h`} est />
+            <Kpi label="절약 시간" value={`${t.estHoursSaved.toFixed(1)}시간`} est sub="템플릿 가정 × 승인 건" />
             <Kpi label="비용" value={fmtCost(t.costUsd)} />
           </div>
 
@@ -202,7 +204,7 @@ export function Metrics({ api }: { api: Api }) {
                       <tr key={`${row.runId}-${row.label}-${i}`}>
                         <td className="dim nowrap">{relTime(row.createdAt)}</td>
                         <td>
-                          <a className="mono link" href={`#/requests/${row.runId}`}>
+                          <a className="mono link" href={`#/runs/${row.runId}`}>
                             {row.runId}
                           </a>
                         </td>
@@ -213,7 +215,9 @@ export function Metrics({ api }: { api: Api }) {
                         <td className="num mono">{fmtTokens(row.tokens)}</td>
                         <td className="num mono">{row.costUsd == null ? <span className="dim">n/a</span> : fmtCost(row.costUsd)}</td>
                         <td>
-                          <CheckBadge status={row.checkStatus} />
+                          <Tag tone={row.checkStatus === "passed" ? "ok" : row.checkStatus === "failed" ? "bad" : "dim"}>
+                            {row.checkStatus === "passed" ? "통과" : row.checkStatus === "failed" ? "실패" : "없음"}
+                          </Tag>
                         </td>
                       </tr>
                     ))}
@@ -245,7 +249,10 @@ function AdapterCard({ id, m }: { id: string; m: AdapterMetrics }) {
   return (
     <div className={`acard ad-${id}`}>
       <div className="acard-head">
-        <AdapterBadge adapter={id} />
+        <span className="agent-name">
+          <AgentMark adapter={id} size={20} />
+          <b>{adapterName(id)}</b>
+        </span>
         <span className="dim small mono">{m.agents}회 실행</span>
       </div>
       <div className="acard-hero">

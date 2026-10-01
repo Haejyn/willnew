@@ -10,6 +10,8 @@ import type {
   Channel,
   ChatMessage,
   Metrics,
+  Preflight,
+  ReviewComment,
   Run,
   RunUpdate,
   Team,
@@ -125,17 +127,44 @@ index 5c2e1a0..e03c9a4 100644
  }
 `;
 
+const TEST_FILE = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
 const diffOf = (patch: string) => {
   let insertions = 0;
   let deletions = 0;
-  let files = 0;
+  const fileStats: { path: string; insertions: number; deletions: number }[] = [];
   for (const l of patch.split("\n")) {
-    if (l.startsWith("diff --git")) files++;
-    else if (l.startsWith("+") && !l.startsWith("+++")) insertions++;
-    else if (l.startsWith("-") && !l.startsWith("---")) deletions++;
+    if (l.startsWith("diff --git")) fileStats.push({ path: /b\/(.+)$/.exec(l)?.[1] ?? "?", insertions: 0, deletions: 0 });
+    else if (l.startsWith("+") && !l.startsWith("+++")) { insertions++; fileStats[fileStats.length - 1].insertions++; }
+    else if (l.startsWith("-") && !l.startsWith("---")) { deletions++; fileStats[fileStats.length - 1].deletions++; }
   }
-  return { files, insertions, deletions, patch };
+  return { files: fileStats.length, insertions, deletions, patch, fileStats, testsTouched: fileStats.map((f) => f.path).filter((p) => TEST_FILE.test(p)) };
 };
+
+const PATCH_SETTLE = `diff --git a/settle/dedupe.py b/settle/dedupe.py
+new file mode 100644
+--- /dev/null
++++ b/settle/dedupe.py
+@@ -0,0 +1,9 @@
++def dedupe(rows, key=lambda r: (r["order_id"], r["line"])):
++    """같은 주문 줄이 여러 번 들어오면 마지막 것만 남긴다."""
++    seen = {}
++    for r in rows:
++        seen[key(r)] = r
++    return list(seen.values())
+diff --git a/settle/settle_daily.py b/settle/settle_daily.py
+--- a/settle/settle_daily.py
++++ b/settle/settle_daily.py
+@@ -12,14 +12,7 @@ from .io import load_rows, write_rows
+ def settle_daily(day):
+     rows = load_rows(day)
+-    seen = {}
+-    for r in rows:
+-        seen[(r["order_id"], r["line"])] = r
+-    rows = list(seen.values())
++    rows = dedupe(rows)
+     totals = sum_by_merchant(rows)
+     write_rows(day, totals)
+`;
 
 const CHECK_OK = `> billing-api@2.3.0 test
 > node --test
@@ -473,7 +502,7 @@ function pastAgent(
     usage: { inputTokens: Math.round(tokens * 0.2), outputTokens: Math.round(tokens * 0.02), cachedTokens: Math.round(tokens * 0.78), costUsd: cost },
     summary: last.passed ? "요청한 변경을 반영했고 검증을 통과했어요." : "검증을 통과하지 못했어요.",
     check: { status: last.passed ? "passed" : "failed", exitCode: last.passed ? 0 : 1, output: last.passed ? CHECK_OK : CHECK_FAIL, durationMs: last.check },
-    diff: { files, insertions: files * 17, deletions: files * 5, patch: "" },
+    diff: diffOf(PATCH_SETTLE),
     merged: false,
     events,
   };
@@ -603,7 +632,7 @@ function seedChat() {
   add("backend", orders.createdAt, "김민지", PAST[0].text);
   add("backend", orders.createdAt + 2 * SEC, "willnew", "접수했어요. 테스트 작성 템플릿으로 진행할게요.", { runId: orders.id, kind: "ack" });
   add("backend", orders.review.at!, "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: orders.id, kind: "result" });
-  add("backend", T0 - 9 * MIN, "이해준", "배포 전에 duration 쪽 테스트가 계속 빨간색이네요 😅");
+  add("backend", T0 - 9 * MIN, "이해준", "배포 전에 duration 쪽 테스트가 계속 빨간색이네요");
 
   add("data", settle.createdAt - 3 * MIN, "박서준", "정산 배치 코드 보다가 같은 로직이 세 번 나와서요");
   add("data", settle.createdAt, "박서준", PAST[1].text);
@@ -625,27 +654,65 @@ function ensureSeed() {
 
 // ---------------------------------------------------------------------------------------------- metrics
 
+// 데모 지표는 지어내지 않는다 — README 의 실측(2026-09-30, examples/duration, 요청 3건) 그대로
 const METRICS: Metrics = {
-  runs: 38,
-  totals: { requests: 38, autoResolved: 29, approved: 24, rejected: 3, pendingReview: 4, estHoursSaved: 31.5, costUsd: 14.82 },
+  runs: 3,
+  totals: { requests: 3, autoResolved: 2, approved: 2, rejected: 1, pendingReview: 0, estHoursSaved: 1.75, costUsd: 0.55 },
   byTeam: {
-    platform: { requests: 21, autoResolved: 17, approved: 14, rejected: 2, costUsd: 8.9, budgetUsd: 50, medianLeadMs: 38 * MIN },
-    data: { requests: 11, autoResolved: 8, approved: 7, rejected: 1, costUsd: 4.6, budgetUsd: 30, medianLeadMs: 52 * MIN },
-    "content-ops": { requests: 6, autoResolved: 4, approved: 3, rejected: 0, costUsd: 1.32, budgetUsd: 20, medianLeadMs: 21 * MIN },
+    platform: { requests: 1, autoResolved: 1, approved: 1, rejected: 0, costUsd: 0.12, budgetUsd: 50, medianLeadMs: 51 * SEC },
+    data: { requests: 1, autoResolved: 1, approved: 1, rejected: 0, costUsd: 0.22, budgetUsd: 30, medianLeadMs: 45 * SEC },
+    "content-ops": { requests: 1, autoResolved: 0, approved: 0, rejected: 1, costUsd: 0.21, budgetUsd: 20, medianLeadMs: null },
   },
   byTemplate: {
-    bugfix: { name: "버그 수정", requests: 14, autoResolvedRate: 0.79, approvalRate: 0.71, avgCostUsd: 0.46, estHoursSaved: 10 },
-    tests: { name: "테스트 작성", requests: 9, autoResolvedRate: 0.89, approvalRate: 0.89, avgCostUsd: 0.31, estHoursSaved: 6 },
-    refactor: { name: "리팩터링", requests: 6, autoResolvedRate: 0.67, approvalRate: 0.5, avgCostUsd: 0.58, estHoursSaved: 4.5 },
-    feature: { name: "기능 구현", requests: 4, autoResolvedRate: 0.5, approvalRate: 0.5, avgCostUsd: 1.12, estHoursSaved: 8 },
-    docs: { name: "문서화", requests: 5, autoResolvedRate: 1, approvalRate: 0.8, avgCostUsd: 0.09, estHoursSaved: 3 },
+    bugfix: { name: "버그 수정", requests: 1, autoResolvedRate: 1, approvalRate: 1, avgCostUsd: 0.12, estHoursSaved: 1 },
+    tests: { name: "테스트 작성", requests: 1, autoResolvedRate: 1, approvalRate: 1, avgCostUsd: 0.22, estHoursSaved: 0.75 },
+    docs: { name: "문서화", requests: 1, autoResolvedRate: 0, approvalRate: 0, avgCostUsd: 0.21, estHoursSaved: 0 },
   },
   byAdapter: {
-    "claude-code": { agents: 41, done: 39, checkPassed: 33, passRate: 33 / 41, medianDurationMs: 64 * SEC, totalInputTokens: 2_910_000, totalOutputTokens: 214_000, totalCostUsd: 14.8, avgFilesChanged: 2.1 },
-    codex: { agents: 30, done: 28, checkPassed: 21, passRate: 21 / 30, medianDurationMs: 81 * SEC, totalInputTokens: 2_050_000, totalOutputTokens: 131_000, totalCostUsd: 0, avgFilesChanged: 2.4 },
+    "claude-code": { agents: 3, done: 3, checkPassed: 2, passRate: 2 / 3, medianDurationMs: 33 * SEC, totalInputTokens: 561_000, totalOutputTokens: 5_900, totalCostUsd: 0.49, avgFilesChanged: 1.3 },
+    codex: { agents: 1, done: 1, checkPassed: 1, passRate: 1, medianDurationMs: 45 * SEC, totalInputTokens: 262_000, totalOutputTokens: 2_100, totalCostUsd: 0, avgFilesChanged: 1 },
   },
   timeline: [],
 };
+
+// ---------------------------------------------------------------------------------------------- follow-ups, comments, previews
+
+function findRun(runId: string): Run | undefined {
+  return lives.get(runId)?.run ?? PAST_RUNS.find((p) => p.id === runId);
+}
+/** Same as emit() but also for the finished, non-live history runs. */
+function emitAny(runId: string, u: RunUpdate) {
+  const live = lives.get(runId);
+  if (live) return emit(live, u);
+  const i = PAST_RUNS.findIndex((p) => p.id === runId);
+  if (i < 0) return;
+  const next = applyUpdate(PAST_RUNS[i], u);
+  if (next) PAST_RUNS[i] = next;
+  for (const fn of runListeners.get(runId) ?? []) fn(u);
+}
+
+function demoSteer(runId: string, agentId: string, text: string, by: string) {
+  const run = findRun(runId);
+  const a = run?.agents.find((x) => x.id === agentId);
+  if (!run || !a) throw new Error("not found");
+  const at = Date.now();
+  const wasDone = !["queued", "running", "checking", "retrying"].includes(a.status);
+  emitAny(runId, { runId, agentId, event: { ts: at, kind: "steer", text: `${by}: ${text}`, attempt: a.attempt }, agent: { steers: [...(a.steers ?? []), { text, by, at }] } });
+  if (!wasDone) return;
+  const say = (ms: number, kind: AgentEvent["kind"], t: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
+    setTimeout(() => {
+      emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind, text: t, attempt: a.attempt }, agent: patch });
+      if (runPatch) emitAny(runId, { runId, run: runPatch });
+    }, ms);
+  const startedAt = Date.now() - (a.durationMs ?? 0);
+  emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind: "plan", text: "추가 지시로 다시 작업" }, agent: { status: "running", startedAt } });
+  emitAny(runId, { runId, run: { review: { status: "none" } } });
+  say(1200, "text", `반영할게요 — ${text.split("\n")[0].slice(0, 80)}`);
+  say(2200, "tool", 'Edit {"file_path":"./duration.js"}');
+  say(2600, "tool_result", "Applied 1 edit");
+  say(3200, "check", `$ ${run.checkCmd || "npm test"}`, { status: "checking" });
+  say(4400, "check", "검증 통과 · 7/7 · exit 0 · 0.4초", { status: "done", endedAt: Date.now() + 4400, durationMs: (a.durationMs ?? 0) + 4400, summary: `추가 지시를 반영했어요: ${text.split("\n")[0]}` }, { review: { status: "pending" } });
+}
 
 // ---------------------------------------------------------------------------------------------- api
 
@@ -654,6 +721,77 @@ const later = <T,>(v: T, ms = 90) => new Promise<T>((res) => setTimeout(() => re
 const allRuns = () => [...[...lives.values()].map((l) => l.run), ...PAST_RUNS].sort((a, b) => b.createdAt - a.createdAt);
 
 export const demoApi: Api = {
+  config: () => later({ repo: REPO, check: "npm test", preview: "npm run dev -- --port {port}" }),
+  plan: (text) => {
+    const tpl = routeTemplate(text);
+    return later({ by: "rules" as const, template: tpl.id, title: text.slice(0, 40), task: text, plan: [], agents: tpl.agents, check: tpl.check, reason: "" }, 60);
+  },
+  async remove(runId) {
+    lives.delete(runId);
+    const i = PAST_RUNS.findIndex((p) => p.id === runId);
+    if (i >= 0) PAST_RUNS.splice(i, 1);
+  },
+  async steer(runId, agentId, text, by) {
+    demoSteer(runId, agentId, text, by);
+  },
+  async preflight(runId, agentId): Promise<Preflight> {
+    const run = findRun(runId);
+    const a = run?.agents.find((x) => x.id === agentId);
+    if (!run || !a) throw new Error("not found");
+    return later({
+      checkPassed: a.check.status === "passed",
+      checkSkipped: a.check.status === "skipped",
+      testsTouched: a.diff.testsTouched ?? [],
+      conflicts: false,
+      files: (a.diff.fileStats ?? []).map((f) => f.path),
+      reviewed: run.reviewed?.[agentId] ?? [],
+    }, 250);
+  },
+  async setReviewed(runId, agentId, file, reviewed) {
+    const run = findRun(runId);
+    if (!run) return;
+    const cur = new Set(run.reviewed?.[agentId] ?? []);
+    if (reviewed) cur.add(file);
+    else cur.delete(file);
+    emitAny(runId, { runId, run: { reviewed: { ...(run.reviewed ?? {}), [agentId]: [...cur] } } });
+  },
+  async addComment(runId, c) {
+    const run = findRun(runId);
+    if (!run) throw new Error("not found");
+    const comment: ReviewComment = { ...c, id: `c${Date.now().toString(36)}`, at: Date.now() };
+    emitAny(runId, { runId, run: { comments: [...(run.comments ?? []), comment] } });
+    return comment;
+  },
+  async deleteComment(runId, cid) {
+    const run = findRun(runId);
+    if (run) emitAny(runId, { runId, run: { comments: (run.comments ?? []).filter((c) => c.id !== cid) } });
+  },
+  async sendComments(runId, agentId, by) {
+    const run = findRun(runId);
+    if (!run) throw new Error("not found");
+    const open = (run.comments ?? []).filter((c) => c.agentId === agentId && !c.sentAt);
+    if (!open.length) throw new Error("보낼 댓글이 없습니다");
+    emitAny(runId, { runId, run: { comments: (run.comments ?? []).map((c) => (open.includes(c) ? { ...c, sentAt: Date.now() } : c)) } });
+    demoSteer(runId, agentId, `Review comments:\n${open.map((c) => `${c.file}:${c.line} — ${c.text}`).join("\n")}`, by);
+  },
+  async startPreview(runId, agentId) {
+    const run = findRun(runId);
+    const a = run?.agents.find((x) => x.id === agentId);
+    if (!run || !a) throw new Error("not found");
+    const port = 5173 + run.agents.indexOf(a);
+    const preview = { status: "starting" as const, port, log: `$ npm run dev -- --port ${port}\n\n  VITE v8.3.1  ready in 412 ms\n  ➜  Local:   http://localhost:${port}/\n`, startedAt: Date.now() };
+    emitAny(runId, { runId, agentId, agent: { preview } });
+    await later(null, 900);
+    const ready = { ...preview, status: "ready" as const };
+    emitAny(runId, { runId, agentId, agent: { preview: ready } });
+    return ready;
+  },
+  async stopPreview(runId, agentId) {
+    const a = findRun(runId)?.agents.find((x) => x.id === agentId);
+    if (a?.preview) emitAny(runId, { runId, agentId, agent: { preview: { ...a.preview, status: "stopped" } } });
+  },
+  terminalUrl: () => null,
+  previewUrl: () => "",
   agents: () =>
     later([
       { id: "claude-code", name: "Claude Code", installed: true },
@@ -723,18 +861,14 @@ export const demoApi: Api = {
   metrics: () => {
     ensureSeed();
     const m = clone(METRICS);
-    m.timeline = allRuns().flatMap((r) =>
-      r.agents.map((a) => ({
-        runId: r.id,
-        createdAt: r.createdAt,
-        adapter: a.adapter,
-        label: a.label,
-        durationMs: a.durationMs ?? null,
-        checkStatus: a.check.status,
-        costUsd: a.usage.costUsd,
-        tokens: a.usage.inputTokens + a.usage.outputTokens + a.usage.cachedTokens,
-      })),
-    );
+    // the four agent runs behind the README measurement (2026-09-30)
+    const day = new Date("2026-09-30T06:00:00Z").getTime();
+    m.timeline = [
+      { runId: "20260930-pig0", createdAt: day, adapter: "claude-code", label: "claude-sonnet", durationMs: 19 * SEC, checkStatus: "passed", costUsd: 0.1, tokens: 133_000 },
+      { runId: "20260930-pig0", createdAt: day, adapter: "codex", label: "codex", durationMs: 45 * SEC, checkStatus: "passed", costUsd: null, tokens: 264_000 },
+      { runId: "20260930-t4kq", createdAt: day + 40 * MIN, adapter: "claude-code", label: "claude-sonnet", durationMs: 37 * SEC, checkStatus: "passed", costUsd: 0.2, tokens: 228_000 },
+      { runId: "20260930-d7zx", createdAt: day + 80 * MIN, adapter: "claude-code", label: "claude-sonnet", durationMs: 33 * SEC, checkStatus: "failed", costUsd: 0.19, tokens: 206_000 },
+    ];
     return later(m);
   },
   subscribe(runId, onUpdate, onState) {

@@ -1,50 +1,32 @@
+/** 팀 채널 — @willnew 로 맡기면 진행 카드가 스레드에 붙고, 거기서 바로 승인한다. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRun, Api, Channel, ChatMessage } from "./api";
-import { ReviewBox, TriageBlock, useLiveRun } from "./flow";
-import { toolParts } from "./RunView";
-import { IconChevron, IconSend, IconTrophy } from "./icons";
-import { CheckBadge, Spinner, StatusPill } from "./ui";
-import {
-  RUN_STATE_KO,
-  agentElapsed,
-  clockTime,
-  fmtClock,
-  fmtCost,
-  fmtTokens,
-  isActive,
-  runState,
-  shortenPaths,
-  suggestWinner,
-  totalTokens,
-  useNow,
-  type User,
-} from "./util";
+import type { Api, Channel, ChatMessage, Run } from "./api";
+import { useLiveRun } from "./flow";
+import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
+import { Avatar, MiniRail, Modal, Rail, Spinner, Tag, agentState, useToast } from "./ui";
+import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type User } from "./util";
 
-const EXAMPLES = [
-  "@willnew 버그 수정: duration 테스트 실패",
-  "@willnew 테스트 작성: 환불 API 경계값",
-  "@willnew 리팩터링: 날짜 포맷 함수 통합",
-];
+const EXAMPLES = ["@willnew 버그 수정: duration 테스트 실패", "@willnew 테스트 작성: 환불 API 경계값", "@willnew 리팩터링: 날짜 포맷 함수 통합"];
 
-export function Chat({ api, user, channelId, go }: { api: Api; user: User; channelId: string; go: (p: string) => void }) {
+export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User; channelId: string; runs: Run[] | null; go: (p: string) => void }) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
   const scroller = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
   const channel = channels.find((c) => c.id === channelId);
 
   useEffect(() => {
-    api.channels().then(setChannels).catch((e: Error) => setError(e.message));
-  }, [api]);
+    api.channels().then(setChannels).catch((e: Error) => toast(e.message, "err"));
+  }, [api, toast]);
 
   useEffect(() => {
     setMessages(null);
-    api
-      .messages(channelId)
-      .then(setMessages)
-      .catch((e: Error) => setError(e.message));
+    stick.current = true;
+    api.messages(channelId).then(setMessages).catch((e: Error) => toast(e.message, "err"));
     return api.subscribeChannel(channelId, (m) =>
       setMessages((list) => {
         const cur = list ?? [];
@@ -57,26 +39,20 @@ export function Chat({ api, user, channelId, go }: { api: Api; user: User; chann
         return [...cur, m];
       }),
     );
-  }, [api, channelId]);
+  }, [api, channelId, toast]);
 
   const sorted = useMemo(() => (messages ?? []).slice().sort((a, b) => a.ts - b.ts), [messages]);
-  // The first willnew message about a run carries the live card; later ones are plain updates in the thread.
   const cardFor = useMemo(() => {
     const seen = new Set<string>();
     const out = new Set<string>();
-    for (const m of sorted) if (m.runId && m.bot && !seen.has(m.runId)) {
-      seen.add(m.runId);
-      out.add(m.id);
-    }
+    for (const m of sorted)
+      if (m.runId && m.bot && !seen.has(m.runId)) {
+        seen.add(m.runId);
+        out.add(m.id);
+      }
     return out;
   }, [sorted]);
 
-  // Stay pinned to the newest message while run cards load and grow, unless the reader scrolled up.
-  const stick = useRef(true);
-  const inner = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    stick.current = true;
-  }, [channelId]);
   useEffect(() => {
     const el = scroller.current;
     const content = inner.current;
@@ -88,56 +64,53 @@ export function Chat({ api, user, channelId, go }: { api: Api; user: User; chann
     ro.observe(content);
     pin();
     return () => ro.disconnect();
-  }, [channelId, messages === null]);
+  }, [channelId, messages === null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async (value = text) => {
     const v = value.trim();
     if (!v || sending) return;
     setSending(true);
-    setError(null);
     try {
-      const { message, reply } = await api.postMessage(channelId, user.name, v, user.team);
-      setMessages((list) => {
-        let cur = list ?? [];
-        for (const m of [message, reply]) if (m && !cur.some((x) => x.id === m.id)) cur = [...cur, m];
-        return cur;
-      });
+      const { message } = await api.postMessage(channelId, user.name, v, user.team);
+      setMessages((list) => (list && !list.some((x) => x.id === message.id) ? [...list, message] : list));
       setText("");
       stick.current = true;
     } catch (e) {
-      setError((e as Error).message);
+      toast((e as Error).message, "err");
     } finally {
       setSending(false);
     }
   };
 
+  const mine = (runs ?? []).filter((r) => r.channel === channelId);
+  const week = mine.filter((r) => r.createdAt > Date.now() - 7 * 86400_000);
+  const resolved = week.filter((r) => r.agents.some((a) => a.status === "done" && a.check.status !== "failed")).length;
+  const cost = week.reduce((s, r) => s + r.agents.reduce((x, a) => x + (a.usage.costUsd ?? 0), 0), 0);
+
   return (
     <div className="chat">
-      <aside className="channels">
-        <div className="channels-h">채널</div>
+      <nav className="chat-nav" aria-label="채널">
+        <span className="lab">채널</span>
         {channels.map((c) => (
-          <a key={c.id} href={`#/chat/${c.id}`} className={`ch ${c.id === channelId ? "on" : ""}`}>
-            <span className="ch-hash">#</span>
-            <span>{c.name}</span>
+          <a key={c.id} href={`#/chat/${c.id}`} className={`ch ${c.id === channelId ? "on" : ""}`} aria-current={c.id === channelId ? "page" : undefined}>
+            <span className="hash">#</span>
+            {c.name}
+            {(runs ?? []).some((r) => r.channel === c.id && r.review.status === "pending") ? <span className="ch-dot" title="검토 차례" /> : null}
           </a>
         ))}
-      </aside>
+        <span className="lab" style={{ marginTop: 18 }}>
+          연결
+        </span>
+        <span className="ch dim" title="Slack 앱 연동은 준비 중이에요">
+          <IconLink size={14} /> Slack 연결 · 준비 중
+        </span>
+      </nav>
 
       <section className="thread">
         <header className="thread-head">
-          <div className="thread-title">
-            <span className="ch-hash">#</span>
-            {channel?.name ?? channelId}
-          </div>
-          <div className="ch-switch">
-            {channels.map((c) => (
-              <a key={c.id} href={`#/chat/${c.id}`} className={c.id === channelId ? "on" : ""}>
-                #{c.name}
-              </a>
-            ))}
-          </div>
+          <h1># {channel?.name ?? channelId}</h1>
+          {channel ? <span className="dim small">{channel.topic}</span> : null}
         </header>
-
         <div
           className="stream"
           ref={scroller}
@@ -147,25 +120,23 @@ export function Chat({ api, user, channelId, go }: { api: Api; user: User; chann
           }}
         >
           <div className="stream-inner" ref={inner}>
-          {!messages ? (
-            <div className="loading">
-              <Spinner size={14} /> 불러오는 중
-            </div>
-          ) : null}
-          {sorted.map((m, i) => {
-            const prev = sorted[i - 1];
-            const grouped = prev && prev.user === m.user && m.ts - prev.ts < 5 * 60_000 && !cardFor.has(m.id);
-            return <Message key={m.id} m={m} grouped={!!grouped} withCard={cardFor.has(m.id)} api={api} user={user} go={go} />;
-          })}
+            {!messages ? (
+              <div className="loading">
+                <Spinner size={14} /> 불러오는 중
+              </div>
+            ) : null}
+            {sorted.map((m, i) => {
+              const prev = sorted[i - 1];
+              const grouped = !!prev && prev.user === m.user && m.ts - prev.ts < 5 * 60_000 && !cardFor.has(m.id);
+              return <Message key={m.id} m={m} grouped={grouped} withCard={cardFor.has(m.id)} api={api} user={user} go={go} />;
+            })}
           </div>
         </div>
-
         <div className="composer-wrap">
-          {error ? <div className="composer-err">{error}</div> : null}
           {!text ? (
             <div className="examples">
               {EXAMPLES.map((e) => (
-                <button key={e} className="example" onClick={() => setText(e)}>
+                <button key={e} className="chip" onClick={() => setText(e)}>
                   {e}
                 </button>
               ))}
@@ -178,7 +149,11 @@ export function Chat({ api, user, channelId, go }: { api: Api; user: User; chann
               send();
             }}
           >
+            <label htmlFor="msg" className="sr">
+              메시지
+            </label>
             <textarea
+              id="msg"
               value={text}
               rows={1}
               onChange={(e) => setText(e.target.value)}
@@ -188,59 +163,80 @@ export function Chat({ api, user, channelId, go }: { api: Api; user: User; chann
                   send();
                 }
               }}
-              placeholder="@willnew 요청"
+              placeholder="@willnew 로 시작하면 맡겨져요"
             />
-            <button className="send" type="submit" disabled={!text.trim() || sending} aria-label="보내기">
+            <button className="ib" type="submit" disabled={!text.trim() || sending} aria-label="보내기">
               {sending ? <Spinner size={14} /> : <IconSend size={17} />}
             </button>
           </form>
         </div>
       </section>
+
+      <aside className="chat-side" aria-label="이 채널에서 맡긴 일">
+        <span className="lab">이 채널에서 맡긴 일</span>
+        <div className="side-list">
+          {mine.slice(0, 6).map((r) => (
+            <a key={r.id} className={`row ${r.review.status === "pending" ? "turn" : ""}`} href={`#/runs/${r.id}`}>
+              <span className="row-title">{r.triage?.title ?? r.title}</span>
+              <span className="row-meta">
+                <MiniRail run={r} />
+                {r.review.status === "pending" ? "내 차례" : r.review.status === "approved" ? "병합됨" : r.review.status === "rejected" ? "반려" : r.agents.some(isActive) ? "진행 중" : "끝남"}
+              </span>
+            </a>
+          ))}
+          {!mine.length ? <span className="dim small">아직 없어요</span> : null}
+        </div>
+        <span className="lab" style={{ marginTop: 20 }}>
+          이번 주 #{channel?.name ?? channelId}
+        </span>
+        <div className="tiles">
+          <div className="tile">
+            <b className="mono">{week.length}</b>
+            <span>맡긴 일</span>
+          </div>
+          <div className="tile">
+            <b className="mono">{week.length ? `${Math.round((resolved / week.length) * 100)}%` : "—"}</b>
+            <span>자동 해결</span>
+          </div>
+          <div className="tile">
+            <b className="mono">{fmtCost(cost)}</b>
+            <span>비용</span>
+          </div>
+          <div className="tile">
+            <b className="mono">{week.filter((r) => r.review.status === "approved").length}</b>
+            <span>병합</span>
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }
 
-function Avatar({ name, bot }: { name: string; bot: boolean }) {
-  if (bot)
-    return (
-      <span className="avatar bot" aria-hidden>
-        <BotMark />
-      </span>
-    );
-  const hue = [...name].reduce((s, c) => s + c.charCodeAt(0), 0) % 5;
-  return <span className={`avatar h${hue}`}>{name.slice(-2)}</span>;
-}
-
-export function BotMark({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="7" cy="9" r="2.6" fill="currentColor" />
-      <circle cx="17" cy="9" r="2.6" fill="currentColor" opacity=".7" />
-      <circle cx="12" cy="15.5" r="2.6" fill="currentColor" opacity=".85" />
-      <path d="M7 9 12 15.5 17 9" stroke="currentColor" strokeWidth="1.4" opacity=".5" />
-    </svg>
-  );
-}
-
 function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grouped: boolean; withCard: boolean; api: Api; user: User; go: (p: string) => void }) {
-  const html = useMemo(() => highlight(m.text), [m.text]);
   return (
-    <div className={`msg ${grouped ? "grouped" : ""} ${m.bot ? "is-bot" : ""} ${m.kind ? `k-${m.kind}` : ""}`}>
-      <div className="msg-gutter">{grouped ? <span className="msg-time-s">{clockTime(m.ts)}</span> : <Avatar name={m.user} bot={m.bot} />}</div>
+    <div className={`msg ${grouped ? "grouped" : ""} ${m.bot ? "bot" : ""}`}>
+      <div className="msg-gutter">
+        {grouped ? null : m.bot ? (
+          <span className="avatar bot" aria-hidden>
+            <Logo size={20} />
+          </span>
+        ) : (
+          <Avatar name={m.user} size={36} />
+        )}
+      </div>
       <div className="msg-body">
         {!grouped ? (
           <div className="msg-head">
-            <span className="msg-user">{m.bot ? "willnew" : m.user}</span>
-            {m.bot ? <span className="bot-tag">AI</span> : null}
-            <span className="msg-time">{clockTime(m.ts)}</span>
+            <b>{m.bot ? "willnew" : m.user}</b>
+            <span className="dim small">{clockTime(m.ts)}</span>
           </div>
         ) : null}
-        <div className="msg-text">{html}</div>
+        <div className="msg-text">{highlight(m.text)}</div>
         {withCard && m.runId ? <RunCard api={api} id={m.runId} user={user} go={go} /> : null}
         {!withCard && m.runId && m.bot ? (
-          <button className="msg-link" onClick={() => go(`/requests/${m.runId}`)}>
-            요청 {m.runId} 보기 <IconChevron size={12} />
-          </button>
+          <a className="msg-link" href={`#/runs/${m.runId}`}>
+            작업 공간에서 보기 <IconChevron size={12} />
+          </a>
         ) : null}
       </div>
     </div>
@@ -248,101 +244,106 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
 }
 
 function highlight(text: string) {
-  return text.split(/(@willnew|`[^`]+`|\*\*[^*]+\*\*)/g).map((p, i) =>
-    p.startsWith("**") && p.endsWith("**") && p.length > 4 ? (
-      <b key={i}>{p.slice(2, -2)}</b>
-    ) : p === "@willnew" ? (
-      <span key={i} className="mention">
-        @willnew
-      </span>
-    ) : p.startsWith("`") && p.endsWith("`") && p.length > 2 ? (
-      <code key={i}>{p.slice(1, -1)}</code>
-    ) : (
-      p
-    ),
-  );
+  return text.split("\n").map((line, li) => (
+    <span key={li} className="msg-line">
+      {line.split(/(@willnew|`[^`]+`|\*\*[^*]+\*\*)/g).map((p, i) =>
+        p.startsWith("**") && p.endsWith("**") && p.length > 4 ? (
+          <b key={i}>{p.slice(2, -2)}</b>
+        ) : p === "@willnew" ? (
+          <span key={i} className="mention">
+            @willnew
+          </span>
+        ) : p.startsWith("`") && p.endsWith("`") && p.length > 2 ? (
+          <code key={i}>{p.slice(1, -1)}</code>
+        ) : (
+          p
+        ),
+      )}
+    </span>
+  ));
 }
 
-// ---------------------------------------------------------------------------------------------- run card
-
 function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: (p: string) => void }) {
-  const { run, setRun, error } = useLiveRun(api, id);
+  const { run } = useLiveRun(api, id);
+  const toast = useToast();
   const active = !!run?.agents.some(isActive);
   const now = useNow(1000, active);
-  if (error && !run) return <div className="card-err">불러오기 실패 · {error}</div>;
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
   if (!run)
     return (
-      <div className="runcard-chat loading-card">
+      <div className="runcard loading">
         <Spinner size={12} />
       </div>
     );
-  const state = runState(run);
   const winner = suggestWinner(run);
+  const cost = run.agents.reduce((s, a) => s + (a.usage.costUsd ?? 0), 0) + (run.triage?.costUsd ?? 0);
+  const decide = async (decision: "approve" | "reject") => {
+    setBusy(true);
+    try {
+      const r = await api.review(run.id, { decision, agentId: decision === "approve" ? winner ?? undefined : undefined, reviewer: user.name, comment: decision === "reject" ? reason.trim() : undefined });
+      toast(r.message, "ok");
+      setRejecting(false);
+    } catch (e) {
+      toast((e as Error).message, "err");
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <div className={`runcard-chat st-${state}`}>
+    <div className={`runcard ${run.review.status === "pending" ? "turn" : ""}`}>
       <div className="rc-head">
-        <div className="rc-title">{run.triage?.title ?? run.title}</div>
-        <span className={`state-pill s-${state}`}>
-          {state === "active" ? <Spinner size={10} /> : null}
-          {RUN_STATE_KO[state]}
+        <b>{run.triage?.title ?? run.title}</b>
+        <span className="mono dim small">
+          {fmtDuration(run.agents.length ? Math.max(...run.agents.map((a) => (a.endedAt ?? now) - (a.startedAt ?? run.createdAt))) : 0)} · {fmtCost(cost)}
         </span>
       </div>
-      <TriageBlock run={run} compact />
-      {run.agents.length ? (
-        <div className="minilanes">
-          {run.agents.map((a) => (
-            <MiniLane key={a.id} a={a} now={now} maxAttempts={run.maxAttempts} winner={a.id === winner} />
-          ))}
-        </div>
+      <Rail run={run} now={now} />
+      <div className="rc-agents">
+        {run.agents.map((a) => {
+          const st = agentState(a, run.maxAttempts);
+          return (
+            <div key={a.id} className="rc-agent">
+              <AgentMark adapter={a.adapter} size={20} />
+              {a.label}
+              {a.id === winner ? <Tag tone="now">추천</Tag> : null}
+              <span className={`mono small rc-res ${st.tone ?? ""}`}>
+                {st.text}
+                {a.durationMs && !isActive(a) ? ` · ${fmtDuration(a.durationMs)}` : ""}
+                {a.usage.costUsd != null && !isActive(a) ? ` · ${fmtCost(a.usage.costUsd)}` : ""}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="row-btns">
+        {run.review.status === "pending" ? (
+          <>
+            <button className="btn m" disabled={busy} onClick={() => decide("approve")}>
+              승인하고 병합
+            </button>
+            <button className="btn" onClick={() => go(`/runs/${run.id}/review`)}>
+              변경 보기
+            </button>
+            <button className="btn q" onClick={() => setRejecting(true)}>
+              반려
+            </button>
+          </>
+        ) : (
+          <button className="btn" onClick={() => go(`/runs/${run.id}`)}>
+            작업 공간에서 보기
+          </button>
+        )}
+      </div>
+      {rejecting ? (
+        <Modal title="반려할까요?" confirmLabel="반려" danger busy={busy} disabled={!reason.trim()} onClose={() => setRejecting(false)} onConfirm={() => decide("reject")}>
+          <label className="field">
+            <span>사유 — 이 채널에 그대로 남아요</span>
+            <textarea autoFocus rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        </Modal>
       ) : null}
-      <ReviewBox api={api} run={run} user={user} onChange={setRun} />
-      <button className="rc-more" onClick={() => go(`/requests/${run.id}`)}>
-        실행 기록 · 변경 내용 보기 <IconChevron size={12} />
-      </button>
-    </div>
-  );
-}
-
-function lastEvent(a: AgentRun) {
-  const ev = [...(a.events ?? [])].reverse().find((e) => e.kind !== "status");
-  if (!ev) return "";
-  const t = shortenPaths(ev.text, a.worktree).replace(/\s+/g, " ").replace(/`/g, "");
-  if (ev.kind === "tool") {
-    const { name, arg } = toolParts(t);
-    return `${name} ${arg}`;
-  }
-  return t;
-}
-
-function MiniLane({ a, now, maxAttempts, winner }: { a: AgentRun; now: number; maxAttempts: number; winner: boolean }) {
-  const active = isActive(a);
-  const selfFix = a.status === "retrying" || (a.attempt > 1 && active);
-  return (
-    <div className={`mini ${winner ? "win" : ""} ${selfFix ? "selffix" : ""}`}>
-      <div className="mini-top">
-        <span className="mini-label">{a.label}</span>
-        {winner ? (
-          <span className="tag-win">
-            <IconTrophy size={11} /> 추천
-          </span>
-        ) : null}
-        <span className={`attempt ${a.attempt > 1 ? "second" : ""}`}>
-          시도 {a.attempt ?? 1}/{maxAttempts}
-        </span>
-        <span className="grow" />
-        {!active && a.status === "done" ? <CheckBadge status={a.check?.status ?? "skipped"} /> : <StatusPill status={a.status} check={a.check?.status} />}
-      </div>
-      <div className="mini-stats mono">
-        <span>{fmtClock(agentElapsed(a, now))}</span>
-        {totalTokens(a) > 0 ? <span>{fmtTokens(totalTokens(a))} tok</span> : null}
-        {a.usage?.costUsd != null ? <span>{fmtCost(a.usage.costUsd)}</span> : !active ? <span>비용 n/a</span> : null}
-        {a.diff?.files ? (
-          <span>
-            <span className="add">+{a.diff.insertions}</span> <span className="del">−{a.diff.deletions}</span>
-          </span>
-        ) : null}
-      </div>
-      {active || selfFix ? <div className={`mini-last ${a.status === "retrying" ? "fixing" : ""}`}>{selfFix && a.status === "retrying" ? "검증 실패 — 로그를 읽고 스스로 고치는 중" : lastEvent(a)}</div> : null}
     </div>
   );
 }

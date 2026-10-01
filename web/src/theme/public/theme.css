@@ -1,70 +1,48 @@
 /* willnew 공개 기본 테마 — 저장소만 받아도 화면이 뜨도록 둔 중립 값.
    다른 테마를 쓰려면 같은 변수 이름으로 theme.css 와 icons.ts 를 담은 폴더를 만들고 WILLNEW_THEME_DIR 로 가리킨다. */
 :root {
+  color-scheme: dark;
   --bg: #0d1117;
   --bg-rgb: 13, 17, 23;
-  --neb-c-rgb: 33, 38, 45;
-  --neb-b-rgb: 72, 79, 88;
-  --warn-rgb: 210, 153, 34;
-  --sky-top: #0d1117;
-  --sky-mobile: #0d1117;
   --sky: #0d1117;
-  --neb-c: #21262d;
-  --neb-b: #484f58;
-  --neb-a: #58a6ff;
-  --neb: linear-gradient(115deg, var(--neb-c) 0%, var(--neb-b) 55%, var(--neb-a) 100%);
+  --stars: none;
+  --asterism: none;
+
+  --text: #e6edf3;
+  --text2: #c9d1d9;
+  --text3: #8b949e;
+  --text4: #7d8590;
+
   --accent: #58a6ff;
   --accent-rgb: 88, 166, 255;
-  --accent-dim: rgba(88, 166, 255, 0.16);
-  --accent-hover: #79b8ff;
-  --burgundy: #21262d;
-  --grad: #58a6ff;
   --on-accent: #0d1117;
-  --surface: #161b22;
-  --surface-raised: #1f242c;
-  --ov: rgba(22, 27, 34, 0.94);
+  --glow: none;
 
-  --w4: rgba(240, 246, 252, 0.03);
-  --w6: rgba(240, 246, 252, 0.05);
-  --w8: rgba(240, 246, 252, 0.07);
-  --w10: rgba(240, 246, 252, 0.09);
-  --w12: rgba(240, 246, 252, 0.11);
-  --w16: rgba(240, 246, 252, 0.15);
-  --w24: rgba(240, 246, 252, 0.22);
-  --sink: rgba(0, 0, 0, 0.3);
-
-  --label: #e6edf3;
-  --label2: #c9d1d9;
-  --label3: #8b949e;
-  --label4: #7d8590;
+  --rail: rgba(240, 246, 252, 0.03);
+  --card: rgba(240, 246, 252, 0.05);
+  --ctl: rgba(240, 246, 252, 0.08);
+  --sel: rgba(240, 246, 252, 0.13);
+  --float: rgba(22, 27, 34, 0.98);
+  --float-blur: none;
+  --rim: inset 0 0 0 1px rgba(240, 246, 252, 0.08);
+  --shadow-float: 0 12px 32px rgba(1, 4, 9, 0.6);
 
   --ok: #3fb950;
-  --ok-dim: rgba(63, 185, 80, 0.16);
-  --warn: #d29922;
-  --warn-dim: rgba(210, 153, 34, 0.16);
+  --ok-rgb: 63, 185, 80;
   --danger: #f85149;
-  --danger-dim: rgba(248, 81, 73, 0.16);
-  --role: #a5d6ff;
-
+  --danger-rgb: 248, 81, 73;
+  --warn: #d29922;
   --add: #3fb950;
-  --add-bg: rgba(63, 185, 80, 0.12);
   --del: #f85149;
+  --add-bg: rgba(63, 185, 80, 0.12);
   --del-bg: rgba(248, 81, 73, 0.12);
-  --add-text: #aff5b4;
-  --del-text: #ffdcd7;
-  --fail-text: #ffa198;
-  --on-ok: #04260f;
-  --on-warn: #2b1d00;
-  --on-danger: #2d0505;
+  --kw: #ff7b72;
+  --str: #a5d6ff;
 
-  --avatar-0: #39c5cf; --on-avatar-0: #04191b;
-  --avatar-1: #58a6ff; --on-avatar-1: #04162b;
-  --avatar-2: #db6d28; --on-avatar-2: #2b1300;
-  --avatar-3: #8ddb8c; --on-avatar-3: #0f2a0f;
-  --avatar-4: #bc8cff; --on-avatar-4: #1f0b3a;
+  --claude: #d97757;
+  --codex: #7c6cff;
 
   --sans: system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-  --mono: system-ui, -apple-system, "Segoe UI", sans-serif;
   --code: ui-monospace, "SFMono-Regular", Consolas, monospace;
   --fs-meta: 0.75rem;
   --fs-caption: 0.8125rem;
@@ -75,7 +53,6 @@
   --r-ctrl: 6px;
   --r-card: 8px;
   --r-panel: 12px;
+  --r-btn: 6px;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --rail: 236px;
-  color-scheme: dark;
 }

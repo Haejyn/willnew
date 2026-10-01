@@ -1,47 +1,184 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentStatus, CheckStatus } from "./api";
-import { IconCheck, IconX, AgentMark } from "./icons";
-import { STATUS_KO, adapterName } from "./util";
+import type { AgentRun, Run } from "./api";
+import { AgentMark, IconCheck, IconX, Star } from "./icons";
+import { fmtDuration, isActive, runElapsed } from "./util";
 
 export function Spinner({ size = 12 }: { size?: number }) {
-  return <span className="spinner" style={{ width: size, height: size }} aria-hidden />;
+  return <span className="spin" style={{ width: size, height: size }} aria-label="진행 중" />;
 }
 
+export function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="kbd">{children}</kbd>;
+}
 
-export function StatusPill({ status, check }: { status: AgentStatus; check?: CheckStatus }) {
-  const live = status === "running" || status === "checking" || status === "retrying";
-  const cls = status === "done" && check === "failed" ? "st-done-failed" : `st-${status}`;
+export type Tone = "ok" | "bad" | "now" | "dim" | undefined;
+export function Tag({ tone, mono, children, title }: { tone?: Tone; mono?: boolean; children: ReactNode; title?: string }) {
   return (
-    <span className={`pill ${cls}`} title={status === "done" && check === "failed" ? "작업 완료 · 검증 실패" : undefined}>
-      {live ? <Spinner size={10} /> : <span className="dot" />}
-      {STATUS_KO[status] ?? status}
+    <span className={`tag ${tone ? `t-${tone}` : ""} ${mono ? "mono" : ""}`} title={title}>
+      {tone === "now" ? <Star size={10} /> : null}
+      {children}
     </span>
   );
 }
 
-export function StatusDot({ status, check }: { status: AgentStatus; check?: CheckStatus }) {
-  const cls = status === "done" && check === "failed" ? "st-failed" : `st-${status}`;
-  return <span className={`sdot ${cls}`} title={`${status}${check && check !== "skipped" ? ` · check ${check}` : ""}`} />;
-}
-
-export function CheckBadge({ status }: { status: CheckStatus | string }) {
-  if (status === "skipped") return <span className="cbadge cb-skipped">검증 없음</span>;
-  if (status !== "passed" && status !== "failed") return <span className="cbadge cb-skipped cap">{status}</span>;
+export function Avatar({ name, size = 28, bot }: { name: string; size?: number; bot?: boolean }) {
   return (
-    <span className={`cbadge cb-${status}`}>
-      {status === "passed" ? <IconCheck size={12} /> : <IconX size={12} />}
-      {status === "passed" ? "검증 통과" : "검증 실패"}
+    <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 32 ? 12 : 11 }} aria-hidden>
+      {size < 24 ? name.slice(-1) : name.slice(-2)}
     </span>
   );
 }
 
-export function AdapterBadge({ adapter, model }: { adapter: string; model?: string }) {
+// ---------------------------------------------------------------------------------------------- rail
+
+/**
+ * 별자리 레일 — 요청 · 계획 · 실행 · 검증 관문 · 승인. 지금 차례인 단계만 달빛 별.
+ * d done · n now · h now (partly) · - todo · g merged · r rejected/no result · f failed then retrying · o done (closed run)
+ */
+export type Stage = "d" | "n" | "h" | "-" | "g" | "r" | "f" | "o";
+export const STAGE_NAMES = ["요청", "계획", "실행", "검증 관문", "승인"];
+
+export function runStages(run: Run, now = Date.now()): { states: Stage[]; details: string[] } {
+  const a = run.agents;
+  const planned = !!run.triage || a.length > 0;
+  const working = a.some((x) => x.status === "queued" || x.status === "running" || x.status === "retrying");
+  const checking = a.some((x) => x.status === "checking");
+  const finished = a.length > 0 && !a.some(isActive);
+  const retried = a.some((x) => x.attempt > 1 && isActive(x));
+  const states: Stage[] = ["d", planned ? "d" : "n", "-", "-", "-"];
+  if (planned) states[2] = working ? "h" : "d";
+  if (planned && !working) states[3] = checking ? "n" : finished ? "d" : "-";
+  if (retried && working) states[3] = "f";
+  if (finished) {
+    states[4] = run.review.status === "approved" ? "g" : run.review.status === "rejected" ? "r" : run.review.status === "pending" ? "n" : "r";
+    if (run.review.status === "approved" || run.review.status === "rejected") for (const i of [0, 1, 2, 3]) states[i] = "o";
+  }
+  const passed = a.filter((x) => x.check.status === "passed").length;
+  const details = [
+    run.requester,
+    run.triage ? `${run.triage.by === "llm" ? "계획 에이전트" : "키워드"}${run.triage.durationMs ? ` · ${fmtDuration(run.triage.durationMs)}` : ""}` : a.length ? "직접 맡김" : "읽는 중",
+    a.length ? `에이전트 ${a.length} · ${fmtDuration(runElapsed(run, now))}` : "",
+    run.checkCmd ? (finished || checking ? `${run.checkCmd} · ${passed}/${a.length}` : run.checkCmd) : "검증 없음",
+    run.review.status === "approved"
+      ? `병합 · ${run.review.reviewer ?? ""}`
+      : run.review.status === "rejected"
+        ? `반려 · ${run.review.reviewer ?? ""}`
+        : run.review.status === "pending"
+          ? "사람 차례"
+          : finished
+            ? "반영할 결과 없음"
+            : "사람",
+  ];
+  return { states, details };
+}
+
+function Node({ s, big = true }: { s: Stage; big?: boolean }) {
+  if (s === "n" || s === "h") return <Star size={big ? 16 : 11} className="node-star" />;
+  return <span className={`node n-${s === "-" ? "todo" : s} ${big ? "" : "sm"}`} />;
+}
+
+export function Rail({ run, labels = true, now }: { run: Run; labels?: boolean; now?: number }) {
+  const { states, details } = runStages(run, now);
+  const reached = (s?: Stage) => !!s && s !== "-";
   return (
-    <span className={`abadge ad-${adapter}`} title={model ? `${adapterName(adapter)} · ${model}` : adapterName(adapter)}>
-      <AgentMark adapter={adapter} size={20} />
-      <span className="abadge-name">{adapterName(adapter)}</span>
-      {model ? <span className="abadge-model">{model}</span> : null}
+    <ol className={`rail ${labels ? "" : "bare"}`} aria-label="진행 단계">
+      {states.map((s, i) => (
+        <li key={i} className={`stage s-${s === "-" ? "todo" : s}`} aria-current={s === "n" || s === "h" ? "step" : undefined}>
+          <div className="stage-line">
+            <span className="stage-node">
+              <Node s={s} />
+            </span>
+            {i < states.length - 1 ? <span className={`link ${reached(states[i + 1]) ? "on" : ""}`} /> : null}
+          </div>
+          {labels ? (
+            <div className="stage-text">
+              <span className="stage-name">{STAGE_NAMES[i]}</span>
+              {details[i] ? <span className="stage-detail">{details[i]}</span> : null}
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+export function MiniRail({ run }: { run: Run }) {
+  const { states } = runStages(run);
+  return (
+    <span className="minirail" aria-hidden>
+      {states.map((s, i) => (
+        <span key={i} className="mr-cell">
+          <Node s={s} big={false} />
+        </span>
+      ))}
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------- agent status
+
+export function agentState(a: AgentRun, maxAttempts: number): { text: string; tone: Tone } {
+  if (a.status === "queued") return { text: "대기", tone: "dim" };
+  if (a.status === "running") return { text: a.attempt > 1 ? `자기 수정 ${a.attempt}/${maxAttempts}` : "작업 중", tone: "now" };
+  if (a.status === "retrying") return { text: "자기 수정 준비", tone: "now" };
+  if (a.status === "checking") return { text: "검증 중", tone: "now" };
+  if (a.status === "cancelled") return { text: "중지됨", tone: "dim" };
+  if (a.status === "failed") return { text: "실패", tone: "bad" };
+  if (a.check.status === "passed") return { text: a.attempt > 1 ? `${a.attempt}차 통과` : "통과", tone: "ok" };
+  if (a.check.status === "failed") return { text: "검증 실패", tone: "bad" };
+  return { text: "끝남", tone: undefined };
+}
+
+export function AgentName({ a, size = 20 }: { a: AgentRun; size?: number }) {
+  return (
+    <span className="agent-name">
+      <AgentMark adapter={a.adapter} size={size} />
+      <b>{a.label}</b>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------- slide to approve
+
+/** Phone: a drag across instead of a tap, so a merge is never an accident. Keyboard: Enter. */
+export function SlideToApprove({ label, onDone, disabled }: { label: string; onDone: () => void; disabled?: boolean }) {
+  const track = useRef<HTMLButtonElement>(null);
+  const [x, setX] = useState(0);
+  const drag = useRef<{ start: number; max: number } | null>(null);
+  const end = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (d && x >= d.max - 4) onDone();
+    setX(0);
+  };
+  return (
+    <button
+      ref={track}
+      className="slide"
+      disabled={disabled}
+      aria-label={label}
+      onKeyDown={(e) => e.key === "Enter" && onDone()}
+      onPointerDown={(e) => {
+        const el = track.current;
+        if (!el || disabled) return;
+        el.setPointerCapture(e.pointerId);
+        drag.current = { start: e.clientX, max: el.clientWidth - 60 };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (d) setX(Math.max(0, Math.min(d.max, e.clientX - d.start)));
+      }}
+      onPointerUp={end}
+      onPointerCancel={() => {
+        drag.current = null;
+        setX(0);
+      }}
+    >
+      <span className="slide-thumb" style={{ transform: `translateX(${x}px)` }}>
+        <Star size={22} />
+      </span>
+      <span className="slide-label">{label}</span>
+    </button>
   );
 }
 
@@ -53,6 +190,7 @@ export function Modal({
   confirmLabel,
   danger,
   busy,
+  disabled,
   onConfirm,
   onClose,
 }: {
@@ -61,12 +199,11 @@ export function Modal({
   confirmLabel: string;
   danger?: boolean;
   busy?: boolean;
+  disabled?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }) {
-  const btn = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    btn.current?.focus();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -77,10 +214,10 @@ export function Modal({
         <h3 id="modal-title">{title}</h3>
         <div className="modal-body">{children}</div>
         <div className="modal-actions">
-          <button className="btn ghost" onClick={onClose} disabled={busy}>
+          <button className="btn q" onClick={onClose} disabled={busy}>
             닫기
           </button>
-          <button ref={btn} className={`btn ${danger ? "danger" : "primary"}`} onClick={onConfirm} disabled={busy}>
+          <button className={`btn ${danger ? "danger" : "w"}`} onClick={onConfirm} disabled={busy || disabled}>
             {busy ? <Spinner size={12} /> : null}
             {confirmLabel}
           </button>
@@ -138,7 +275,7 @@ export function ErrorBox({ error, onRetry }: { error: string; onRetry?: () => vo
       <IconX size={14} />
       <span>{error}</span>
       {onRetry ? (
-        <button className="btn ghost sm" onClick={onRetry}>
+        <button className="btn q sm" onClick={onRetry}>
           다시 시도
         </button>
       ) : null}

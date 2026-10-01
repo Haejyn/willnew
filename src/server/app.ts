@@ -10,6 +10,7 @@ import { computeMetrics, computeTeamMetrics } from "./metrics.js";
 import { RunManager } from "./runs.js";
 import { Terminals } from "./terminal.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
+import { rulesTriage } from "./triage.js";
 import type { ChatMessage, CreateRunInput, Run, RunUpdate } from "./types.js";
 
 const WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
@@ -143,6 +144,11 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   });
   app.get("/api/metrics", (c) => c.json({ ...computeMetrics(runs.list()), ...computeTeamMetrics(runs.list(), TEAMS, TEMPLATES) }));
   app.get("/api/templates", (c) => c.json(TEMPLATES));
+  // instant preview for the compose box (keyword rules); the real plan comes from the planner agent on send
+  app.post("/api/plan", async (c) => {
+    const { text } = await c.req.json();
+    return c.json(rulesTriage(String(text ?? ""), opts.check));
+  });
   app.get("/api/teams", (c) => c.json(TEAMS));
   app.post("/api/runs/:id/review", async (c) => {
     const body = await c.req.json();
@@ -152,8 +158,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/channels", (c) => c.json(chat.channels));
   app.get("/api/channels/:id/messages", (c) => c.json(chat.list(c.req.param("id"))));
   app.post("/api/channels/:id/messages", async (c) => {
-    const { user, text, team } = await c.req.json();
-    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team));
+    const { user, text, team, overrides } = await c.req.json();
+    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
 

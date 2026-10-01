@@ -1,4 +1,4 @@
-import type { SVGProps } from "react";
+import { useId, type SVGProps } from "react";
 import { icons } from "@theme/icons";
 
 type P = SVGProps<SVGSVGElement> & { size?: number; filled?: boolean };
@@ -9,48 +9,40 @@ function themed(name: string) {
     <svg
       width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8}
       strokeLinecap="round" strokeLinejoin="round" aria-hidden {...rest}
-      dangerouslySetInnerHTML={{ __html: icons[name][filled ? "filled" : "outlined"] }}
+      dangerouslySetInnerHTML={{ __html: (icons[name] ?? icons.close)[filled ? "filled" : "outlined"] }}
     />
   );
 }
 
+/** willnew 마크 — U 자에 가깝게 눕힌 초승달(체크처럼 오른쪽이 살짝 높다). 24px 이상에서만 크레이터. */
 export const Logo = ({ size = 22, ...rest }: P) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden {...rest}>
-    <path d="M7.875 4A9 9 0 1 1 7.875 20A8 8 0 1 0 7.875 4Z" fill="var(--accent)" />
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden className="logo" style={{ color: "var(--accent)" }} {...rest}
+    dangerouslySetInnerHTML={{ __html: size >= 24 ? MARK_CRATERS : MARK }} />
+);
+const MARK = "<path d=\"M19.27 6.69A9 9 0 1 1 3.35 9.50A8.1 8.1 0 1 0 19.27 6.69Z\" fill=\"currentColor\"></path>";
+const MARK_CRATERS = "<path d=\"M19.27 6.69A9 9 0 1 1 3.35 9.50A8.1 8.1 0 1 0 19.27 6.69Z\" fill=\"currentColor\"></path><circle cx=\"10.64\" cy=\"19.25\" r=\"0.95\" fill=\"rgba(0,0,0,0.12)\"></circle><circle cx=\"15.19\" cy=\"19.15\" r=\"0.6\" fill=\"rgba(0,0,0,0.12)\"></circle>";
+
+/** 지금 차례 — 작은 네 갈래 별 */
+export const Star = ({ size = 12, ...rest }: P) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden className="star" {...rest}>
+    <path d="M12 1Q14.2 9.8 23 12Q14.2 14.2 12 23Q9.8 14.2 1 12Q9.8 9.8 12 1Z" fill="currentColor" />
   </svg>
 );
 
+const CLAUDE = "<path d=\"M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z\" fill=\"#D97757\" fill-rule=\"nonzero\"></path>";
+const CODEX = "<path d=\"M19.503 0H4.496A4.496 4.496 0 000 4.496v15.007A4.496 4.496 0 004.496 24h15.007A4.496 4.496 0 0024 19.503V4.496A4.496 4.496 0 0019.503 0z\" fill=\"#fff\"></path><path d=\"M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.673 1.275.01.01.024.017.037.021a.09.09 0 00.043 0 4.55 4.55 0 013.046.275l.047.022.116.057a4.581 4.581 0 012.188 2.399c.209.51.313 1.041.315 1.595a4.24 4.24 0 01-.134 1.223.123.123 0 00.03.115c.594.607.988 1.33 1.183 2.17.289 1.425-.007 2.71-.887 3.854l-.136.166a4.548 4.548 0 01-2.201 1.388.123.123 0 00-.081.076c-.191.551-.383 1.023-.74 1.494-.9 1.187-2.222 1.846-3.711 1.838-1.187-.006-2.239-.44-3.157-1.302a.107.107 0 00-.105-.024c-.388.125-.78.143-1.204.138a4.441 4.441 0 01-1.945-.466 4.544 4.544 0 01-1.61-1.335c-.152-.202-.303-.392-.414-.617a5.81 5.81 0 01-.37-.961 4.582 4.582 0 01-.014-2.298.124.124 0 00.006-.056.085.085 0 00-.027-.048 4.467 4.467 0 01-1.034-1.651 3.896 3.896 0 01-.251-1.192 5.189 5.189 0 01.141-1.6c.337-1.112.982-1.985 1.933-2.618.212-.141.413-.251.601-.33.215-.089.43-.164.646-.227a.098.098 0 00.065-.066 4.51 4.51 0 01.829-1.615 4.535 4.535 0 011.837-1.388zm3.482 10.565a.637.637 0 000 1.272h3.636a.637.637 0 100-1.272h-3.636zM8.462 9.23a.637.637 0 00-1.106.631l1.272 2.224-1.266 2.136a.636.636 0 101.095.649l1.454-2.455a.636.636 0 00.005-.64L8.462 9.23z\" fill=\"url(#__ID__)\"></path><defs><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"__ID__\" x1=\"12\" x2=\"12\" y1=\"3\" y2=\"21\"><stop stop-color=\"#B1A7FF\"></stop><stop offset=\".5\" stop-color=\"#7A9DFF\"></stop><stop offset=\"1\" stop-color=\"#3941FF\"></stop></linearGradient></defs>";
 
-/** 에이전트 마크 — 각 회사의 색과 결만 따른 단순한 도형. Claude: 코랄색 방사형 별. Codex: 파랑에서 보라로 가는 바탕의 터미널 프롬프트. */
+/** 에이전트 표식 — Claude · Codex 는 실제 로고(lobe-icons, MIT · 상표는 각 회사). 그 밖의 CLI 는 터미널 모양. */
 export function AgentMark({ adapter, size = 20 }: { adapter: string; size?: number }) {
-  if (adapter === "claude-code") {
-    return (
-      <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden className="amark amark-claude">
-        <rect width="24" height="24" rx="7" fill="#D97757" />
-        <g stroke="#FFF4EA" strokeWidth="2.1" strokeLinecap="round"><line x1="12.00" y1="9.40" x2="12.00" y2="2.60" /><line x1="13.30" y1="9.75" x2="15.60" y2="5.76" /><line x1="14.25" y1="10.70" x2="20.14" y2="7.30" /><line x1="14.60" y1="12.00" x2="19.20" y2="12.00" /><line x1="14.25" y1="13.30" x2="20.14" y2="16.70" /><line x1="13.30" y1="14.25" x2="15.60" y2="18.24" /><line x1="12.00" y1="14.60" x2="12.00" y2="21.40" /><line x1="10.70" y1="14.25" x2="8.40" y2="18.24" /><line x1="9.75" y1="13.30" x2="3.86" y2="16.70" /><line x1="9.40" y1="12.00" x2="4.80" y2="12.00" /><line x1="9.75" y1="10.70" x2="3.86" y2="7.30" /><line x1="10.70" y1="9.75" x2="8.40" y2="5.76" /></g>
-      </svg>
-    );
-  }
-  if (adapter === "codex") {
-    return (
-      <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden className="amark amark-codex">
-        <defs>
-          <linearGradient id="cx-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#6C8CFF" />
-            <stop offset="1" stopColor="#8B5CF6" />
-          </linearGradient>
-        </defs>
-        <rect width="24" height="24" rx="7" fill="url(#cx-grad)" />
-        <path d="M7 8.5 L11.2 12 L7 15.5" stroke="#fff" strokeWidth="2.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M13 16 H17.5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
-      </svg>
-    );
-  }
+  const id = useId().replace(/:/g, "");
+  if (adapter === "claude-code")
+    return <svg width={size} height={size} viewBox="0 0 24 24" role="img" aria-label="Claude" className="amark" dangerouslySetInnerHTML={{ __html: CLAUDE }} />;
+  if (adapter === "codex")
+    return <svg width={size} height={size} viewBox="0 0 24 24" role="img" aria-label="Codex" className="amark" dangerouslySetInnerHTML={{ __html: CODEX.replaceAll("__ID__", `cx${id}`) }} />;
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden className="amark amark-script">
-      <rect width="24" height="24" rx="7" fill="rgba(255,255,255,.14)" />
-      <path d="M8 9 L5.5 12 L8 15 M16 9 L18.5 12 L16 15 M13.2 8 L10.8 16" stroke="#fff" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <span className="amark amark-cli" style={{ width: size, height: size }} aria-label="CLI">
+      <IconTerminal size={Math.round(size * 0.7)} />
+    </span>
   );
 }
 
@@ -61,37 +53,55 @@ export const IconCheck = themed("check");
 export const IconX = themed("close");
 export const IconStop = themed("stop");
 export const IconChevron = themed("chevron-right");
+export const IconChevronLeft = themed("chevron-left");
+export const IconChevronDown = themed("chevron-down");
 export const IconClock = themed("clock");
 export const IconTrash = themed("trash");
 export const IconFolder = themed("folder");
 export const IconTerminal = themed("terminal");
 export const IconSpark = themed("sparkles");
-export const IconTrophy = themed("trophy");
 export const IconArrowLeft = themed("arrow-left");
 export const IconBolt = themed("bolt");
 export const IconFile = themed("file-text");
+export const IconFileCode = themed("file-code");
 export const IconSend = themed("send");
 export const IconChat = themed("chat");
 export const IconInbox = themed("tray");
+export const IconSearch = themed("search");
+export const IconBell = themed("bell");
+export const IconGear = themed("gear");
+export const IconPause = themed("pause");
+export const IconMore = themed("more");
+export const IconEye = themed("eye");
+export const IconHistory = themed("history");
+export const IconEdit = themed("edit");
+export const IconLink = themed("link");
+export const IconColumns = themed("columns");
+export const IconCheckCircle = themed("check-circle");
+export const IconXCircle = themed("close-circle");
+export const IconExternal = themed("external-link");
+export const IconRefresh = themed("refresh");
+export const IconPlay = themed("play");
+export const IconUser = themed("user");
+export const IconPanels = themed("panels");
+export const IconLayout = themed("layout");
 
 // git 그림 — 24 격자, 1.8 선
 const gitBase = ({ size = 16, filled: _f, ...rest }: P) => ({
   width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8,
   strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true, ...rest,
 });
+export const IconBranch = (p: P) => (
+  <svg {...gitBase(p)}>
+    <path d="M8.2 6a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0ZM8.2 18a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0ZM20.2 6a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0Z" />
+    <path d="M6 8.2v7.6M18 8.2v.8q0 4.5-4.5 4.5H10q-4 0-4 2.3" />
+  </svg>
+);
 export const IconMerge = (p: P) => (
   <svg {...gitBase(p)}>
     <circle cx="6" cy="5" r="2" />
     <circle cx="6" cy="19" r="2" />
     <circle cx="18" cy="12" r="2" />
     <path d="M6 7v10M6 8c0 3 3 4 10 4" />
-  </svg>
-);
-export const IconBranch = (p: P) => (
-  <svg {...gitBase(p)}>
-    <circle cx="6" cy="5" r="2" />
-    <circle cx="6" cy="19" r="2" />
-    <circle cx="18" cy="7" r="2" />
-    <path d="M6 7v10M18 9c0 5-7 4-11 8" />
   </svg>
 );

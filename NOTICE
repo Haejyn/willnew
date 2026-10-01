@@ -10,3 +10,6 @@ Not covered by that license:
 Third-party:
 - web/src/theme/public/icons.ts contains icon paths from Lucide (https://lucide.dev),
   ISC License, Copyright (c) Lucide Icons and Contributors.
+- web/src/icons.tsx contains the Claude and Codex marks as packaged by lobe-icons
+  (https://github.com/lobehub/lobe-icons, MIT). The marks themselves are trademarks of
+  Anthropic and OpenAI; they are shown only to identify which agent produced a result.

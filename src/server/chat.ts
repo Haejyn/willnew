@@ -8,7 +8,14 @@ import { join } from "node:path";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { defaultChannels, templateById } from "./templates.js";
 import { triage } from "./triage.js";
-import type { Channel, ChatMessage, Run } from "./types.js";
+import type { AgentSpec, Channel, ChatMessage, Run } from "./types.js";
+
+/** What the person changed in the compose box before sending — wins over the planner's choice. */
+export interface PlanOverrides {
+  template?: string;
+  agents?: AgentSpec[];
+  check?: string;
+}
 
 const CHAT_DIR = join(HOME, "chat");
 const id = () => Math.random().toString(36).slice(2, 10);
@@ -51,7 +58,7 @@ export class Chat {
     return this.push({ id: msgId, channel, ts: Date.now(), user: "willnew", bot: true, text, kind, runId });
   }
 
-  async post(channelId: string, user: string, text: string, team?: string) {
+  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides) {
     const channel = this.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error("unknown channel");
     const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, bot: false, text });
@@ -62,6 +69,13 @@ export class Chat {
     void (async () => {
       try {
         const plan = await triage(text, channel.repo, this.defaultCheck);
+        if (overrides?.template && overrides.template !== plan.template) {
+          const t = templateById(overrides.template);
+          plan.template = t.id;
+          if (!overrides.agents?.length) plan.agents = t.agents;
+        }
+        if (overrides?.agents?.length) plan.agents = overrides.agents;
+        if (overrides?.check !== undefined) plan.check = overrides.check;
         const tpl = templateById(plan.template);
         this.bot(channelId,
           `분류 **${tpl.name}** · ${plan.by === "llm" ? "계획 에이전트" : "키워드 규칙"}${plan.durationMs ? ` · ${secs(plan.durationMs)}` : ""}\n` +
