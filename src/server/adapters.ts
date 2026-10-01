@@ -12,6 +12,8 @@ export interface ParsedLine {
   summary?: string;
   done?: boolean;
   failed?: boolean;
+  /** conversation id reported by the CLI — used to continue the same session */
+  sessionId?: string;
 }
 
 export interface Adapter {
@@ -19,6 +21,8 @@ export interface Adapter {
   name: string;
   /** executable + args; the prompt is passed as the last argument, cwd = the agent's worktree */
   command(prompt: string, opts: { model?: string; cwd: string }): { cmd: string; args: string[] };
+  /** continue an earlier session with a follow-up instruction; without it a follow-up starts fresh */
+  resume?(sessionId: string, prompt: string, opts: { model?: string; cwd: string }): { cmd: string; args: string[] };
   parse(line: string): ParsedLine;
   binary: string;
   /** send the prompt on stdin instead of as an argument (safer for long prompts and variadic flags) */
@@ -39,6 +43,14 @@ function safeJson(line: string): any | null {
   }
 }
 
+function claudeArgs(model?: string) {
+  const args = ["-p", "--output-format", "stream-json", "--verbose",
+    "--permission-mode", process.env.WILLNEW_CLAUDE_PERMISSION ?? "acceptEdits",
+    "--allowedTools", "Bash(npm test*),Bash(npm run *),Bash(node *),Bash(pnpm *),Bash(git diff*),Bash(git status*)"];
+  if (model) args.push("--model", model);
+  return args;
+}
+
 /** Claude Code: `claude -p --output-format stream-json --verbose` */
 export const claudeCode: Adapter = {
   id: "claude-code",
@@ -46,15 +58,15 @@ export const claudeCode: Adapter = {
   binary: "claude",
   stdinPrompt: true,
   command(_prompt, { model }) {
-    const args = ["-p", "--output-format", "stream-json", "--verbose",
-      "--permission-mode", process.env.WILLNEW_CLAUDE_PERMISSION ?? "acceptEdits",
-      "--allowedTools", "Bash(npm test*),Bash(npm run *),Bash(node *),Bash(pnpm *),Bash(git diff*),Bash(git status*)"];
-    if (model) args.push("--model", model);
-    return { cmd: "claude", args };
+    return { cmd: "claude", args: claudeArgs(model) };
+  },
+  resume(sessionId, _prompt, { model }) {
+    return { cmd: "claude", args: [...claudeArgs(model), "--resume", sessionId] };
   },
   parse(line) {
     const j = safeJson(line);
     if (!j) return { events: [] };
+    if (j.type === "system" && j.subtype === "init" && j.session_id) return { events: [], sessionId: j.session_id };
     if (j.type === "assistant" && j.message?.content) {
       const events: AgentEvent[] = [];
       for (const c of j.message.content) {
@@ -90,24 +102,31 @@ export const claudeCode: Adapter = {
   },
 };
 
-/** Codex CLI: `codex exec --json` */
+function codexArgs(model: string | undefined, cwd: string) {
+  // Codex's workspace-write sandbox hangs shell commands on some Windows setups; the worktree is the isolation
+  // boundary there, so default to full access on Windows (override with WILLNEW_CODEX_SANDBOX).
+  const sandbox = process.env.WILLNEW_CODEX_SANDBOX ?? (process.platform === "win32" ? "danger-full-access" : "workspace-write");
+  const args = ["exec", "--json", "--skip-git-repo-check", "-s", sandbox, "-C", cwd];
+  if (model) args.push("-m", model);
+  return args;
+}
+
+/** Codex CLI: `codex exec --json` (follow-ups: `codex exec … resume <thread id> <prompt>`) */
 export const codex: Adapter = {
   id: "codex",
   name: "Codex",
   binary: "codex",
   command(prompt, { model, cwd }) {
-    // Codex's workspace-write sandbox hangs shell commands on some Windows setups; the worktree is the isolation
-    // boundary there, so default to full access on Windows (override with WILLNEW_CODEX_SANDBOX).
-    const sandbox = process.env.WILLNEW_CODEX_SANDBOX ?? (process.platform === "win32" ? "danger-full-access" : "workspace-write");
-    const args = ["exec", "--json", "--skip-git-repo-check", "-s", sandbox, "-C", cwd];
-    if (model) args.push("-m", model);
-    args.push(prompt);
-    return { cmd: "codex", args };
+    return { cmd: "codex", args: [...codexArgs(model, cwd), prompt] };
+  },
+  resume(sessionId, prompt, { model, cwd }) {
+    return { cmd: "codex", args: [...codexArgs(model, cwd), "resume", sessionId, prompt] };
   },
   parse(line) {
     const j = safeJson(line);
     if (!j) return { events: [] };
     const type: string = j.type ?? j.msg?.type ?? "";
+    if (type === "thread.started" && j.thread_id) return { events: [], sessionId: j.thread_id };
     const item = j.item ?? j.msg ?? {};
     if (type === "item.completed" || type === "item.started") {
       const it = item;
@@ -145,9 +164,13 @@ export const script: Adapter = {
   command(prompt, { model }) {
     return { cmd: "node", args: [model ?? "agent.mjs", prompt] };
   },
+  resume(sessionId, prompt, { model }) {
+    return { cmd: "node", args: [model ?? "agent.mjs", prompt, "--resume", sessionId] };
+  },
   parse(line) {
     const j = safeJson(line);
     if (!j) return line.trim() ? { events: [ev("text", clip(line.trim()))] } : { events: [] };
+    if (j.type === "session") return { events: [], sessionId: String(j.id) };
     if (j.type === "result")
       return { events: [ev("status", "finished")], summary: j.text ?? "", done: true, turns: j.turns ?? 1,
         usage: { inputTokens: j.inputTokens ?? 0, outputTokens: j.outputTokens ?? 0, cachedTokens: 0, costUsd: j.costUsd ?? 0 } };

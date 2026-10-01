@@ -4,7 +4,7 @@ export type CheckStatus = "skipped" | "passed" | "failed";
 /** One line of what an agent did, normalised across CLIs. */
 export interface AgentEvent {
   ts: number;
-  kind: "text" | "tool" | "tool_result" | "status" | "error" | "check" | "plan";
+  kind: "text" | "tool" | "tool_result" | "status" | "error" | "check" | "plan" | "steer";
   text: string;
   attempt?: number;
 }
@@ -16,11 +16,28 @@ export interface Usage {
   costUsd: number | null; // null when the CLI does not report cost
 }
 
+export interface FileStat {
+  path: string;
+  insertions: number;
+  deletions: number;
+}
+
 export interface DiffSummary {
   files: number;
   insertions: number;
   deletions: number;
   patch: string;
+  fileStats?: FileStat[];
+  /** changed files that look like tests — a fix that edits its own tests needs a closer look */
+  testsTouched?: string[];
+}
+
+/** A dev server started in one agent's worktree so a human can click through the result. */
+export interface Preview {
+  status: "starting" | "ready" | "failed" | "stopped";
+  port: number;
+  log: string;
+  startedAt: number;
 }
 
 export interface AgentRun {
@@ -42,6 +59,11 @@ export interface AgentRun {
   diff: DiffSummary;
   merged: boolean;
   events: AgentEvent[];
+  /** CLI conversation id, so a follow-up instruction continues the same session */
+  sessionId?: string;
+  /** instructions a human sent while this agent was working or after it finished */
+  steers?: { text: string; by: string; at: number }[];
+  preview?: Preview;
 }
 
 /** What the triage (planner) agent decided for a request. */
@@ -83,6 +105,32 @@ export interface Run {
   review: Review;
   maxAttempts: number;
   agents: AgentRun[];
+  /** line comments left during review; sending them hands the work back to that agent */
+  comments?: ReviewComment[];
+  /** files a reviewer has marked as read, per agent */
+  reviewed?: Record<string, string[]>;
+}
+
+export interface ReviewComment {
+  id: string;
+  agentId: string;
+  file: string;
+  line: number;
+  text: string;
+  by: string;
+  at: number;
+  sentAt?: number;
+}
+
+/** What the reviewer should know before pressing merge. */
+export interface Preflight {
+  checkPassed: boolean;
+  checkSkipped: boolean;
+  testsTouched: string[];
+  /** null = could not tell (old git, missing branch) */
+  conflicts: boolean | null;
+  files: string[];
+  reviewed: string[];
 }
 
 export interface AgentSpec {

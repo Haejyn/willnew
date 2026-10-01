@@ -1,12 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ADAPTERS, installed } from "./adapters.js";
 import { Chat } from "./chat.js";
 import { computeMetrics, computeTeamMetrics } from "./metrics.js";
 import { RunManager } from "./runs.js";
+import { Terminals } from "./terminal.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
 import type { ChatMessage, CreateRunInput, Run, RunUpdate } from "./types.js";
 
@@ -32,10 +34,19 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; manager?: RunManager }) {
-  const runs = opts.manager ?? new RunManager();
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; manager?: RunManager }) {
+  const runs = opts.manager ?? new RunManager({ preview: opts.preview });
   const chat = new Chat(runs, opts.repo, opts.check);
   const app = new Hono();
+  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  const terminals = new Terminals();
+  runs.bus.on("worktree-removed", (agentId: string) => terminals.close(agentId));
+  const agentOf = (runId: string, agentId: string) => {
+    const run = runs.get(runId);
+    const agent = run?.agents.find((a) => a.id === agentId);
+    if (!run || !agent) throw new Error("not found");
+    return { run, agent };
+  };
 
   if (opts.token) {
     app.use("/api/*", async (c, next) => {
@@ -48,7 +59,7 @@ export function createApp(opts: { repo: string; check: string; token?: string; m
   app.onError((err, c) => c.json({ error: err.message }, 400));
 
   app.get("/api/agents", (c) => c.json(Object.values(ADAPTERS).map((a) => ({ id: a.id, name: a.name, installed: installed(a) }))));
-  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check }));
+  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand }));
   app.get("/api/runs", (c) => c.json(runs.list().map(lite)));
   app.post("/api/runs", async (c) => {
     const body = (await c.req.json()) as CreateRunInput;
@@ -64,6 +75,64 @@ export function createApp(opts: { repo: string; check: string; token?: string; m
     runs.cancel(c.req.param("id"), c.req.param("aid"));
     return c.json({ ok: true });
   });
+  app.post("/api/runs/:id/agents/:aid/steer", async (c) => {
+    const { text, by } = await c.req.json();
+    runs.steer(c.req.param("id"), c.req.param("aid"), String(text ?? ""), String(by ?? "anonymous"));
+    return c.json({ ok: true });
+  });
+  app.get("/api/runs/:id/agents/:aid/preflight", async (c) => c.json(await runs.preflight(c.req.param("id"), c.req.param("aid"))));
+  app.post("/api/runs/:id/agents/:aid/reviewed", async (c) => {
+    const { file, reviewed } = await c.req.json();
+    runs.setReviewed(c.req.param("id"), c.req.param("aid"), String(file), reviewed !== false);
+    return c.json({ ok: true });
+  });
+  app.post("/api/runs/:id/agents/:aid/preview", async (c) => c.json(await runs.startPreview(c.req.param("id"), c.req.param("aid"))));
+  app.delete("/api/runs/:id/agents/:aid/preview", (c) => {
+    runs.stopPreview(c.req.param("id"), c.req.param("aid"));
+    return c.json({ ok: true });
+  });
+  app.post("/api/runs/:id/comments", async (c) => {
+    const body = await c.req.json();
+    return c.json(runs.addComment(c.req.param("id"), { agentId: String(body.agentId), file: String(body.file), line: Number(body.line),
+      text: String(body.text ?? ""), by: String(body.by ?? "anonymous") }));
+  });
+  app.delete("/api/runs/:id/comments/:cid", (c) => {
+    runs.deleteComment(c.req.param("id"), c.req.param("cid"));
+    return c.json({ ok: true });
+  });
+  app.post("/api/runs/:id/agents/:aid/send-comments", async (c) => {
+    const { by } = await c.req.json();
+    return c.json({ ok: true, sent: runs.sendComments(c.req.param("id"), c.req.param("aid"), String(by ?? "anonymous")) });
+  });
+  // a shell inside the agent's worktree — raw terminal bytes out, {type:"input"|"resize"} JSON in
+  app.get("/api/runs/:id/agents/:aid/terminal", upgradeWebSocket((c) => {
+    let off: (() => void) | undefined;
+    let term: import("./terminal.js").Terminal | undefined;
+    return {
+      async onOpen(_e, ws) {
+        try {
+          const { agent } = agentOf(c.req.param("id")!, c.req.param("aid")!);
+          term = await terminals.get(agent.id, agent.worktree, Number(c.req.query("cols")) || 100, Number(c.req.query("rows")) || 30);
+          if (term.scrollback) ws.send(term.scrollback);
+          else if (!term.pty) ws.send("\x1b[2m(간이 셸 — node-pty 가 없어 줄 편집은 안 돼요)\x1b[0m\r\n");
+          off = term.subscribe((d) => ws.send(d), () => { ws.send("\r\n\x1b[2m[셸이 끝났어요 — 다시 열면 새로 시작해요]\x1b[0m\r\n"); ws.close(); });
+        } catch (e) {
+          ws.send(`\x1b[31m${(e as Error).message}\x1b[0m\r\n`);
+          ws.close();
+        }
+      },
+      onMessage(e) {
+        try {
+          const m = JSON.parse(String(e.data));
+          if (m.type === "input" && typeof m.data === "string") term?.backend.write(m.data);
+          if (m.type === "resize") term?.backend.resize(Number(m.cols) || 100, Number(m.rows) || 30);
+        } catch { /* ignore */ }
+      },
+      onClose() {
+        off?.();
+      },
+    };
+  }));
   app.post("/api/runs/:id/agents/:aid/merge", async (c) => {
     const message = await runs.merge(c.req.param("id"), c.req.param("aid"));
     return c.json({ ok: true, message });
@@ -97,5 +166,5 @@ export function createApp(opts: { repo: string; check: string; token?: string; m
     return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
   });
 
-  return { app, runs, chat };
+  return { app, runs, chat, injectWebSocket, terminals };
 }

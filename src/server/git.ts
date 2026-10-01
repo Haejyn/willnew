@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { DiffSummary } from "./types.js";
+import type { DiffSummary, FileStat } from "./types.js";
 
 const run = promisify(execFile);
 
@@ -36,19 +36,35 @@ export async function commitAll(wt: string, message: string): Promise<boolean> {
 
 const MAX_PATCH = 200_000;
 
+const TEST_FILE = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.(java|kt|cs)$/;
+export const isTestFile = (path: string) => TEST_FILE.test(path);
+
 export async function diffSummary(wt: string, baseRef: string): Promise<DiffSummary> {
   const numstat = await git(wt, "diff", "--numstat", baseRef, "HEAD");
   let files = 0, insertions = 0, deletions = 0;
+  const fileStats: FileStat[] = [];
   for (const line of numstat.split("\n")) {
-    const [a, d] = line.split("\t");
-    if (a === undefined || d === undefined) continue;
+    const [a, d, ...rest] = line.split("\t");
+    if (a === undefined || d === undefined || !rest.length) continue;
     files += 1;
     insertions += Number(a) || 0;
     deletions += Number(d) || 0;
+    fileStats.push({ path: rest.join("\t"), insertions: Number(a) || 0, deletions: Number(d) || 0 });
   }
   let patch = await git(wt, "diff", baseRef, "HEAD");
   if (patch.length > MAX_PATCH) patch = patch.slice(0, MAX_PATCH) + "\n… (patch truncated)";
-  return { files, insertions, deletions, patch };
+  return { files, insertions, deletions, patch, fileStats, testsTouched: fileStats.map((f) => f.path).filter(isTestFile) };
+}
+
+/** Would merging `branch` into the current HEAD of `root` conflict? null when git cannot tell (needs git ≥ 2.38). */
+export async function mergeConflicts(root: string, branch: string): Promise<boolean | null> {
+  try {
+    await run("git", ["-C", root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", branch], { windowsHide: true });
+    return false;
+  } catch (e) {
+    const code = (e as { code?: number }).code;
+    return code === 1 ? true : null;
+  }
 }
 
 export async function mergeBranch(root: string, branch: string, label: string): Promise<string> {
