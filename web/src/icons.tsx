@@ -46,22 +46,16 @@ export function AgentMark({ adapter, size = 20 }: { adapter: string; size?: numb
   );
 }
 
-export const IconRuns = themed("list");
 export const IconPlus = themed("plus");
 export const IconChart = themed("bar-chart");
 export const IconCheck = themed("check");
 export const IconX = themed("close");
 export const IconStop = themed("stop");
 export const IconChevron = themed("chevron-right");
-export const IconChevronLeft = themed("chevron-left");
-export const IconChevronDown = themed("chevron-down");
-export const IconClock = themed("clock");
 export const IconTrash = themed("trash");
-export const IconFolder = themed("folder");
 export const IconTerminal = themed("terminal");
 export const IconSpark = themed("sparkles");
 export const IconArrowLeft = themed("arrow-left");
-export const IconBolt = themed("bolt");
 export const IconFile = themed("file-text");
 export const IconFileCode = themed("file-code");
 export const IconSend = themed("send");
@@ -70,7 +64,6 @@ export const IconInbox = themed("tray");
 export const IconSearch = themed("search");
 export const IconBell = themed("bell");
 export const IconGear = themed("gear");
-export const IconPause = themed("pause");
 export const IconMore = themed("more");
 export const IconEye = themed("eye");
 export const IconHistory = themed("history");
@@ -82,9 +75,6 @@ export const IconXCircle = themed("close-circle");
 export const IconExternal = themed("external-link");
 export const IconRefresh = themed("refresh");
 export const IconPlay = themed("play");
-export const IconUser = themed("user");
-export const IconPanels = themed("panels");
-export const IconLayout = themed("layout");
 
 // git 그림 — 24 격자, 1.8 선
 const gitBase = ({ size = 16, filled: _f, ...rest }: P) => ({
@@ -95,13 +85,5 @@ export const IconBranch = (p: P) => (
   <svg {...gitBase(p)}>
     <path d="M8.2 6a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0ZM8.2 18a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0ZM20.2 6a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 1 1 4.4 0Z" />
     <path d="M6 8.2v7.6M18 8.2v.8q0 4.5-4.5 4.5H10q-4 0-4 2.3" />
-  </svg>
-);
-export const IconMerge = (p: P) => (
-  <svg {...gitBase(p)}>
-    <circle cx="6" cy="5" r="2" />
-    <circle cx="6" cy="19" r="2" />
-    <circle cx="18" cy="12" r="2" />
-    <path d="M6 7v10M6 8c0 3 3 4 10 4" />
   </svg>
 );

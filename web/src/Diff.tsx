@@ -59,6 +59,8 @@ function Code({ text }: { text: string }) {
 
 export interface CommentProps {
   comments: ReviewComment[];
+  /** decided runs keep their comments visible but take no new ones */
+  readOnly?: boolean;
   onAdd: (file: string, line: number, text: string) => Promise<void> | void;
   onDelete: (id: string) => void;
 }
@@ -93,7 +95,7 @@ export function DiffFileView({ file, mode = "unified", commenting, openLine, set
               </div>
               <p>{c.text}</p>
             </div>
-            {!c.sentAt ? (
+            {!c.sentAt && !commenting?.readOnly ? (
               <button className="ib sm" aria-label="댓글 지우기" onClick={() => commenting?.onDelete(c.id)}>
                 <IconTrash size={14} />
               </button>
@@ -106,7 +108,7 @@ export function DiffFileView({ file, mode = "unified", commenting, openLine, set
   };
 
   const gutterBtn = (line?: number) =>
-    commenting && line ? (
+    commenting && !commenting.readOnly && line ? (
       <button className="dl-add" aria-label={`${line}행에 댓글`} onClick={() => setOpenLine?.(openLine === line ? null : line)}>
         <IconPlus size={12} />
       </button>

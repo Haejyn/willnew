@@ -1,6 +1,6 @@
 /** 검토 · 승인 — 파일을 하나씩 확인하고, 줄에 의견을 남겨 다시 맡기거나, 근거를 보고 병합한다. */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AgentRun, Api, Preflight, Run } from "./api";
+import type { AgentRun, Api, Preflight } from "./api";
 import { DiffFileView } from "./Diff";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconArrowLeft, IconBranch, IconCheck, IconCheckCircle, IconColumns, IconEye, IconFile, IconFileCode, IconHistory, IconSend, IconTerminal, IconXCircle, Star } from "./icons";
@@ -248,7 +248,7 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
                 setOpenLine={setOpenLine}
                 commenting={
                   decided
-                    ? undefined
+                    ? { comments, readOnly: true, onAdd: () => undefined, onDelete: () => undefined }
                     : {
                         comments,
                         onAdd: async (path, line, text) => {

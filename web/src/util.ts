@@ -68,33 +68,6 @@ export function clockTime(ts: number): string {
 export const isActive = (a: AgentRun) =>
   a.status === "queued" || a.status === "running" || a.status === "checking" || a.status === "retrying";
 
-export const STATUS_KO: Record<string, string> = {
-  queued: "대기",
-  running: "작업 중",
-  checking: "검증 중",
-  retrying: "자기 수정",
-  done: "완료",
-  failed: "실패",
-  cancelled: "취소",
-};
-
-export type RunState = "active" | "pending" | "approved" | "rejected" | "failed";
-/** One word for where a request stands, from the requester's point of view. */
-export function runState(run: Run): RunState {
-  if (run.agents.some(isActive) || (!run.agents.length && !run.triage)) return "active";
-  if (run.review?.status === "approved") return "approved";
-  if (run.review?.status === "rejected") return "rejected";
-  if (run.agents.some((a) => a.status === "done" && a.check?.status !== "failed")) return "pending";
-  return "failed";
-}
-export const RUN_STATE_KO: Record<RunState, string> = {
-  active: "진행 중",
-  pending: "검토 대기",
-  approved: "승인",
-  rejected: "반려",
-  failed: "실패",
-};
-
 export const TEMPLATE_KO: Record<string, string> = {
   bugfix: "버그 수정",
   tests: "테스트 작성",
@@ -142,8 +115,6 @@ export function runElapsed(run: Run, now: number): number {
 
 /** Same convention as the server's metrics: input + output + cached. */
 export const totalTokens = (a: AgentRun) => (a.usage?.inputTokens ?? 0) + (a.usage?.outputTokens ?? 0) + (a.usage?.cachedTokens ?? 0);
-export const tokenBreakdown = (a: AgentRun) =>
-  `in ${fmtTokens(a.usage?.inputTokens)} · out ${fmtTokens(a.usage?.outputTokens)} · cached ${fmtTokens(a.usage?.cachedTokens)}`;
 
 /** Replace the agent's absolute worktree path with "." so logs stay readable. */
 export function shortenPaths(text: string, worktree?: string): string {
@@ -199,17 +170,6 @@ export function winnerReason(run: Run, winnerId: string | null): string {
   if (bent.length && !bent.includes(w)) bits.push(`${bent.map((a) => a.label).join(", ")} 은 테스트를 고쳐서 뒤로 뺐어요.`);
   return bits.join(" ");
 }
-export function runCounts(run: Run) {
-  const c = { total: run.agents.length, active: 0, done: 0, passed: 0, failed: 0 };
-  for (const a of run.agents) {
-    if (isActive(a)) c.active++;
-    if (a.status === "done") c.done++;
-    if (a.check?.status === "passed") c.passed++;
-    if (a.status === "failed" || a.check?.status === "failed") c.failed++;
-  }
-  return c;
-}
-
 /** Re-renders every `ms` while `enabled`, returning the current time. */
 export function useNow(ms = 1000, enabled = true): number {
   const [now, setNow] = useState(() => Date.now());

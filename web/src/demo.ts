@@ -470,7 +470,6 @@ function pastAgent(
   attempts: { work: number; check: number; passed: boolean }[],
   cost: number | null,
   tokens: number,
-  files = 2,
 ): AgentRun {
   const events: AgentEvent[] = [];
   let t = start;
@@ -533,8 +532,8 @@ const PAST: Past[] = [
     text: "@willnew 테스트 작성: 주문 API 페이지네이션 경계값(빈 페이지, 마지막 페이지) 테스트 좀 보강해 주세요",
     review: { status: "approved", reviewer: "이해준", agentId: "r-8c1-a0", at: 0, comment: "좋아요, 반영합니다" },
     agents: (s, id) => [
-      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 48 * SEC, check: 2 * SEC, passed: true }], 0.19, 210000, 1),
-      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 61 * SEC, check: 2 * SEC, passed: true }], null, 180000, 1),
+      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 48 * SEC, check: 2 * SEC, passed: true }], 0.19, 210000),
+      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 61 * SEC, check: 2 * SEC, passed: true }], null, 180000),
     ],
   },
   {
@@ -548,8 +547,8 @@ const PAST: Past[] = [
     text: "@willnew 리팩터링: settle_daily 의 중복 제거 로직이 세 군데 복붙돼 있어요. 하나로 정리해 주세요",
     review: { status: "pending" },
     agents: (s, id) => [
-      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 72 * SEC, check: 9 * SEC, passed: false }, { work: 41 * SEC, check: 9 * SEC, passed: true }], 0.41, 390000, 4),
-      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 95 * SEC, check: 9 * SEC, passed: true }], null, 300000, 3),
+      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 72 * SEC, check: 9 * SEC, passed: false }, { work: 41 * SEC, check: 9 * SEC, passed: true }], 0.41, 390000),
+      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 95 * SEC, check: 9 * SEC, passed: true }], null, 300000),
     ],
   },
   {
@@ -562,7 +561,7 @@ const PAST: Past[] = [
     title: "메타데이터 수집기 README 정리",
     text: "@willnew 문서화: 메타데이터 수집기 README 가 옛날 옵션 기준이에요. 지금 CLI 옵션으로 정리해 주세요",
     review: { status: "approved", reviewer: "최유나", agentId: "r-6a2-a0", at: 0 },
-    agents: (s, id) => [pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 38 * SEC, check: 0, passed: true }], 0.08, 90000, 1)],
+    agents: (s, id) => [pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 38 * SEC, check: 0, passed: true }], 0.08, 90000)],
   },
   {
     id: "r-5d9",
@@ -575,8 +574,8 @@ const PAST: Past[] = [
     text: "@willnew 버그 수정: 로그인 세션 만료 시간이 9시간씩 어긋나요",
     review: { status: "rejected", reviewer: "정하늘", comment: "증상만 가렸어요. 서버 타임존 설정이 원인이라 직접 고칠게요.", at: 0 },
     agents: (s, id) => [
-      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 55 * SEC, check: 3 * SEC, passed: true }], 0.22, 240000, 2),
-      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 70 * SEC, check: 3 * SEC, passed: false }, { work: 52 * SEC, check: 3 * SEC, passed: false }], null, 350000, 2),
+      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, [{ work: 55 * SEC, check: 3 * SEC, passed: true }], 0.22, 240000),
+      pastAgent(id, 1, "codex", "codex", undefined, s, [{ work: 70 * SEC, check: 3 * SEC, passed: false }, { work: 52 * SEC, check: 3 * SEC, passed: false }], null, 350000),
     ],
   },
 ];

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentRun, Run } from "./api";
-import { AgentMark, IconCheck, IconX, Star } from "./icons";
+import { IconCheck, IconX, Star } from "./icons";
 import { fmtDuration, isActive, runElapsed } from "./util";
 
 export function Spinner({ size = 12 }: { size?: number }) {
@@ -127,15 +127,6 @@ export function agentState(a: AgentRun, maxAttempts: number): { text: string; to
   if (a.check.status === "passed") return { text: a.attempt > 1 ? `${a.attempt}차 통과` : "통과", tone: "ok" };
   if (a.check.status === "failed") return { text: "검증 실패", tone: "bad" };
   return { text: "끝남", tone: undefined };
-}
-
-export function AgentName({ a, size = 20 }: { a: AgentRun; size?: number }) {
-  return (
-    <span className="agent-name">
-      <AgentMark adapter={a.adapter} size={size} />
-      <b>{a.label}</b>
-    </span>
-  );
 }
 
 // ---------------------------------------------------------------------------------------------- slide to approve
