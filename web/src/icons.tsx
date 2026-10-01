@@ -1,5 +1,6 @@
 import { useId, type SVGProps } from "react";
 import { icons } from "@theme/icons";
+import { APP_ICON } from "./app-icon";
 
 type P = SVGProps<SVGSVGElement> & { size?: number; filled?: boolean };
 
@@ -23,9 +24,13 @@ const MARK = "<path d=\"M19.27 6.69A9 9 0 1 1 3.35 9.50A8.1 8.1 0 1 0 19.27 6.69
 const MARK_CRATERS = "<path d=\"M19.27 6.69A9 9 0 1 1 3.35 9.50A8.1 8.1 0 1 0 19.27 6.69Z\" fill=\"currentColor\"></path><circle cx=\"10.64\" cy=\"19.25\" r=\"0.95\" fill=\"rgba(0,0,0,0.12)\"></circle><circle cx=\"15.19\" cy=\"19.15\" r=\"0.6\" fill=\"rgba(0,0,0,0.12)\"></circle>";
 
 /** 앱 아이콘 — 별 하늘 위 달. 왼쪽 위 브랜드 자리에 쓴다(작은 자리·채팅 아바타는 Logo). */
-export const AppIcon = ({ size = 28 }: { size?: number }) => (
-  <img src="./app-icon.png" width={size} height={size} alt="" aria-hidden className="app-icon" />
-);
+export function AppIcon({ size = 28 }: { size?: number }) {
+  const id = useId().replace(/:/g, "");
+  return (
+    <svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden className="app-icon"
+      dangerouslySetInnerHTML={{ __html: APP_ICON.replaceAll("__ID__", id) }} />
+  );
+}
 
 /** 지금 차례 — 작은 네 갈래 별 */
 export const Star = ({ size = 12, ...rest }: P) => (
