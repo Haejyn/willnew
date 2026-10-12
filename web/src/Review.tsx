@@ -255,7 +255,7 @@ export function Review({ api, id, user, go, initialAgent, watched, onWatch }: { 
         {run.agents.length > 1 ? (
           <section className="card">
             <div className="card-head">
-              <h2>{winnerId ? `왜 ${run.agents.find((a) => a.id === winnerId)?.label} 인가` : "결과 비교"}</h2>
+              <h2>결과 비교</h2>
               {winnerId ? <Tag tone="now">추천</Tag> : null}
             </div>
             <div className="cmp" style={{ gridTemplateColumns: `52px repeat(${run.agents.length}, minmax(0, 1fr))` }}>
