@@ -54,7 +54,7 @@ export function Metrics({ api }: { api: Api }) {
     <div className="page wide">
       <div className="page-head">
         <h1>지표</h1>
-        {isDemo() ? <span className="tag">데모 · 2026-09-30 실측 3건</span> : null}
+        {isDemo() ? <span className="tag">데모 데이터</span> : null}
       </div>
 
       {error && !data ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={load} /> : null}

@@ -1,5 +1,5 @@
 /** 새로 맡기기 (⌘K · ⌘N) — 한 줄을 쓰면 계획이 한 줄로 뜨고(눌러서 고친다), 이미 맡긴 일도 같이 찾아 준다. 보내면 팀 채널에 남는다. */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentInfo, AgentSpec, Api, Channel, Run, Template, Triage } from "./api";
 import { AgentMark, IconChevron, IconSend, IconSpark, IconTerminal } from "./icons";
 import { Moon, runPhase } from "./moon";
@@ -128,17 +128,18 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
     }
   };
 
+  const askId = useId();
   const chName = channels.find((c) => c.id === channel)?.name;
   const who = chosen.map((c) => c.label).join(", ");
   return (
     <div className={inline ? "compose-inline" : "modal-back compose-back"} onMouseDown={(e) => !inline && e.target === e.currentTarget && onClose()}>
       <div className="compose" role={inline ? undefined : "dialog"} aria-modal={inline ? undefined : true} aria-label="새로 맡기기">
         <div className="compose-top">
-          <label htmlFor="ask" className="sr">
+          <label htmlFor={askId} className="sr">
             무엇을 맡길까요
           </label>
           <textarea
-            id="ask"
+            id={askId}
             ref={area}
             rows={2}
             value={text}
