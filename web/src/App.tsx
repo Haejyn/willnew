@@ -128,12 +128,12 @@ export function App() {
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
   else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} />;
-  else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} />;
+  else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
   else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
       <div className="runs-view">
-        {!phone || route.page === "runs" ? <RunList runs={runs} current={openId} /> : null}
+        {!phone || route.page === "runs" ? <RunList runs={runs} current={openId} error={runsError} reload={reload} /> : null}
         {openId ? (
           <Workspace
             key={openId}

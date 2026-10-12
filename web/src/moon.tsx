@@ -1,7 +1,7 @@
 /** 달 — 일 하나 = 달 하나. 계획 전 삭에서 시작해 차오르다가, 보름달이 뜨면 사람 차례. */
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Run } from "./api";
-import { fmtDuration, isActive, runElapsed } from "./util";
+import { TEMPLATE_KO, fmtDuration, isActive, runElapsed } from "./util";
 
 export type Phase = "new" | "plan" | "run" | "retry" | "check" | "turn" | "merged" | "rejected" | "empty";
 
@@ -61,5 +61,32 @@ export function Moon({ phase, size = 16, label }: { phase: Phase; size?: number;
       <path className="moon-lit" d={lit(LIT[phase])} style={{ d: `path("${lit(LIT[phase])}")` } as CSSProperties} transform={phase === "rejected" ? "translate(24 0) scale(-1 1)" : undefined} />
       {phase === "retry" ? <circle className="moon-dot" cx="20" cy="4" r="3" /> : null}
     </svg>
+  );
+}
+
+/** 작업 화면과 검토 화면이 같이 쓰는 머리 — 큰 달 + 단계 + 제목 + 메타 한 줄. */
+export function RunHead({ run, now, lead, tools }: { run: Run; now: number; lead?: ReactNode; tools?: ReactNode }) {
+  const { phase, label, detail } = runPhase(run, now);
+  return (
+    <header className="ws-head">
+      {lead}
+      <Moon phase={phase} size={40} />
+      <div className="ws-title">
+        <div className="ws-phase">
+          <b>{label}</b>
+          {detail ? <span> · {detail}</span> : null}
+        </div>
+        <h1>{run.triage?.title ?? run.title}</h1>
+        <div className="ws-meta">
+          {run.channel ? <a href={`#/chat/${run.channel}`}>#{run.channel}</a> : null}
+          <span>{run.requester}</span>
+          <span>{TEMPLATE_KO[run.template] ?? run.template}</span>
+          <span className="mono">
+            {run.baseBranch} @{run.baseRef.slice(0, 7)}
+          </span>
+        </div>
+      </div>
+      {tools ? <div className="ws-tools">{tools}</div> : null}
+    </header>
   );
 }

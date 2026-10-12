@@ -26,6 +26,10 @@
   --float-blur: none;
   --rim: inset 0 0 0 1px rgba(240, 246, 252, 0.08);
   --shadow-float: 0 12px 32px rgba(1, 4, 9, 0.6);
+  --well: rgba(1, 4, 9, 0.35);
+  --well-soft: rgba(1, 4, 9, 0.2);
+  --scrim: rgba(1, 4, 9, 0.62);
+  --paper: #ffffff;
 
   --ok: #3fb950;
   --ok-rgb: 63, 185, 80;

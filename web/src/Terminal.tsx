@@ -13,7 +13,7 @@ function themeFromCss() {
     foreground: v("--text2", "#c9d1d9"),
     cursor: v("--text", "#e6edf3"),
     cursorAccent: v("--bg", "#0d1117"),
-    selectionBackground: "rgba(255,255,255,0.2)",
+    selectionBackground: v("--sel", "#3d444d"),
     black: "#21262d",
     brightBlack: v("--text4", "#7d8590"),
     green: v("--ok", "#3fb950"),

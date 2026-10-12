@@ -1,14 +1,15 @@
 /** 검토 · 승인 — 파일을 하나씩 확인하고, 줄에 의견을 남겨 다시 맡기거나, 근거를 보고 병합한다. */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AgentRun, Api, Preflight } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import type { AgentRun, Api } from "./api";
+import { DecisionBar } from "./Decision";
 import { DiffFileView } from "./Diff";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconArrowLeft, IconBranch, IconCheck, IconCheckCircle, IconColumns, IconEye, IconFile, IconFileCode, IconHistory, IconSend, IconTerminal, IconXCircle } from "./icons";
-import { Moon, runPhase } from "./moon";
-import { ErrorBox, Kbd, Modal, SlideToApprove, Spinner, Tag, agentState, useToast } from "./ui";
-import { fmtCost, fmtDuration, fmtTokens, isActive, parsePatch, suggestWinner, totalTokens, winnerReason, type User } from "./util";
+import { RunHead } from "./moon";
+import { ErrorBox, Modal, Tag, agentState, useToast } from "./ui";
+import { fmtCost, fmtDuration, fmtTokens, isActive, parsePatch, suggestWinner, totalTokens, useMedia, useNow, winnerReason, type User } from "./util";
 
-export function Review({ api, id, user, go, initialAgent }: { api: Api; id: string; user: User; go: (p: string) => void; initialAgent?: string }) {
+export function Review({ api, id, user, go, initialAgent, watched, onWatch }: { api: Api; id: string; user: User; go: (p: string) => void; initialAgent?: string; watched: boolean; onWatch: () => void }) {
   const { run, error, reload } = useLiveRun(api, id);
   const toast = useToast();
   const [agentId, setAgentId] = useState<string | null>(initialAgent ?? null);
@@ -16,60 +17,34 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
   const [mode, setMode] = useState<"unified" | "split">("unified");
   const [fileIdx, setFileIdx] = useState(0);
   const [openLine, setOpenLine] = useState<number | null>(null);
-  const [pf, setPf] = useState<Preflight | null>(null);
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
   const [log, setLog] = useState(false);
+  const phone = !useMedia("(min-width: 768px)");
+  const now = useNow(1000, !!run?.agents.some(isActive));
 
   const winnerId = run ? suggestWinner(run) : null;
   const candidates = useMemo(() => run?.agents.filter((a) => a.diff.files > 0 || a.status === "done") ?? [], [run]);
   const agent: AgentRun | undefined = run?.agents.find((a) => a.id === (agentId ?? winnerId)) ?? candidates[0];
-  const other = candidates.find((a) => a.id !== agent?.id && a.status === "done" && a.check.status !== "failed");
   const files = useMemo(() => (agent ? parsePatch(agent.diff.patch) : []), [agent?.diff.patch]); // eslint-disable-line react-hooks/exhaustive-deps
   const file = files[Math.min(fileIdx, Math.max(0, files.length - 1))];
   const reviewed = new Set((agent && run?.reviewed?.[agent.id]) ?? []);
   const comments = (run?.comments ?? []).filter((c) => c.agentId === agent?.id);
   const unsent = comments.filter((c) => !c.sentAt);
-  const finished = !!run && run.agents.length > 0 && !run.agents.some(isActive);
   const decided = run?.review.status === "approved" || run?.review.status === "rejected";
 
   useEffect(() => {
     setFileIdx(0);
     setOpenLine(null);
   }, [agent?.id]);
-  useEffect(() => {
-    setPf(null);
-    if (!run || !agent || !finished) return;
-    api.preflight(run.id, agent.id).then(setPf).catch(() => undefined);
-  }, [api, run?.id, agent?.id, agent?.diff.patch, finished, run?.reviewed]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const approve = useCallback(
-    async (target?: AgentRun) => {
-      if (!run || !(target ?? agent) || busy) return;
-      setBusy(true);
-      try {
-        const r = await api.review(run.id, { decision: "approve", agentId: (target ?? agent)!.id, reviewer: user.name });
-        toast(r.message || "병합했어요", "ok");
-      } catch (e) {
-        toast((e as Error).message, "err");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [api, run, agent, busy, user.name, toast],
-  );
-
   const toggleReviewed = (path: string) => {
     if (!run || !agent) return;
     api.setReviewed(run.id, agent.id, path, !reviewed.has(path)).catch((e: Error) => toast(e.message, "err"));
   };
 
-  // J/K files · C comment · ⌘↵ approve · R reject
+  // J/K files · C comment (⌘↵ 승인 · R 반려 는 결정 바가 받는다)
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest("textarea, input")) return;
+      if (t.closest("textarea, input") || e.metaKey || e.ctrlKey) return;
       if (e.key === "j") setFileIdx((i) => Math.min(files.length - 1, i + 1));
       else if (e.key === "k") setFileIdx((i) => Math.max(0, i - 1));
       else if (e.key === "c" && file) {
@@ -80,36 +55,22 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
           const ctx = file.lines.slice(file.lines.indexOf(h ?? ""), first).filter((l) => !l.startsWith("-") && !l.startsWith("@@")).length;
           setOpenLine(start + ctx);
         }
-      } else if (e.key === "r" && !decided && finished) setRejecting(true);
-      else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && run?.review.status === "pending") approve();
-      else return;
+      } else return;
       e.preventDefault();
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [files.length, file, decided, finished, run?.review.status, approve]);
+  }, [files.length, file]);
 
   if (error && !run) return <div className="page"><ErrorBox error={`불러오기 실패 · ${error}`} onRetry={reload} /></div>;
   if (!run)
     return (
-      <div className="page loading">
-        <Spinner size={16} /> 불러오는 중
+      <div className="page" aria-busy>
+        <div className="skel" style={{ height: 56, width: "50%", marginBottom: 16 }} />
+        <div className="skel" style={{ height: 320 }} />
       </div>
     );
 
-  const reject = async () => {
-    if (!reason.trim()) return;
-    setBusy(true);
-    try {
-      await api.review(run.id, { decision: "reject", reviewer: user.name, comment: reason.trim() });
-      toast("반려했어요 — 사유가 채널에 남아요", "ok");
-      setRejecting(false);
-    } catch (e) {
-      toast((e as Error).message, "err");
-    } finally {
-      setBusy(false);
-    }
-  };
   const sendBack = async () => {
     if (!agent) return;
     try {
@@ -125,16 +86,16 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
 
   return (
     <div className="rv">
+      <RunHead
+        run={run}
+        now={now}
+        lead={
+          <a className="ib" href={`#/runs/${run.id}`} aria-label="작업 공간" title="작업 공간">
+            <IconArrowLeft size={18} />
+          </a>
+        }
+      />
       <nav className="rv-nav" aria-label="바뀐 파일">
-        <a className="back" href={`#/runs/${run.id}`}>
-          <IconArrowLeft size={15} /> 작업 공간
-        </a>
-        <div className="rv-title">
-          <b>{run.triage?.title ?? run.title}</b>
-          <span className="rv-phase">
-            <Moon phase={runPhase(run).phase} size={16} /> {runPhase(run).label}
-          </span>
-        </div>
         <section>
           <div className="sec-head">
             <span className="lab">바뀐 파일</span>
@@ -278,59 +239,15 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
           </div>
         ) : null}
 
-        <div className={`mergebar ${run.review.status === "pending" ? "turn" : ""}`}>
-          {decided ? (
-            <span className={`verdict v-${run.review.status}`}>
-              {run.review.status === "approved" ? `병합됨 · ${run.review.reviewer} · ${run.agents.find((a) => a.id === run.review.agentId)?.label ?? ""}` : `반려됨 · ${run.review.reviewer} — “${run.review.comment ?? ""}”`}
-            </span>
-          ) : !finished ? (
-            <span className="dim">아직 작업 중인 에이전트가 있어요 — 끝나면 여기서 결정해요</span>
-          ) : (
-            <>
-              <span className="turn-text">
-                <Moon phase="turn" size={18} /> 지금 {user.name} 님 차례예요
-              </span>
-              <span className="grow" />
-              <button className="btn q" onClick={() => setRejecting(true)}>
-                반려… <Kbd>R</Kbd>
-              </button>
-              {other ? (
-                <button className="btn" onClick={() => approve(other)} disabled={busy}>
-                  {other.label} 안으로 병합
-                </button>
-              ) : null}
-              {agent && agent.status === "done" && agent.check.status !== "failed" ? (
-                <button className="btn m" onClick={() => approve()} disabled={busy}>
-                  {busy ? <Spinner size={12} /> : <IconBranch size={15} />}
-                  {agent.id === winnerId ? "승인하고" : `${agent.label} 로`} {run.baseBranch} 에 병합 <Kbd>⌘↵</Kbd>
-                </button>
-              ) : null}
-            </>
-          )}
-        </div>
-        {finished && !decided && agent && agent.status === "done" && agent.check.status !== "failed" ? (
-          <div className="mobile-only slide-wrap">
-            <SlideToApprove label={`밀어서 ${agent.label} 를 ${run.baseBranch} 에 병합`} onDone={() => approve()} disabled={busy} />
-            <div className="row-btns">
-              <button className="btn grow" onClick={sendBack} disabled={!unsent.length}>
-                다시 맡기기
-              </button>
-              <button className="btn q grow" onClick={() => setRejecting(true)}>
-                반려
-              </button>
-            </div>
-          </div>
-        ) : null}
+        <DecisionBar api={api} run={run} user={user} go={go} now={now} watched={watched} onWatch={onWatch} agentId={agent?.id} slide={phone} keys onRevise={() => (unsent.length ? sendBack() : go(agentLink("log").slice(1)))} />
       </main>
 
       <aside className="rv-side" aria-label="병합 전 확인">
         <section className="card">
-          <h2>병합 전 확인</h2>
+          <h2>확인</h2>
           {agent ? (
             <>
               <Gate ok={agent.check.status === "passed" ? true : agent.check.status === "failed" ? false : null} title={agent.check.status === "passed" ? "검증 관문 통과" : agent.check.status === "failed" ? "검증 관문 실패" : "검증 없음"} sub={run.checkCmd ? `${run.checkCmd} · ${agent.check.durationMs ? fmtDuration(agent.check.durationMs) : ""}` : "검증 명령이 없는 요청"} />
-              <Gate ok={!agent.diff.testsTouched?.length} title={agent.diff.testsTouched?.length ? "테스트 파일을 고쳤어요" : "테스트 파일은 그대로"} sub={agent.diff.testsTouched?.length ? agent.diff.testsTouched.join(", ") : "테스트를 약하게 만들어 통과하지 않았어요"} />
-              <Gate ok={pf ? (pf.conflicts === null ? null : !pf.conflicts) : null} loading={!pf && finished} title={!pf ? "충돌 확인" : pf.conflicts ? `${run.baseBranch} 과 충돌` : pf.conflicts === null ? "충돌 여부를 알 수 없어요" : `${run.baseBranch} 과 충돌 없음`} sub={`${run.baseRef.slice(0, 7)} 기준`} />
               <Gate ok={files.length ? (doneFiles === files.length ? true : null) : null} title={`파일 검토 ${doneFiles}/${files.length}`} sub={doneFiles < files.length ? `${files.find((f) => !reviewed.has(f.path))?.path ?? ""} 남음` : "모두 봤어요"} />
             </>
           ) : null}
@@ -369,14 +286,6 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
         </section>
       </aside>
 
-      {rejecting ? (
-        <Modal title="반려할까요?" confirmLabel="반려" danger busy={busy} disabled={!reason.trim()} onClose={() => setRejecting(false)} onConfirm={reject}>
-          <label className="field">
-            <span>사유 — 요청자와 채널에 그대로 남아요</span>
-            <textarea autoFocus rows={3} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 증상만 가렸어요. 서버 타임존 설정이 원인이에요." />
-          </label>
-        </Modal>
-      ) : null}
       {log && agent ? (
         <Modal title={`${agent.label} 검증 로그`} confirmLabel="닫기" onClose={() => setLog(false)} onConfirm={() => setLog(false)}>
           <pre className="checklog mono">{agent.check.output || "출력이 없어요"}</pre>
@@ -386,10 +295,10 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
   );
 }
 
-function Gate({ ok, title, sub, loading }: { ok: boolean | null; title: string; sub?: string; loading?: boolean }) {
+function Gate({ ok, title, sub }: { ok: boolean | null; title: string; sub?: string }) {
   return (
     <div className={`gate ${ok === true ? "ok" : ok === false ? "bad" : "dim"}`}>
-      <span className="gate-i">{loading ? <Spinner size={12} /> : ok === true ? <IconCheckCircle size={16} /> : ok === false ? <IconXCircle size={16} /> : <IconHistory size={16} />}</span>
+      <span className="gate-i">{ok === true ? <IconCheckCircle size={16} /> : ok === false ? <IconXCircle size={16} /> : <IconHistory size={16} />}</span>
       <span>
         <b>{title}</b>
         {sub ? <span className="sub">{sub}</span> : null}

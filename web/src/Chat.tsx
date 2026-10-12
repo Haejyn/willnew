@@ -1,10 +1,11 @@
 /** 팀 채널 — @willnew 로 맡기면 진행 카드가 스레드에 붙고, 거기서 바로 승인한다. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Api, Channel, ChatMessage, Run } from "./api";
+import { RejectModal, useDecide } from "./Decision";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
 import { Moon, runPhase } from "./moon";
-import { Avatar, Modal, Spinner, Tag, agentState, useToast } from "./ui";
+import { Avatar, ErrorBox, Spinner, Tag, agentState, useToast } from "./ui";
 import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type User } from "./util";
 
 const EXAMPLES = ["@willnew 버그 수정: duration 테스트 실패", "@willnew 테스트 작성: 환불 API 경계값", "@willnew 리팩터링: 날짜 포맷 함수 통합"];
@@ -14,6 +15,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const toast = useToast();
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -24,10 +26,15 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
     api.channels().then(setChannels).catch((e: Error) => toast(e.message, "err"));
   }, [api, toast]);
 
+  const load = useCallback(() => {
+    setLoadError(null);
+    api.messages(channelId).then(setMessages).catch((e: Error) => setLoadError(e.message));
+  }, [api, channelId]);
+
   useEffect(() => {
     setMessages(null);
     stick.current = true;
-    api.messages(channelId).then(setMessages).catch((e: Error) => toast(e.message, "err"));
+    load();
     return api.subscribeChannel(channelId, (m) =>
       setMessages((list) => {
         const cur = list ?? [];
@@ -40,7 +47,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
         return [...cur, m];
       }),
     );
-  }, [api, channelId, toast]);
+  }, [api, channelId, load]);
 
   const sorted = useMemo(() => (messages ?? []).slice().sort((a, b) => a.ts - b.ts), [messages]);
   const cardFor = useMemo(() => {
@@ -121,9 +128,12 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
           }}
         >
           <div className="stream-inner" ref={inner}>
-            {!messages ? (
-              <div className="loading">
-                <Spinner size={14} /> 불러오는 중
+            {!messages && loadError ? <ErrorBox error={`불러오기 실패 · ${loadError}`} onRetry={load} /> : null}
+            {!messages && !loadError ? (
+              <div className="msg-skel" aria-busy>
+                <div className="skel" />
+                <div className="skel" />
+                <div className="skel" />
               </div>
             ) : null}
             {sorted.map((m, i) => {
@@ -215,7 +225,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
 
 function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grouped: boolean; withCard: boolean; api: Api; user: User; go: (p: string) => void }) {
   return (
-    <div className={`msg ${grouped ? "grouped" : ""} ${m.bot ? "bot" : ""}`}>
+    <div className={`msg ${grouped ? "grouped" : ""} ${m.bot ? "bot" : ""} ${!m.bot && m.user === user.name ? "mine" : ""}`}>
       <div className="msg-gutter">
         {grouped ? null : m.bot ? (
           <span className="avatar bot" aria-hidden>
@@ -266,44 +276,24 @@ function highlight(text: string) {
 
 function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: (p: string) => void }) {
   const { run } = useLiveRun(api, id);
-  const toast = useToast();
   const active = !!run?.agents.some(isActive);
   const now = useNow(1000, active);
+  if (!run) return <div className="runcard skel" aria-busy style={{ height: 96 }} />;
+  return <RunCardBody api={api} run={run} user={user} go={go} now={now} />;
+}
+
+function RunCardBody({ api, run, user, go, now }: { api: Api; run: Run; user: User; go: (p: string) => void; now: number }) {
   const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  if (!run)
-    return (
-      <div className="runcard loading">
-        <Spinner size={12} />
-      </div>
-    );
+  const { busy, approve, reject } = useDecide(api, run, user);
   const phase = runPhase(run, now);
   const winner = suggestWinner(run);
-  const cost = run.agents.reduce((s, a) => s + (a.usage.costUsd ?? 0), 0) + (run.triage?.costUsd ?? 0);
-  const decide = async (decision: "approve" | "reject") => {
-    setBusy(true);
-    try {
-      const r = await api.review(run.id, { decision, agentId: decision === "approve" ? winner ?? undefined : undefined, reviewer: user.name, comment: decision === "reject" ? reason.trim() : undefined });
-      toast(r.message, "ok");
-      setRejecting(false);
-    } catch (e) {
-      toast((e as Error).message, "err");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const tested = !!run.agents.find((a) => a.id === winner)?.diff.testsTouched?.length;
   return (
-    <div className={`runcard ${run.review.status === "pending" ? "turn" : ""}`}>
+    <div className="runcard">
       <div className="rc-head">
-        <Moon phase={phase.phase} size={20} />
+        <Moon phase={phase.phase} size={16} />
         <b>{run.triage?.title ?? run.title}</b>
-        <span className="mono dim small">
-          {fmtDuration(run.agents.length ? Math.max(...run.agents.map((a) => (a.endedAt ?? now) - (a.startedAt ?? run.createdAt))) : 0)} · {fmtCost(cost)}
-        </span>
-      </div>
-      <div className="rc-phase">
-        {phase.label} · {phase.detail}
+        <span className="rc-phase">{phase.label}</span>
       </div>
       <div className="rc-agents">
         {run.agents.map((a) => {
@@ -325,12 +315,21 @@ function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: 
       <div className="row-btns">
         {run.review.status === "pending" ? (
           <>
-            <button className="btn m" disabled={busy} onClick={() => decide("approve")}>
-              승인하고 병합
-            </button>
-            <button className="btn" onClick={() => go(`/runs/${run.id}/review`)}>
-              변경 보기
-            </button>
+            {/* 테스트 파일을 고친 결과는 바로 병합하지 않고 검토를 거친다 */}
+            {winner && !tested ? (
+              <button className="btn m" disabled={busy} onClick={() => approve(winner)}>
+                {busy ? <Spinner size={12} /> : null}승인
+              </button>
+            ) : (
+              <a className="btn m" href={`#/runs/${run.id}/review`}>
+                검토하고 승인
+              </a>
+            )}
+            {winner && !tested ? (
+              <button className="btn" onClick={() => go(`/runs/${run.id}/review`)}>
+                검토
+              </button>
+            ) : null}
             <button className="btn q" onClick={() => setRejecting(true)}>
               반려
             </button>
@@ -341,14 +340,7 @@ function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: 
           </button>
         )}
       </div>
-      {rejecting ? (
-        <Modal title="반려할까요?" confirmLabel="반려" danger busy={busy} disabled={!reason.trim()} onClose={() => setRejecting(false)} onConfirm={() => decide("reject")}>
-          <label className="field">
-            <span>사유 — 이 채널에 그대로 남아요</span>
-            <textarea autoFocus rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
-          </label>
-        </Modal>
-      ) : null}
+      {rejecting ? <RejectModal busy={busy} onClose={() => setRejecting(false)} onSubmit={async (r) => (await reject(r)) && setRejecting(false)} /> : null}
     </div>
   );
 }

@@ -5,9 +5,9 @@ import { AgentPane, AgentPill, type PaneTab } from "./AgentPane";
 import { DecisionBar, StopModal } from "./Decision";
 import { useLiveRun } from "./flow";
 import { IconArrowLeft, IconBell, IconCheck, IconChevron, IconColumns, IconMore, IconStop, IconTrash } from "./icons";
-import { Moon, runPhase } from "./moon";
-import { Empty, ErrorBox, Spinner, useOutside, useToast } from "./ui";
-import { TEMPLATE_KO, isActive, suggestWinner, useMedia, useNow, type User } from "./util";
+import { Moon, RunHead } from "./moon";
+import { Empty, ErrorBox, useOutside, useToast } from "./ui";
+import { isActive, suggestWinner, useMedia, useNow, type User } from "./util";
 
 export function Workspace({
   api,
@@ -103,7 +103,7 @@ export function Workspace({
         {!run.agents.length ? (
           <div className="panes">
             <Empty title={run.triage ? "에이전트를 준비하는 중이에요" : "계획 에이전트가 요청을 읽는 중이에요"}>
-              <Spinner size={14} />
+              <Moon phase={run.triage ? "plan" : "new"} size={32} />
             </Empty>
           </div>
         ) : (
@@ -141,89 +141,81 @@ function RunHeader({ api, run, now, go, wide, split, setSide, watched, onWatch, 
   const [stop, setStop] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   useOutside(box, menu, () => setMenu(false));
-  const { phase, label, detail } = runPhase(run, now);
   const live = run.agents.some(isActive);
   const pick = (fn: () => void) => () => {
     setMenu(false);
     fn();
   };
-  return (
-    <header className="ws-head">
-      <a className="ib ws-back only-phone" href="#/runs" aria-label="작업 목록">
-        <IconArrowLeft size={18} />
-      </a>
-      <Moon phase={phase} size={40} />
-      <div className="ws-title">
-        <div className="ws-phase">
-          <b>{label}</b>
-          {detail ? <span> · {detail}</span> : null}
+  const tools = (
+    <>
+      {wide ? (
+        <div className="seg icons" role="group" aria-label="보기">
+          <button aria-pressed={!split} className={!split ? "on" : ""} aria-label="하나씩" title="하나씩" onClick={() => setSide(false)}>
+            <IconStop size={15} />
+          </button>
+          <button aria-pressed={split} className={split ? "on" : ""} aria-label="나란히" title="나란히" onClick={() => setSide(true)}>
+            <IconColumns size={15} />
+          </button>
         </div>
-        <h1>{run.triage?.title ?? run.title}</h1>
-        <div className="ws-meta">
-          {run.channel ? <a href={`#/chat/${run.channel}`}>#{run.channel}</a> : null}
-          <span>{run.requester}</span>
-          <span>{TEMPLATE_KO[run.template] ?? run.template}</span>
-          <span className="mono">
-            {run.baseBranch} @{run.baseRef.slice(0, 7)}
-          </span>
-        </div>
-      </div>
-      <div className="ws-tools">
-        {wide ? (
-          <div className="seg icons" role="group" aria-label="보기">
-            <button aria-pressed={!split} className={!split ? "on" : ""} aria-label="하나씩" title="하나씩" onClick={() => setSide(false)}>
-              <IconStop size={15} />
+      ) : null}
+      <div className="menu-wrap" ref={box}>
+        <button className="ib" aria-label="더 보기" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
+          <IconMore size={18} />
+        </button>
+        {menu ? (
+          <div className="menu" role="menu">
+            {run.triage?.plan.length ? (
+              <button role="menuitem" onClick={pick(onPlan)}>
+                <IconChevron size={14} /> 계획 보기
+              </button>
+            ) : null}
+            <button role="menuitem" onClick={pick(() => go(`/runs/${run.id}/review`))}>
+              <IconCheck size={14} /> 변경 검토 화면
             </button>
-            <button aria-pressed={split} className={split ? "on" : ""} aria-label="나란히" title="나란히" onClick={() => setSide(true)}>
-              <IconColumns size={15} />
+            {live ? (
+              <button role="menuitem" onClick={pick(onWatch)}>
+                <IconBell size={14} filled={watched} /> 끝나면 알림 {watched ? "끄기" : "켜기"}
+              </button>
+            ) : null}
+            {live ? (
+              <button role="menuitem" onClick={pick(() => setStop(true))}>
+                <IconStop size={14} /> 취소
+              </button>
+            ) : null}
+            <button
+              role="menuitem"
+              className="danger"
+              onClick={pick(async () => {
+                if (!confirm("이 요청과 워크트리를 지울까요? 병합된 변경은 그대로 남아요.")) return;
+                try {
+                  await api.remove(run.id);
+                  go("/runs");
+                } catch (e) {
+                  toast((e as Error).message, "err");
+                }
+              })}
+            >
+              <IconTrash size={14} /> 워크트리 정리
             </button>
           </div>
         ) : null}
-        <div className="menu-wrap" ref={box}>
-          <button className="ib" aria-label="더 보기" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
-            <IconMore size={18} />
-          </button>
-          {menu ? (
-            <div className="menu" role="menu">
-              {run.triage?.plan.length ? (
-                <button role="menuitem" onClick={pick(onPlan)}>
-                  <IconChevron size={14} /> 계획 보기
-                </button>
-              ) : null}
-              <button role="menuitem" onClick={pick(() => go(`/runs/${run.id}/review`))}>
-                <IconCheck size={14} /> 변경 검토 화면
-              </button>
-              {live ? (
-                <button role="menuitem" onClick={pick(onWatch)}>
-                  <IconBell size={14} filled={watched} /> 끝나면 알림 {watched ? "끄기" : "켜기"}
-                </button>
-              ) : null}
-              {live ? (
-                <button role="menuitem" onClick={pick(() => setStop(true))}>
-                  <IconStop size={14} /> 취소
-                </button>
-              ) : null}
-              <button
-                role="menuitem"
-                className="danger"
-                onClick={pick(async () => {
-                  if (!confirm("이 요청과 워크트리를 지울까요? 병합된 변경은 그대로 남아요.")) return;
-                  try {
-                    await api.remove(run.id);
-                    go("/runs");
-                  } catch (e) {
-                    toast((e as Error).message, "err");
-                  }
-                })}
-              >
-                <IconTrash size={14} /> 워크트리 정리
-              </button>
-            </div>
-          ) : null}
-        </div>
       </div>
+    </>
+  );
+  return (
+    <>
+      <RunHead
+        run={run}
+        now={now}
+        lead={
+          <a className="ib ws-back only-phone" href="#/runs" aria-label="작업 목록">
+            <IconArrowLeft size={18} />
+          </a>
+        }
+        tools={tools}
+      />
       {stop ? <StopModal api={api} run={run} onClose={() => setStop(false)} /> : null}
-    </header>
+    </>
   );
 }
 

@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import type { Run } from "./api";
 import { Moon, isDone, runPhase, type Phase } from "./moon";
+import { ErrorBox } from "./ui";
 
 type Filter = "all" | "open" | "done";
 const FILTERS: [Filter, string][] = [
@@ -11,7 +12,7 @@ const FILTERS: [Filter, string][] = [
 ];
 const RANK: Partial<Record<Phase, number>> = { turn: 0 };
 
-export function RunList({ runs, current }: { runs: Run[] | null; current?: string }) {
+export function RunList({ runs, current, error, reload }: { runs: Run[] | null; current?: string; error?: string | null; reload?: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const rows = useMemo(() => {
     const all = (runs ?? []).map((run) => ({ run, ...runPhase(run) }));
@@ -29,7 +30,8 @@ export function RunList({ runs, current }: { runs: Run[] | null; current?: strin
         ))}
       </div>
       <div className="rlist-rows">
-        {!runs ? [0, 1, 2, 3].map((i) => <div key={i} className="skel rr-skel" />) : null}
+        {!runs && error ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={reload} /> : null}
+        {!runs && !error ? [0, 1, 2, 3].map((i) => <div key={i} className="skel rr-skel" />) : null}
         {rows.map(({ run, phase, label }) => (
           <a key={run.id} className={`rr ${run.id === current ? "on" : ""}`} href={`#/runs/${run.id}`} aria-current={run.id === current ? "page" : undefined}>
             <Moon phase={phase} size={16} />

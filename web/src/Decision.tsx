@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Api, Preflight, Run } from "./api";
 import { IconBell, IconCheck } from "./icons";
 import { Moon, runPhase } from "./moon";
-import { Modal, Spinner, useToast } from "./ui";
+import { Modal, SlideToApprove, Spinner, useToast } from "./ui";
 import { isActive, relTime, suggestWinner, winnerReason, type User } from "./util";
 
 /** 승인·반려 호출. 승인은 확인 없이 바로 병합한다. */
@@ -58,8 +58,8 @@ export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: 
 
 function Gate({ ok, loading, children }: { ok: boolean | null; loading?: boolean; children: string }) {
   return (
-    <span className={`gchip ${ok === true ? "ok" : "warn"}`}>
-      {loading ? <Spinner size={10} /> : ok === true ? <IconCheck size={13} /> : <b aria-hidden>!</b>}
+    <span className={`gchip ${loading ? "" : ok === true ? "ok" : "warn"}`}>
+      {loading ? null : ok === true ? <IconCheck size={13} /> : <b aria-hidden>!</b>}
       {children}
     </span>
   );
@@ -77,9 +77,13 @@ export interface DecisionProps {
   onRevise?: () => void;
   /** 승인할 결과를 직접 고른 경우(검토 화면) */
   agentId?: string;
+  /** 휴대폰 검토 화면 — 승인을 탭 대신 밀어서 */
+  slide?: boolean;
+  /** 검토 화면 단축키 — ⌘↵ 승인 · R 반려 */
+  keys?: boolean;
 }
 
-export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevise, agentId }: DecisionProps) {
+export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevise, agentId, slide, keys }: DecisionProps) {
   const { phase, label, detail } = runPhase(run, now);
   const { busy, approve, reject } = useDecide(api, run, user);
   const [modal, setModal] = useState<"reject" | "close" | "stop" | null>(null);
@@ -93,13 +97,32 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
     api.preflight(run.id, winnerId).then(setPf).catch(() => undefined);
   }, [api, run.id, phase, winnerId, winner?.diff.patch]);
 
+  const touched = winner?.diff.testsTouched ?? [];
+  // 검토 화면(agentId 가 넘어온다)에서는 검증을 넘긴 결과면 바로 승인한다. 그 밖에서는 테스트 파일을 고쳤거나 main 과 충돌하면 검토를 거친다.
+  const passed = !!winner && winner.status === "done" && winner.check.status !== "failed";
+  const direct = !!winner && (agentId ? passed : !touched.length && !pf?.conflicts);
   const revise = onRevise ?? (() => go(`/runs/${run.id}/review`));
+  useEffect(() => {
+    if (!keys || phase !== "turn") return;
+    const on = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest("textarea, input")) return;
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && direct && winner) void approve(winner.id);
+      else if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey) setModal("reject");
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  });
   let info: ReactNode;
   let act: ReactNode = null;
 
   if (phase === "turn") {
-    const touched = winner?.diff.testsTouched ?? [];
-    const reason = winner ? `${winner.label} 추천 · ${winnerReason(run, winner.id)}` : "추천할 결과를 고르지 못했어요 · 검토 화면에서 골라 주세요";
+    const reason = !winner
+      ? "추천할 결과를 고르지 못했어요 · 검토 화면에서 골라 주세요"
+      : agentId && !passed
+        ? `${winner.label} 은 검증을 넘기지 못했어요 · 다른 결과를 고르거나 고쳐 달라고 해 주세요`
+        : `${winner.label} ${agentId ? "· " : "추천 · "}${winnerReason(run, winner.id)}`;
     info = (
       <>
         <span className="dbar-text" title={reason}>{reason}</span>
@@ -115,12 +138,15 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
     );
     act = (
       <>
-        {/* 테스트 파일을 고쳤거나 main 과 충돌하면 바로 병합하지 않고 검토를 거친다 (검토 화면에서는 agentId 가 넘어온다) */}
-        {winner && (agentId || (!touched.length && !pf?.conflicts)) ? (
-          <button className="btn m" onClick={() => approve(winner.id)} disabled={busy}>
-            {busy ? <Spinner size={12} /> : null}승인
-          </button>
-        ) : (
+        {direct && winner ? (
+          slide ? (
+            <SlideToApprove label={`밀어서 ${winner.label} 를 ${run.baseBranch} 에 병합`} onDone={() => approve(winner.id)} disabled={busy} />
+          ) : (
+            <button className="btn m" onClick={() => approve(winner.id)} disabled={busy}>
+              {busy ? <Spinner size={12} /> : null}승인
+            </button>
+          )
+        ) : agentId ? null : (
           <a className="btn m" href={`#/runs/${run.id}/review`}>검토하고 승인</a>
         )}
         <button className="btn" onClick={revise}>고쳐 달라</button>
