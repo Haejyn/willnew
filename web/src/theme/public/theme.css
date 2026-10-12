@@ -54,5 +54,6 @@
   --r-card: 8px;
   --r-panel: 12px;
   --r-btn: 6px;
+  --rail-w: 64px;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }

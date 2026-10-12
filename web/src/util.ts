@@ -170,6 +170,30 @@ export function winnerReason(run: Run, winnerId: string | null): string {
   if (bent.length && !bent.includes(w)) bits.push(`${bent.map((a) => a.label).join(", ")} 은 테스트를 고쳐서 뒤로 뺐어요.`);
   return bits.join(" ");
 }
+/** "7/7" from the check output of the common test runners (node:test, jest, vitest, pytest); null when it can't be read. */
+export function testSummary(a: AgentRun): string | null {
+  const out = a.check?.output ?? "";
+  let m;
+  if ((m = /^# tests (\d+)[\s\S]*?^# pass (\d+)/m.exec(out))) return `${m[2]}/${m[1]}`;
+  if ((m = /Tests:\s+(?:(\d+) failed, )?(\d+) passed, (\d+) total/.exec(out))) return `${m[2]}/${m[3]}`;
+  if ((m = /Tests\s+(?:(\d+) failed \| )?(\d+) passed(?: \| \d+ \w+)? \((\d+)\)/.exec(out))) return `${m[2]}/${m[3]}`;
+  if ((m = /(?:(\d+) failed, )?(\d+) passed/.exec(out))) return `${m[2]}/${Number(m[1] ?? 0) + Number(m[2])}`;
+  return null;
+}
+
+/** Tracks a CSS media query. */
+export function useMedia(query: string): boolean {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const h = () => setOn(mq.matches);
+    h();
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, [query]);
+  return on;
+}
+
 /** Re-renders every `ms` while `enabled`, returning the current time. */
 export function useNow(ms = 1000, enabled = true): number {
   const [now, setNow] = useState(() => Date.now());

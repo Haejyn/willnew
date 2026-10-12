@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Api, Channel, ChatMessage, Run } from "./api";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
-import { Avatar, MiniRail, Modal, Rail, Spinner, Tag, agentState, useToast } from "./ui";
+import { Moon, runPhase } from "./moon";
+import { Avatar, Modal, Spinner, Tag, agentState, useToast } from "./ui";
 import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type User } from "./util";
 
 const EXAMPLES = ["@willnew 버그 수정: duration 테스트 실패", "@willnew 테스트 작성: 환불 API 경계값", "@willnew 리팩터링: 날짜 포맷 함수 통합"];
@@ -176,11 +177,11 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
         <span className="lab">이 채널에서 맡긴 일</span>
         <div className="side-list">
           {mine.slice(0, 6).map((r) => (
-            <a key={r.id} className={`row ${r.review.status === "pending" ? "turn" : ""}`} href={`#/runs/${r.id}`}>
-              <span className="row-title">{r.triage?.title ?? r.title}</span>
-              <span className="row-meta">
-                <MiniRail run={r} />
-                {r.review.status === "pending" ? "내 차례" : r.review.status === "approved" ? "병합됨" : r.review.status === "rejected" ? "반려" : r.agents.some(isActive) ? "진행 중" : "끝남"}
+            <a key={r.id} className="rr" href={`#/runs/${r.id}`}>
+              <Moon phase={runPhase(r).phase} size={14} />
+              <span className="rr-main">
+                <span className="rr-title">{r.triage?.title ?? r.title}</span>
+                <span className="rr-meta">{runPhase(r).label}</span>
               </span>
             </a>
           ))}
@@ -277,6 +278,7 @@ function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: 
         <Spinner size={12} />
       </div>
     );
+  const phase = runPhase(run, now);
   const winner = suggestWinner(run);
   const cost = run.agents.reduce((s, a) => s + (a.usage.costUsd ?? 0), 0) + (run.triage?.costUsd ?? 0);
   const decide = async (decision: "approve" | "reject") => {
@@ -294,12 +296,15 @@ function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: 
   return (
     <div className={`runcard ${run.review.status === "pending" ? "turn" : ""}`}>
       <div className="rc-head">
+        <Moon phase={phase.phase} size={20} />
         <b>{run.triage?.title ?? run.title}</b>
         <span className="mono dim small">
           {fmtDuration(run.agents.length ? Math.max(...run.agents.map((a) => (a.endedAt ?? now) - (a.startedAt ?? run.createdAt))) : 0)} · {fmtCost(cost)}
         </span>
       </div>
-      <Rail run={run} now={now} />
+      <div className="rc-phase">
+        {phase.label} · {phase.detail}
+      </div>
       <div className="rc-agents">
         {run.agents.map((a) => {
           const st = agentState(a, run.maxAttempts);

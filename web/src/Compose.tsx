@@ -5,7 +5,7 @@ import { AgentMark, IconHistory, IconSend, IconSpark, IconTerminal } from "./ico
 import { Kbd, Spinner, useToast } from "./ui";
 import { TEAM_KO, adapterName, relTime, type User } from "./util";
 
-export function Compose({ api, user, agents, runs, onClose, go, initialChannel }: {
+export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText }: {
   api: Api;
   user: User;
   agents: AgentInfo[] | null;
@@ -13,9 +13,12 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
   onClose: () => void;
   go: (p: string) => void;
   initialChannel?: string;
+  /** 시트 대신 화면 안에 그대로 놓는다(첫 실행) */
+  inline?: boolean;
+  initialText?: string;
 }) {
   const toast = useToast();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText ?? "");
   const [plan, setPlan] = useState<Triage | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -33,10 +36,11 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
       setChannel((cur) => cur || c.find((x) => x.team === user.team)?.id || c[0]?.id || "");
     }).catch(() => undefined);
     area.current?.focus();
+    if (inline) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [api, user.team, onClose]);
+  }, [api, user.team, onClose, inline]);
 
   // instant preview from keyword rules while typing; the planner agent decides for real on send
   useEffect(() => {
@@ -93,10 +97,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
     }
   };
 
-  const recent = (runs ?? []).slice(0, 3);
+  const recent = inline ? [] : (runs ?? []).slice(0, 3);
   return (
-    <div className="modal-back compose-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="compose" role="dialog" aria-modal aria-label="새로 맡기기">
+    <div className={inline ? "compose-inline" : "modal-back compose-back"} onMouseDown={(e) => !inline && e.target === e.currentTarget && onClose()}>
+      <div className="compose" role={inline ? undefined : "dialog"} aria-modal={inline ? undefined : true} aria-label="새로 맡기기">
         <div className="compose-top">
           <label htmlFor="ask" className="lab">
             무엇을 맡길까요
@@ -165,10 +169,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
 
         <div className="compose-foot">
           <span className="hints">
-            <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 맡기고 채널로 <Kbd>esc</Kbd> 닫기
+            <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 맡기고 채널로 {inline ? null : <><Kbd>esc</Kbd> 닫기</>}
           </span>
           <span className="grow" />
-          <button className="btn m" onClick={() => send()} disabled={!text.trim() || busy || !chosen.length}>
+          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || !chosen.length}>
             {busy ? <Spinner size={12} /> : <IconSend size={15} />} 맡기기
           </button>
         </div>

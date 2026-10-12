@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentRun, Api, Preflight } from "./api";
 import { DiffFileView } from "./Diff";
 import { useLiveRun } from "./flow";
-import { AgentMark, IconArrowLeft, IconBranch, IconCheck, IconCheckCircle, IconColumns, IconEye, IconFile, IconFileCode, IconHistory, IconSend, IconTerminal, IconXCircle, Star } from "./icons";
-import { ErrorBox, Kbd, MiniRail, Modal, SlideToApprove, Spinner, Tag, agentState, useToast } from "./ui";
+import { AgentMark, IconArrowLeft, IconBranch, IconCheck, IconCheckCircle, IconColumns, IconEye, IconFile, IconFileCode, IconHistory, IconSend, IconTerminal, IconXCircle } from "./icons";
+import { Moon, runPhase } from "./moon";
+import { ErrorBox, Kbd, Modal, SlideToApprove, Spinner, Tag, agentState, useToast } from "./ui";
 import { fmtCost, fmtDuration, fmtTokens, isActive, parsePatch, suggestWinner, totalTokens, winnerReason, type User } from "./util";
 
 export function Review({ api, id, user, go, initialAgent }: { api: Api; id: string; user: User; go: (p: string) => void; initialAgent?: string }) {
@@ -130,7 +131,9 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
         </a>
         <div className="rv-title">
           <b>{run.triage?.title ?? run.title}</b>
-          <MiniRail run={run} />
+          <span className="rv-phase">
+            <Moon phase={runPhase(run).phase} size={16} /> {runPhase(run).label}
+          </span>
         </div>
         <section>
           <div className="sec-head">
@@ -285,7 +288,7 @@ export function Review({ api, id, user, go, initialAgent }: { api: Api; id: stri
           ) : (
             <>
               <span className="turn-text">
-                <Star size={14} /> 지금 {user.name} 님 차례예요
+                <Moon phase="turn" size={18} /> 지금 {user.name} 님 차례예요
               </span>
               <span className="grow" />
               <button className="btn q" onClick={() => setRejecting(true)}>
