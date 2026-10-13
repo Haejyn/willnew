@@ -6,7 +6,8 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
-import { defaultChannels, templateById } from "./templates.js";
+import { mergedReply, pickReviewer, rejectedReply, reviewMessage } from "./handoff.js";
+import { defaultChannels, templateById, wantsRace, withRace } from "./templates.js";
 import { triage } from "./triage.js";
 import type { AgentSpec, Channel, ChatMessage, Run } from "./types.js";
 
@@ -27,15 +28,15 @@ export class Chat {
   readonly channels: Channel[];
   private messages = new Map<string, ChatMessage[]>();
 
-  constructor(private runs: RunManager, repo: string, private defaultCheck: string) {
+  constructor(private runs: RunManager, repo: string, private defaultCheck: string, reviewers: string[] = []) {
     mkdirSync(CHAT_DIR, { recursive: true });
-    this.channels = defaultChannels(repo);
+    this.channels = defaultChannels(repo, reviewers);
     for (const c of this.channels) {
       const f = join(CHAT_DIR, `${c.id}.json`);
       this.messages.set(c.id, existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : []);
     }
     this.bus.setMaxListeners(200);
-    runs.bus.on("finished", (run: Run) => this.onFinished(run));
+    runs.bus.on("finished", (run: Run) => void this.onFinished(run));
     runs.bus.on("reviewed", (run: Run) => this.onReviewed(run));
   }
 
@@ -58,10 +59,10 @@ export class Chat {
     return this.push({ id: msgId, channel, ts: Date.now(), user: "willnew", bot: true, text, kind, runId });
   }
 
-  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides) {
+  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string) {
     const channel = this.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error("unknown channel");
-    const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, bot: false, text });
+    const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, userTitle: userTitle || undefined, bot: false, text });
     if (!/@willnew\b/i.test(text)) return { message };
 
     const ackId = id();
@@ -75,17 +76,18 @@ export class Chat {
           if (!overrides.agents?.length) plan.agents = t.agents;
         }
         if (overrides?.agents?.length) plan.agents = overrides.agents;
+        else if (wantsRace(text)) plan.agents = withRace(plan.agents);
         if (overrides?.check !== undefined) plan.check = overrides.check;
         const tpl = templateById(plan.template);
         this.bot(channelId,
           `분류 **${tpl.name}** · ${plan.by === "llm" ? "계획 에이전트" : "키워드 규칙"}${plan.durationMs ? ` · ${secs(plan.durationMs)}` : ""}\n` +
           plan.plan.map((s, i) => `${i + 1}. ${s}`).join("\n") +
-          `\n투입 ${plan.agents.map((a) => a.label).join(" · ")}${plan.check ? ` · 검증 \`${plan.check}\`` : ""}`,
+          `\n투입 ${plan.agents.length > 1 ? "겨루기 " : ""}${plan.agents.map((a) => a.label).join(" · ")}${plan.check ? ` · 검증 \`${plan.check}\`` : ""}`,
           "triage", undefined, ackId);
         const run = await this.runs.create({ repo: channel.repo, task: plan.task, title: plan.title, agents: plan.agents,
-          check: plan.check, requester: user, team: team ?? channel.team, template: plan.template, channel: channelId, triage: plan });
+          check: plan.check, requester: user, requesterTitle: userTitle || undefined, team: team ?? channel.team, template: plan.template, channel: channelId, triage: plan });
         this.bot(channelId, run.agents.length > 1
-          ? `작업 시작 · 에이전트 ${run.agents.length}개 병렬 · 워크트리 격리`
+          ? `작업 시작 · 겨루기 ${run.agents.length}개 병렬 · 워크트리 격리`
           : `작업 시작 · ${run.agents[0].label} · 워크트리 격리`, "progress", run.id);
       } catch (e) {
         this.bot(channelId, `시작 실패 · ${(e as Error).message}`, "error");
@@ -94,16 +96,21 @@ export class Chat {
     return { message };
   }
 
-  private onFinished(run: Run) {
+  private async onFinished(run: Run) {
     if (!run.channel) return;
     const lines = run.agents.map((a) => {
       const verdict = a.status !== "done" ? `✗ ${a.status}` : a.check.status === "passed" ? "✓ 검증 통과" : a.check.status === "failed" ? "✗ 검증 실패" : "✓ 완료";
-      return `• ${a.label} — ${verdict} · ${secs(a.durationMs)} · ${money(a.usage.costUsd)}${a.attempt > 1 ? ` · 재시도 ${a.attempt - 1}회` : ""} · +${a.diff.insertions} −${a.diff.deletions}`;
+      return `• ${a.label} · ${verdict} · ${secs(a.durationMs)} · ${money(a.usage.costUsd)}${a.attempt > 1 ? ` · 재시도 ${a.attempt - 1}회` : ""} · +${a.diff.insertions} −${a.diff.deletions}`;
     });
     const w = suggestWinner(run);
     this.bot(run.channel,
       `완료 · ${w ? `추천 **${w.label}** · 승인 시 \`${run.baseBranch}\` 반영` : "반영할 결과 없음"}\n` + lines.join("\n"),
       w ? "review" : "result", run.id);
+    // hand the review to a person: the first channel reviewer who is not the requester
+    const reviewer = w ? pickReviewer(this.channels.find((c) => c.id === run.channel), run.requester) : undefined;
+    if (!w || !reviewer) return;
+    const conflicts = await this.runs.preflight(run.id, w.id).then((p) => p.conflicts).catch(() => null);
+    this.bot(run.channel, reviewMessage(reviewer, w, run.baseBranch, conflicts), "review", run.id);
   }
 
   private onReviewed(run: Run) {
@@ -113,5 +120,7 @@ export class Chat {
     this.bot(run.channel, r.status === "approved"
       ? `승인 · ${r.reviewer} · **${who}** → \`${run.baseBranch}\` 반영${r.comment ? ` · “${r.comment}”` : ""}`
       : `반려 · ${r.reviewer}${r.comment ? ` · “${r.comment}”` : ""}`, "result", run.id);
+    const note = run.agents.find((a) => a.id === r.agentId)?.userNote;
+    this.bot(run.channel, r.status === "approved" ? mergedReply(run, note, r.reviewer) : rejectedReply(run, r.comment), "result", run.id);
   }
 }

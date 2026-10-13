@@ -35,9 +35,9 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; manager?: RunManager }) {
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; manager?: RunManager }) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview });
-  const chat = new Chat(runs, opts.repo, opts.check);
+  const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers);
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const terminals = new Terminals();
@@ -158,8 +158,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/channels", (c) => c.json(chat.channels));
   app.get("/api/channels/:id/messages", (c) => c.json(chat.list(c.req.param("id"))));
   app.post("/api/channels/:id/messages", async (c) => {
-    const { user, text, team, overrides } = await c.req.json();
-    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides));
+    const { user, text, team, overrides, userTitle } = await c.req.json();
+    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
 
