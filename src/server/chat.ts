@@ -129,7 +129,7 @@ export class Chat {
     const pr = run.ship?.mode === "pr";
     const why = r.comment ? ` · “${r.comment}”` : "";
     this.bot(run.channel, r.status === "approved"
-      ? (pr ? `승인 · ${r.reviewer} · ${who} 결과로 PR 을 올려요${why}` : `승인 · ${r.reviewer} · **${who}** → \`${run.baseBranch}\` 반영${why}`)
+      ? (pr ? `${r.reviewer}님이 승인해서 PR을 올려요${why}` : `승인 · ${r.reviewer} · **${who}** → \`${run.baseBranch}\` 반영${why}`)
       : `반려 · ${r.reviewer}${why}`, "result", run.id);
     const note = run.agents.find((a) => a.id === r.agentId)?.userNote;
     if (r.status === "rejected") this.answer(run, rejectedReply(run, r.comment));
@@ -146,7 +146,7 @@ export class Chat {
     const say = (t: string) => this.bot(run.channel!, t, "result");
     if (e === "pr") say(`PR #${s.prNumber} 올렸어요`);
     else if (e === "ci_passed") say(`CI ${s.checks?.length ?? 0}개 통과`);
-    else if (e === "ci_failed") say(/^(git|gh) /.test(failed[0] ?? "") ? `PR 을 올리지 못했어요: ${failed[0]}` : `CI 실패: ${failed.join(", ") || "시간 초과"}. 자동으로 다시 돌리지 않았어요`);
+    else if (e === "ci_failed") say(/^(git|gh) /.test(failed[0] ?? "") ? `PR을 올리지 못했어요: ${failed[0]}` : `CI 실패: ${failed.join(", ") || "시간 초과"}. 자동으로 다시 돌리지 않았어요`);
     else if (e === "merged") {
       say(`${run.baseBranch}에 병합했어요`);
       if (!s.env) this.answer(run, mergedReply(run, note));

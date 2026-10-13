@@ -2088,7 +2088,7 @@ function seedChat() {
     const who = r.review.reviewer ?? "이해준";
     const t = r.review.at!;
     const n = PR_NO[r.id];
-    add(channel, t, "willnew", `승인 · ${who} · claude-sonnet 결과로 PR 을 올려요`, { runId: r.id, kind: "result" });
+    add(channel, t, "willnew", `${who}님이 승인해서 PR을 올려요`, { runId: r.id, kind: "result" });
     add(channel, t + 20 * SEC, "willnew", `PR #${n} 올렸어요`, { runId: r.id, kind: "result" });
     if (r.ship?.stage === "ci_failed") {
       add(channel, t + 3 * MIN, "willnew", "CI 실패: lint. 자동으로 다시 돌리지 않았어요", { runId: r.id, kind: "result" });
@@ -2509,17 +2509,16 @@ export const demoApi: Api = {
     if (!run) return { ok: false, message: "요청을 찾을 수 없어요" };
     const approve = input.decision === "approve";
     const review = { status: approve ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
-    const agent = run.agents.find((a) => a.id === input.agentId);
     // pr 모드: 승인은 바로 기록하고, 병합은 CI 가 끝난 뒤
     if (approve) emitAny(runId, { runId, run: { ship: { mode: "pr", stage: "pr", env: "production", at: Date.now() } } });
     emitAny(runId, { runId, run: { review } });
     const why = input.comment ? ` · “${input.comment}”` : "";
-    botSay(run, approve ? `승인 · ${input.reviewer} · ${agent?.label ?? "결과"} 결과로 PR 을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
+    botSay(run, approve ? `${input.reviewer}님이 승인해서 PR을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
     if (approve) simulateShip(runId, input.agentId, input.reviewer);
     else if (run.channel)
       pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: input.reviewer, bot: false, via: "willnew", text: rejectedReply(run, input.comment), runId, kind: "result" });
     await later(null, 300);
-    return { ok: true, message: approve ? "승인했어요. PR 을 올리고 CI 를 기다려요" : "반려했어요" };
+    return { ok: true, message: approve ? "승인했어요. PR을 올리고 CI를 기다려요" : "반려했어요" };
   },
   async cancel(runId, agentId) {
     const live = lives.get(runId);

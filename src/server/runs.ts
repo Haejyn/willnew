@@ -453,7 +453,7 @@ export class RunManager {
       const a = run.agents.find((x) => x.id === agentId);
       if (a?.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
       // pr mode: the decision is recorded now, merge happens through the PR once CI passes
-      message = pr ? "승인했어요. PR 을 올리고 CI 를 기다려요" : await this.merge(runId, agentId);
+      message = pr ? "승인했어요. PR을 올리고 CI를 기다려요" : await this.merge(runId, agentId);
     }
     if (pr) this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "pr", env: this.shipper.tracksDeploy ? (this.shipper.opts.deployEnv ?? "production") : undefined, at: Date.now() } });
     this.emit(run, undefined, {}, undefined, { review: { status: input.decision === "approve" ? "approved" : "rejected",
