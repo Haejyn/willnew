@@ -2081,7 +2081,7 @@ function seedChat() {
   add("backend", orders.createdAt + 20 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: orders.id, kind: "triage" });
   add("backend", orders.createdAt + 56 * SEC, "willnew", "sonnet 통과. 테스트 9개 모두 통과했어요", { runId: orders.id, kind: "review" });
   add("backend", orders.createdAt + 57 * SEC, "willnew", reviewMessage("이해준", orders.agents[0], "main", false), { runId: orders.id, kind: "review" });
-  add("backend", bySum(orders), "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: orders.id, kind: "result" });
+  add("backend", bySum(orders), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: orders.id, kind: "result" });
   add("backend", bySum(orders) + SEC, "willnew", reply(orders), { runId: orders.id, kind: "result" });
   add("backend", T0 - 9 * MIN, "이해준", "어제 배포 후로 duration 테스트가 전부 빨간불이네요");
   add("backend", T0 - 8 * MIN, "정하늘", "저도 봤어요. parseDuration 이 h 말고 m 이 섞이면 NaN 이 나오는 것 같던데 원인까진 못 봤어요");
@@ -2093,7 +2093,7 @@ function seedChat() {
   add("web", button.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · 에이전트 1개 (sonnet) · npm test", { runId: button.id, kind: "triage" });
   add("web", button.createdAt + 70 * SEC, "willnew", "sonnet 통과. 테스트 26개 모두 통과했어요", { runId: button.id, kind: "review" });
   add("web", button.createdAt + 71 * SEC, "willnew", reviewMessage("이해준", button.agents[0], "main", false), { runId: button.id, kind: "review" });
-  add("web", bySum(button), "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: button.id, kind: "result" });
+  add("web", bySum(button), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: button.id, kind: "result" });
   add("web", bySum(button) + SEC, "willnew", reply(button), { runId: button.id, kind: "result" });
   add("web", bySum(button) + 2 * MIN, "최민재", "오 danger-outline 도 잡아줬네 ㄳ");
 
@@ -2112,7 +2112,7 @@ function seedChat() {
   add("content-ops", readme.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: readme.id, kind: "ack" });
   add("content-ops", readme.createdAt + 3 * SEC, "willnew", "계획: 문서화 · sonnet 이 맡아요", { runId: readme.id, kind: "triage" });
   add("content-ops", readme.createdAt + 36 * SEC, "willnew", "sonnet 이 끝냈어요. 김도윤님, 검토해 주세요", { runId: readme.id, kind: "review" });
-  add("content-ops", bySum(readme), "willnew", "김도윤님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: readme.id, kind: "result" });
+  add("content-ops", bySum(readme), "willnew", "김도윤님이 승인해서 main에 반영했어요.", { runId: readme.id, kind: "result" });
   add("content-ops", bySum(readme) + SEC, "willnew", reply(readme), { runId: readme.id, kind: "result" });
 
   // #cs
@@ -2123,7 +2123,7 @@ function seedChat() {
   add("cs", receipt.createdAt + 19 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: receipt.id, kind: "triage" });
   add("cs", receipt.createdAt + 36 * SEC, "willnew", "sonnet 통과. 테스트 6개 모두 통과했어요", { runId: receipt.id, kind: "review" });
   add("cs", receipt.createdAt + 37 * SEC, "willnew", reviewMessage("이해준", receipt.agents[0], "main", false), { runId: receipt.id, kind: "review" });
-  add("cs", bySum(receipt), "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: receipt.id, kind: "result" });
+  add("cs", bySum(receipt), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: receipt.id, kind: "result" });
   add("cs", bySum(receipt) + SEC, "willnew", reply(receipt), { runId: receipt.id, kind: "result" });
   add("cs", bySum(receipt) + 4 * MIN, "윤서아", "넵 고객님께 안내드릴게요 감사합니다");
   add("cs", T0 - 52 * MIN, "윤서아", "오늘 환불 문의는 이걸로 끝인 듯해요");
@@ -2435,14 +2435,14 @@ export const demoApi: Api = {
     const agent = run.agents.find((a) => a.id === input.agentId);
     if (live) {
       emit(live, { runId, run: { review } });
-      if (agent && input.decision === "approve") emit(live, { runId, agentId: agent.id, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch} 에 반영됨` }, agent: { merged: true } });
+      if (agent && input.decision === "approve") emit(live, { runId, agentId: agent.id, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨` }, agent: { merged: true } });
     } else {
       run.review = review;
       if (agent && input.decision === "approve") agent.merged = true;
     }
     const text =
       input.decision === "approve"
-        ? `${input.reviewer}님이 ${agent?.label ?? "결과"} 를 승인했어요. ${run.baseBranch} 에 반영했어요.`
+        ? `${input.reviewer}님이 승인해서 ${run.baseBranch}에 반영했어요.`
         : `${input.reviewer}님이 반려했어요${input.comment ? `. “${input.comment}”` : ""}`;
     if (run.channel) {
       pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, runId, kind: "result" });

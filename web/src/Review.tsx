@@ -278,7 +278,7 @@ export function Review({ api, id, user, go, initialAgent, watched, onWatch }: { 
           <span className="lab">병합하면</span>
           <ul>
             <li>
-              <span className="mono">--no-ff</span> 로 {run.baseBranch} 에 반영
+              <span className="mono">--no-ff</span> 로 {run.baseBranch}에 반영
             </li>
             {run.channel ? <li>#{run.channel} 스레드에 결과 알림</li> : null}
             <li>지표에 기록 · 워크트리는 지울 때까지 남아요</li>

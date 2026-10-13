@@ -143,7 +143,7 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
       <>
         {direct && winner ? (
           slide ? (
-            <SlideToApprove label={`밀어서 ${winner.label} 를 ${run.baseBranch} 에 병합`} onDone={() => approve(winner.id)} disabled={busy} />
+            <SlideToApprove label={`밀어서 ${run.baseBranch}에 병합`} onDone={() => approve(winner.id)} disabled={busy} />
           ) : (
             <button className="btn m" onClick={() => approve(winner.id)} disabled={busy}>
               {busy ? <Spinner size={12} /> : null}승인

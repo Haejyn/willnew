@@ -430,7 +430,7 @@ export class RunManager {
     if (!run || !agent) throw new Error("not found");
     if (agent.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
     const out = await mergeBranch(run.repo, agent.branch, agent.label);
-    this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch} 에 반영됨` });
+    this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨` });
     return out.trim() || "merged";
   }
 
