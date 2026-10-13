@@ -137,67 +137,115 @@ index 5c2e1a0..e03c9a4 100644
  }
 `;
 
+const PKG_HUNK = `diff --git a/package.json b/package.json
+index 41c09d2..7e83a55 100644
+--- a/package.json
++++ b/package.json
+@@ -14,4 +14,5 @@
+   "dependencies": {
+     "date-fns": "^3.6.0",
++    "date-fns-tz": "^3.1.3",
+     "express": "^4.19.1",
+`;
+
 const PATCH_RENEWAL_S = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
 index 8a41c07..2fd93be 100644
 --- a/src/billing/renewal.js
 +++ b/src/billing/renewal.js
-@@ -3,9 +3,11 @@
-  * anchorDay is the day of month the user signed up on (1-31).
-  */
- export function nextBillingDate(from, anchorDay = from.getDate()) {
--  const d = new Date(from);
+@@ -1,9 +1,12 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
 -  d.setMonth(d.getMonth() + 1);
 -  return d;
-+  const y = from.getFullYear();
-+  const month = from.getMonth() + 1;
-+  const last = new Date(y, month + 1, 0).getDate();
-+  const day = Math.min(anchorDay, last);
-+  return new Date(y, month, day, from.getHours(), from.getMinutes(), from.getSeconds());
- }
+-}
++import { addMonths } from "date-fns";
++import { fromZonedTime, toZonedTime } from "date-fns-tz";
++import { BILLING_TZ } from "../config.js"; // "Asia/Seoul"
++
++/** 다음 결제일: 가입 시점(anchorAt)에서 n개월 뒤. 짧은 달은 말일, 그다음 달은 다시 가입일 */
++export function nextBillingDate(sub) {
++  const anchor = toZonedTime(sub.anchorAt, BILLING_TZ);
++  return fromZonedTime(addMonths(anchor, sub.periodsBilled + 1), BILLING_TZ);
++}
 
- /** Trial ends 14 days after signup; the first charge is that day. */
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+${PKG_HUNK}`;
+
+/** sonnet after the line comment: uses lib/time.js instead of date-fns-tz, package.json untouched. */
+const PATCH_RENEWAL_S2 = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..5d70e1b 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -1,9 +1,10 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
+-}
++import { addMonths } from "date-fns";
++import { fromKst, toKst } from "../lib/time.js";
++
++/** 다음 결제일: 가입 시점(anchorAt)에서 n개월 뒤. 짧은 달은 말일, 그다음 달은 다시 가입일 */
++export function nextBillingDate(sub) {
++  return fromKst(addMonths(toKst(sub.anchorAt), sub.periodsBilled + 1));
++}
+
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
 `;
 
-/** codex, first attempt: clamps to the month end but uses the current day, so the anchor is lost after February. */
+/** codex, first attempt: adds one month to the previous period end and clamps by hand, so it sticks to the 28th after February. */
 const PATCH_RENEWAL_C1 = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
 index 8a41c07..b3e5d60 100644
 --- a/src/billing/renewal.js
 +++ b/src/billing/renewal.js
-@@ -3,9 +3,10 @@
-  * anchorDay is the day of month the user signed up on (1-31).
-  */
- export function nextBillingDate(from, anchorDay = from.getDate()) {
--  const d = new Date(from);
+@@ -1,9 +1,11 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
 -  d.setMonth(d.getMonth() + 1);
 -  return d;
-+  const next = new Date(from.getFullYear(), from.getMonth() + 1, 1, from.getHours(), from.getMinutes(), from.getSeconds());
-+  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-+  next.setDate(Math.min(from.getDate(), last));
+-}
++/** 다음 결제일: 직전 결제일 + 1개월, 짧은 달은 말일로 */
++export function nextBillingDate(sub) {
++  const cur = new Date(sub.currentPeriodEnd);
++  const last = new Date(cur.getFullYear(), cur.getMonth() + 2, 0).getDate();
++  const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1, cur.getHours(), cur.getMinutes());
++  next.setDate(Math.min(cur.getDate(), last));
 +  return next;
- }
++}
 
- /** Trial ends 14 days after signup; the first charge is that day. */
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
 `;
 
 const PATCH_RENEWAL_C = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
 index 8a41c07..c19a7f4 100644
 --- a/src/billing/renewal.js
 +++ b/src/billing/renewal.js
-@@ -3,9 +3,10 @@
-  * anchorDay is the day of month the user signed up on (1-31).
-  */
- export function nextBillingDate(from, anchorDay = from.getDate()) {
--  const d = new Date(from);
+@@ -1,9 +1,12 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
 -  d.setMonth(d.getMonth() + 1);
 -  return d;
-+  const next = new Date(from.getFullYear(), from.getMonth() + 1, 1, from.getHours(), from.getMinutes(), from.getSeconds());
-+  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-+  next.setDate(Math.min(anchorDay, last));
-+  return next;
- }
+-}
++import { addMonths } from "date-fns";
++import { fromZonedTime, toZonedTime } from "date-fns-tz";
++import { BILLING_TZ } from "../config.js";
++
++/** 다음 결제일: 가입 시점 anchorAt 기준 n개월 뒤 (BILLING_TZ) */
++export function nextBillingDate(sub) {
++  const base = toZonedTime(sub.anchorAt, BILLING_TZ);
++  return fromZonedTime(addMonths(base, sub.periodsBilled + 1), BILLING_TZ);
++}
 
- /** Trial ends 14 days after signup; the first charge is that day. */
-`;
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+${PKG_HUNK}`;
 
 /** settlement-batch: dedupe in three places → one helper. The tests imported a private helper, so the agent edited a test. */
 const PATCH_SETTLE_S = `diff --git a/settle/dedupe.py b/settle/dedupe.py
@@ -687,12 +735,12 @@ const CHECK_FAIL = nodeOut(
   "61.3",
 );
 
-const RENEWAL_TESTS = names(["mid-month", "jan 31 → feb 28", "leap year jan 31 → feb 29", "keeps anchor day: feb 28 → mar 31", "dec → jan next year", "30th in april", "trial end"]);
+const RENEWAL_TESTS = names(["3/15 → 4/15", "1/31 → 2/28", "윤년 1/31 → 2/29", "2월 다음 3/31 복귀", "12/31 → 1/31", "KST 자정 직후 가입", "체험 14일 뒤 첫 결제"]);
 const CHECK_RENEWAL_OK = nodeOut("billing-api@2.3.0", RENEWAL_TESTS, undefined, "46.1");
 const CHECK_RENEWAL_FAIL = nodeOut(
   "billing-api@2.3.0",
   RENEWAL_TESTS,
-  { i: 3, at: "src/billing/renewal.test.js:24:1", err: ["AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:", "", "'2026-03-28' !== '2026-03-31'", "", "    at TestContext.<anonymous> (file:///./src/billing/renewal.test.js:27:10)", "    at Test.runInAsyncScope (node:async_hooks:206:9)"] },
+  { i: 3, at: "src/billing/renewal.test.js:31:1", err: ["AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:", "", "'2027-03-28' !== '2027-03-31'", "", "    at TestContext.<anonymous> (file:///./src/billing/renewal.test.js:36:10)", "    at Test.runInAsyncScope (node:async_hooks:206:9)"] },
   "53.8",
 );
 
@@ -903,10 +951,12 @@ function durationScenario(channel: string, requester: string, team: string, text
 }
 
 const RENEWAL_SONNET_SUMMARY =
-  "원인은 `nextBillingDate` 의 `setMonth(getMonth() + 1)` 이에요. 1월 31일에서 한 달을 더하면 2월 31일이 되고, JS 가 이걸 3월 3일로 넘겨 버립니다. 다음 달 말일을 구해 가입일(anchorDay)과 비교해 작은 쪽을 쓰도록 고쳤고, 3월에는 다시 31일로 돌아와요. 테스트는 건드리지 않았고 7개 모두 통과.";
-const RENEWAL_CODEX_SUMMARY_1 = "nextBillingDate 가 월말을 넘기지 않도록 말일로 맞췄습니다.";
+  "원인은 nextBillingDate 가 직전 결제일(currentPeriodEnd)에 setMonth(+1) 을 하는 것이에요. 1/31 이 2/31 이 되고 JS 가 3/3 으로 넘깁니다. 서버 시간대(UTC)로 계산하는 점도 어긋나 있었어요. 가입 시점(anchorAt)을 서울 시간대로 바꿔 addMonths 로 n개월 뒤를 구하게 했고, 짧은 달은 date-fns 가 말일로 맞춰서 3월에는 다시 31일이 됩니다. KST 변환용으로 date-fns-tz 를 package.json 에 추가했어요. 테스트는 그대로, 7개 통과.";
+const RENEWAL_SONNET_SUMMARY_2 =
+  "date-fns-tz 를 빼고 lib/time.js 의 toKst / fromKst 로 바꿨어요. package.json 은 원래대로 돌렸고, 계산 기준은 그대로 가입 시점(anchorAt) 이에요. 7개 통과.";
+const RENEWAL_CODEX_SUMMARY_1 = "직전 결제일에 한 달을 더하고, 말일을 넘으면 말일로 맞췄습니다.";
 const RENEWAL_CODEX_SUMMARY_2 =
-  "1차 시도는 현재 날짜(28일)를 기준으로 잘라서 3월에도 28일로 갱신됐습니다. 가입일 anchorDay 를 기준으로 말일과 비교하도록 고쳤고, 7개 테스트 모두 통과.";
+  "1차 시도는 직전 결제일(2/28) 기준이라 3월에도 28일로 나갔습니다. 기준을 가입 시점 anchorAt 으로 바꾸고, 서울 시간대에서 n개월 뒤를 구하게 했습니다. 7개 테스트 통과.";
 
 /** The composer scenario: a subscription renewal date rolls over after a short month. ~31 s end to end. */
 function renewalSteps(id: string): Step[] {
@@ -916,18 +966,19 @@ function renewalSteps(id: string): Step[] {
     begin(3.8, SONNET, id),
     begin(3.9, CODEX, id),
     ev(5.1, SONNET, "text", "renewal.test.js 와 renewal.js 부터 볼게요.", [3100, 120, 9000]),
-    ev(5.4, CODEX, "text", "갱신일 계산 함수와 테스트를 먼저 확인하겠습니다.", [5200, 90, 4000]),
+    ev(5.4, CODEX, "text", "결제일 계산 함수와 테스트를 먼저 확인하겠습니다.", [5200, 90, 4000]),
     ev(6.1, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.test.js"}', [1800, 60, 12000]),
     ev(6.6, CODEX, "tool", "shell cat src/billing/renewal.test.js src/billing/renewal.js", [2400, 70, 6000]),
-    ev(6.8, SONNET, "tool_result", cat(['import test from "node:test";', 'import assert from "node:assert/strict";', 'import { nextBillingDate } from "./renewal.js";', "", 'test("jan 31 → feb 28", () => {'])),
+    ev(6.8, SONNET, "tool_result", cat(['import test from "node:test";', 'import assert from "node:assert/strict";', 'import { nextBillingDate } from "./renewal.js";', "", 'test("1/31 → 2/28", () => {'])),
     ev(7.1, CODEX, "tool_result", 'exit 0 import test from "node:test";\nimport assert from "node:assert/strict";\nimport { nextBillingDate } from "./renewal.js";\n'),
     ev(8.2, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.js"}', [1500, 50, 14000]),
-    ev(8.8, SONNET, "tool_result", cat(["/**", " * Next billing date for a monthly plan.", " * anchorDay is the day of month the user signed up on (1-31).", " */", "export function nextBillingDate(from, anchorDay = from.getDate()) {"])),
-    ev(10.2, CODEX, "text", "다음 달 말일을 구해서 날짜가 넘어가지 않게 맞추겠습니다.", [3800, 260, 8000]),
-    ev(11.0, SONNET, "text", "원인 찾았어요: `setMonth(getMonth() + 1)` 이 1월 31일을 2월 31일로 만들고, JS 가 그걸 3월 3일로 넘겨요. 말일로 자르되 기준은 가입일(anchorDay)로 할게요.", [2600, 310, 15000]),
+    ev(8.8, SONNET, "tool_result", cat(["/** 다음 결제일: 직전 결제일에 한 달을 더한다 */", "export function nextBillingDate(sub) {", "  const d = new Date(sub.currentPeriodEnd);", "  d.setMonth(d.getMonth() + 1);", "  return d;"])),
+    ev(10.2, CODEX, "text", "직전 결제일에 한 달을 더하고, 말일을 넘지 않게 맞추겠습니다.", [3800, 260, 8000]),
+    ev(11.0, SONNET, "text", "원인 찾았어요: currentPeriodEnd 에 setMonth(+1) 을 하면 1/31 이 2/31 이 되고 JS 가 3/3 으로 넘겨요. 가입 시점 anchorAt 에서 n개월 뒤를 서울 시간대로 구할게요.", [2600, 310, 15000]),
     ev(13.0, CODEX, "tool", "edit src/billing/renewal.js", [2100, 540, 6000]),
-    ev(13.6, SONNET, "tool", 'Edit {"file_path":"./src/billing/renewal.js","old_string":"d.setMonth(d.getMonth() + 1);","new_string":"const last = new Date(y, month + 1, 0).getDate();"}', [2200, 620, 16000]),
-    ev(14.3, SONNET, "tool_result", "The file ./src/billing/renewal.js has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     6\t  const y = from.getFullYear();\n     7\t  const month = from.getMonth() + 1;"),
+    ev(13.6, SONNET, "tool", 'Edit {"file_path":"./src/billing/renewal.js","old_string":"d.setMonth(d.getMonth() + 1);","new_string":"return fromZonedTime(addMonths(anchor, sub.periodsBilled + 1), BILLING_TZ);"}', [2200, 620, 16000]),
+    ev(14.3, SONNET, "tool_result", "The file ./src/billing/renewal.js has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     6\texport function nextBillingDate(sub) {\n     7\t  const anchor = toZonedTime(sub.anchorAt, BILLING_TZ);"),
+    ev(14.8, SONNET, "tool", 'Edit {"file_path":"./package.json","old_string":"\\"date-fns\\": \\"^3.6.0\\",","new_string":"\\"date-fns\\": \\"^3.6.0\\",\\n    \\"date-fns-tz\\": \\"^3.1.3\\","}', [1400, 90, 17000]),
     ev(15.3, CODEX, "text", RENEWAL_CODEX_SUMMARY_1, [1900, 180, 5000], { patch: { summary: RENEWAL_CODEX_SUMMARY_1, turns: 1 } }),
     checkStart(15.8, CODEX, "npm test", PATCH_RENEWAL_C1),
     ev(16.3, SONNET, "tool", 'Bash {"command":"node --test"}', [1600, 40, 17000]),
@@ -935,10 +986,10 @@ function renewalSteps(id: string): Step[] {
     retryNote(17.9, CODEX, 2),
     ev(18.0, SONNET, "tool_result", CHECK_RENEWAL_OK.split("\n").slice(3).join("\n")),
     ev(19.3, SONNET, "text", RENEWAL_SONNET_SUMMARY, [2400, 480, 18000], { patch: { summary: RENEWAL_SONNET_SUMMARY, turns: 6 } }),
-    ev(19.5, CODEX, "text", "2월 28일에서 출발하면 3월에도 28일이 돼요. 말일과 비교하는 값을 현재 날짜가 아니라 가입일 anchorDay 로 바꿉니다.", [6400, 280, 9000], { attempt: 2 }),
+    ev(19.5, CODEX, "text", "2/28 에서 한 달을 더하면 3/28 이에요. 직전 결제일이 아니라 anchorAt 에서 n개월 뒤를 구하도록 바꿀게요. 날짜 계산은 BILLING_TZ 기준으로 합니다.", [6400, 280, 9000], { attempt: 2 }),
     checkStart(19.7, SONNET, "npm test", PATCH_RENEWAL_S),
     checkPass(21.4, SONNET, "0.4", CHECK_RENEWAL_OK),
-    ev(22.1, CODEX, "tool", "edit src/billing/renewal.js", [2300, 610, 7000], { attempt: 2 }),
+    ev(22.1, CODEX, "tool", "edit src/billing/renewal.js package.json", [2300, 610, 7000], { attempt: 2 }),
     ev(24.0, CODEX, "tool", "shell node --test", [1200, 30, 4000], { attempt: 2 }),
     ev(26.5, CODEX, "tool_result", `exit 0 ${CHECK_RENEWAL_OK.split("\n").slice(3, 6).join("\n")}`, undefined, { attempt: 2 }),
     ev(27.6, CODEX, "text", RENEWAL_CODEX_SUMMARY_2, [1700, 350, 5000], { attempt: 2, patch: { summary: RENEWAL_CODEX_SUMMARY_2, turns: 2 } }),
@@ -955,16 +1006,16 @@ function renewalScenario(channel: string, requester: string, team: string, text:
     team,
     text,
     ago,
-    title: "1월 31일 가입자 다음 결제일이 3월 3일로 잡힘",
+    title: "1/31 가입자 다음 결제일이 3/3 으로 잡힘",
     triageMs: 2400,
     plan: [
-      "1월 31일 가입자의 다음 결제일을 재현한다",
-      "src/billing/renewal.js 에서 원인을 찾는다 (테스트는 수정 금지)",
-      "가입일(anchorDay)은 유지하고 짧은 달에는 말일로 맞춘다",
+      "1/31 가입자의 다음 결제일을 재현한다",
+      "결제일 계산이 직전 결제일 기준인지 가입 시점 기준인지 확인한다 (테스트는 수정 금지)",
+      "가입 시점(anchorAt)에서 n개월 뒤를 서울 시간대로 구하게 고친다",
       "npm test 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다",
       "통과한 결과 중 하나를 골라 요청자 검토를 받는다",
     ],
-    task: "Fix nextBillingDate in src/billing/renewal.js so a Jan 31 signup renews on the last day of February. Keep the signup day as the anchor for later months. Do not modify renewal.test.js. Run `npm test` to confirm.",
+    task: "Fix nextBillingDate in src/billing/renewal.js (#431): a Jan 31 subscriber's next billing date comes out as Mar 3. Count n months from the subscription anchor (anchorAt) in the billing time zone instead of adding one month to the previous period end. Short months clamp to the last day and the month after returns to the 31st. Do not modify renewal.test.js. Run `npm test` to confirm.",
     reason: "결제일이 잘못 나오는 버그라 버그 수정 템플릿. 테스트가 판정할 수 있어 두 에이전트를 겨루게 하고 자기 수정 1회를 허용.",
     steps: renewalSteps,
   };
@@ -2001,6 +2052,24 @@ function demoSteer(runId: string, agentId: string, text: string, by: string) {
   if (!wasDone) return;
   const file = a.diff.fileStats?.[0]?.path ?? "./src/index.js";
   const cmd = run.checkCmd || "npm test";
+  if (a.diff.fileStats?.some((x) => x.path === "src/billing/renewal.js") && a.label === "claude-sonnet") {
+    // the renewal demo: the reviewer asks for lib/time.js instead of a new dependency
+    const say2 = (ms: number, kind: AgentEvent["kind"], t: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
+      setTimeout(() => {
+        emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind, text: t, attempt: a.attempt }, agent: patch });
+        if (runPatch) emitAny(runId, { runId, run: runPatch });
+      }, ms);
+    emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind: "plan", text: "추가 지시를 반영해 이어서 작업" }, agent: { status: "running" } });
+    emitAny(runId, { runId, run: { review: { status: "none" } } });
+    say2(1200, "text", "lib/time.js 의 toKst / fromKst 로 바꿀게요. date-fns-tz 는 빼고 package.json 도 원래대로 돌립니다.");
+    say2(2200, "tool", 'Edit {"file_path":"./src/billing/renewal.js"}');
+    say2(2600, "tool_result", "The file ./src/billing/renewal.js has been updated.");
+    say2(3000, "tool", 'Edit {"file_path":"./package.json"}');
+    say2(3300, "tool_result", "The file ./package.json has been updated.");
+    say2(3700, "check", `$ ${cmd}`, { status: "checking", diff: diffOf(PATCH_RENEWAL_S2) });
+    say2(5100, "check", "검증 통과 (exit 0, 0.5 s)", { status: "done", endedAt: Date.now() + 5100, durationMs: (a.durationMs ?? 0) + 5100, summary: RENEWAL_SONNET_SUMMARY_2, check: { status: "passed", exitCode: 0, output: CHECK_RENEWAL_OK, durationMs: 500 } }, { review: { status: "pending" } });
+    return;
+  }
   const say = (ms: number, kind: AgentEvent["kind"], t: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
     setTimeout(() => {
       emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind, text: t, attempt: a.attempt }, agent: patch });
