@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Api, Channel, Run } from "./api";
 import { pickReviewer } from "../../src/server/handoff";
-import { IconPlus } from "./icons";
+import { IconCheck, IconPlus } from "./icons";
 import { Moon, runPhase, type Phase } from "./moon";
 import { ErrorBox } from "./ui";
 import { fmtDuration, isActive, relTime, runElapsed, useNow, type User } from "./util";
@@ -102,6 +102,9 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; now: num
     if (i === 2 && stopped === "empty") return "테스트 통과 못 함";
     return s.label;
   };
+  const complete = phase === "merged";
+  const headline =
+    stopped === "rejected" ? "반영 안 함" : stopped === "empty" ? "테스트를 통과하지 못했어요" : complete ? "반영됨" : phase === "turn" ? `개발자 검토 대기 중${reviewer ? ` (${reviewer})` : ""}` : phase === "run" || phase === "retry" ? "고치는 중" : phase === "check" ? "테스트 확인 중" : "접수했어요";
   const detail =
     stopped === "rejected"
       ? run.review.comment
@@ -110,7 +113,7 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; now: num
       : stopped === "empty"
         ? "에이전트가 테스트를 통과하지 못했어요. 개발자가 다시 확인해요"
         : phase === "merged"
-          ? `${run.baseBranch} 에 합쳐졌어요. 배포는 개발팀에 따로 확인해 주세요`
+          ? `${run.baseBranch}에 합쳐졌어요. 배포는 개발팀에 따로 확인해 주세요`
           : phase === "turn"
             ? reviewer
               ? `${reviewer} 님이 보고 있어요`
@@ -120,7 +123,8 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; now: num
               : "";
 
   return (
-    <article className={`mine-card ${stopped ? "stopped" : ""}`}>
+    <article className={`mine-card ${stopped ? "stopped" : ""} ${complete ? "complete" : ""}`}>
+      <div className={`mine-status s-${stopped ?? phase}`}>{headline}</div>
       <div className="mine-top">
         <h2>{title(run)}</h2>
         <span className="dim small">
@@ -130,10 +134,10 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; now: num
       </div>
       <ol className="mine-track" aria-label="진행 단계">
         {STEPS.map((s, i) => {
-          const state = i < at ? "done" : i === at ? "now" : "todo";
+          const state = complete || i < at ? "done" : i === at ? "now" : "todo";
           return (
             <li key={s.id} className={`mine-step ${state} ${state === "now" && stopped ? "stop" : ""}`} aria-current={state === "now" ? "step" : undefined}>
-              {state === "now" ? <Moon phase={phase} size={20} /> : <span className="dot" aria-hidden />}
+              <span className="mark">{state === "now" ? <Moon phase={phase} size={24} /> : state === "done" ? <IconCheck size={14} /> : null}</span>
               <span className="lab">{label(s, i)}</span>
             </li>
           );

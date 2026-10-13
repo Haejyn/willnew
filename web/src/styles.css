@@ -650,14 +650,22 @@ button.apill:hover { background: var(--ctl); }
 .mine-card { display: flex; flex-direction: column; gap: 14px; padding: 20px 22px; border-radius: var(--r-panel); background: var(--card); }
 .mine-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .mine-top h2 { font-size: var(--fs-body); font-weight: 700; min-width: 0; }
-.mine-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
-.mine-step { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; color: var(--text4); font-size: var(--fs-meta); }
-.mine-step .moon, .mine-step .dot { flex: none; }
-.mine-step .dot { width: 10px; height: 10px; margin: 5px; border-radius: 50%; border: 1.5px solid currentColor; }
-.mine-step.done { color: var(--text3); }
-.mine-step.done .dot { background: currentColor; }
-.mine-step.now { color: var(--text); font-weight: 600; }
+.mine-status { font-size: var(--fs-title); font-weight: 800; line-height: 1.25; }
+.mine-status.s-merged { color: var(--ok); }
+.mine-status.s-rejected, .mine-status.s-empty { color: var(--warn); }
+.mine-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; }
+.mine-step { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding-right: 8px; color: var(--text4); font-size: var(--fs-caption); }
+.mine-step .mark { position: relative; z-index: 1; flex: none; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; border: 2px solid currentColor; background: var(--card); }
+.mine-step:not(:last-child)::after { content: ""; position: absolute; top: 12px; left: 26px; right: 0; height: 2px; background: currentColor; opacity: 0.45; }
+.mine-step.done { color: var(--text2); }
+.mine-step.done .mark { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.mine-step.done:not(:last-child)::after { background: var(--accent); opacity: 1; }
+.mine-step.now { color: var(--text); font-weight: 700; }
+.mine-step.now .mark { border: 0; background: none; width: 26px; height: 26px; }
 .mine-step.now.stop { color: var(--warn); }
+.mine-step.now.stop .mark { border: 2px solid var(--warn); background: var(--card); color: var(--warn); }
+.mine-card.complete .mine-step.done .mark { background: var(--ok); border-color: var(--ok); }
+.mine-card.complete .mine-step.done:not(:last-child)::after { background: var(--ok); }
 .mine-step .lab { line-height: 1.35; overflow-wrap: anywhere; }
 .mine-detail { margin: 0; font-size: var(--fs-caption); color: var(--text2); }
 .mine-note { margin: 0; padding: 10px 14px; border-radius: var(--r-card); background: var(--ctl); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; gap: 4px; }
@@ -673,8 +681,9 @@ button.apill:hover { background: var(--ctl); }
 .pop-switch { display: flex; gap: 6px; flex-wrap: wrap; }
 @media (max-width: 767.98px) {
   .mine-card { padding: 16px; }
-  .mine-track { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .mine-step { flex-direction: row; align-items: center; }
+  .mine-track { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .mine-step { flex-direction: row; align-items: center; gap: 12px; }
+  .mine-step:not(:last-child)::after { top: 26px; left: 12px; right: auto; width: 2px; height: 14px; }
   .compose-foot .race-note { display: none; }
 }
 .role-opts { border: 0; margin: 0; padding: 0; min-width: 0; }
