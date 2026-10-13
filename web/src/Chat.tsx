@@ -4,6 +4,7 @@ import type { Api, Channel, ChatMessage, Run } from "./api";
 import { RejectModal, useDecide } from "./Decision";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
+import { DEMO_REQUEST } from "./demo";
 import { Moon, runPhase } from "./moon";
 import { Avatar, ErrorBox, Spinner, Tag, agentState, useToast } from "./ui";
 import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type User } from "./util";
@@ -79,7 +80,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
     if (!v || sending) return;
     setSending(true);
     try {
-      const { message } = await api.postMessage(channelId, user.name, v, user.team);
+      const { message } = await api.postMessage(channelId, user.name, v, user.team, undefined, user.title || undefined);
       setMessages((list) => (list && !list.some((x) => x.id === message.id) ? [...list, message] : list));
       setText("");
       stick.current = true;
@@ -146,7 +147,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
         <div className="composer-wrap">
           {!text ? (
             <div className="examples">
-              {EXAMPLES.map((e) => (
+              {(channelId === "cs" ? [DEMO_REQUEST] : EXAMPLES).map((e) => (
                 <button key={e} className="chip" onClick={() => setText(e)}>
                   {e}
                 </button>
@@ -239,10 +240,11 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
         {!grouped ? (
           <div className="msg-head">
             <b>{m.bot ? "willnew" : m.user}</b>
+            {!m.bot && m.userTitle ? <span className="title-chip">{m.userTitle}</span> : null}
             <span className="dim small">{clockTime(m.ts)}</span>
           </div>
         ) : null}
-        <div className="msg-text">{highlight(m.text)}</div>
+        <div className="msg-text">{highlight(m.text, user.name)}</div>
         {withCard && m.runId ? <RunCard api={api} id={m.runId} user={user} go={go} /> : null}
         {!withCard && m.runId && m.bot ? (
           <a className="msg-link" href={`#/runs/${m.runId}`}>
@@ -254,15 +256,16 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
   );
 }
 
-function highlight(text: string) {
+/** @willnew 와 내 이름 멘션은 눈에 띄게, 다른 사람 멘션은 은은하게 */
+function highlight(text: string, me: string) {
   return text.split("\n").map((line, li) => (
     <span key={li} className="msg-line">
-      {line.split(/(@willnew|`[^`]+`|\*\*[^*]+\*\*)/g).map((p, i) =>
+      {line.split(/(@[\p{L}\p{N}_]+|`[^`]+`|\*\*[^*]+\*\*)/gu).map((p, i) =>
         p.startsWith("**") && p.endsWith("**") && p.length > 4 ? (
           <b key={i}>{p.slice(2, -2)}</b>
-        ) : p === "@willnew" ? (
-          <span key={i} className="mention">
-            @willnew
+        ) : p.length > 1 && p.startsWith("@") ? (
+          <span key={i} className={`mention ${p === `@${me}` ? "me" : ""}`}>
+            {p}
           </span>
         ) : p.startsWith("`") && p.endsWith("`") && p.length > 2 ? (
           <code key={i}>{p.slice(1, -1)}</code>
@@ -313,7 +316,14 @@ function RunCardBody({ api, run, user, go, now }: { api: Api; run: Run; user: Us
         })}
       </div>
       <div className="row-btns">
-        {run.review.status === "pending" ? (
+        {run.review.status === "pending" && user.role === "requester" ? (
+          <>
+            <span className="dim small">개발자 검토 대기</span>
+            <a className="btn" href={`#/runs/${run.id}`}>
+              작업 공간에서 보기
+            </a>
+          </>
+        ) : run.review.status === "pending" ? (
           <>
             {/* 테스트 파일을 고친 결과는 바로 병합하지 않고 검토를 거친다 */}
             {winner && !tested ? (

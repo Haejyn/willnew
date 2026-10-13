@@ -75,21 +75,29 @@ export const TEMPLATE_KO: Record<string, string> = {
   refactor: "리팩터링",
   docs: "문서화",
 };
-export const TEAM_KO: Record<string, string> = { platform: "플랫폼", data: "데이터", "content-ops": "콘텐츠 운영" };
+export const TEAM_KO: Record<string, string> = { platform: "플랫폼", data: "데이터", "content-ops": "콘텐츠 운영", cs: "CS" };
 
+/** 계정은 없다. 이 브라우저에 저장된 이름 · 팀 · 역할 · 직함이 전부다. */
+export type Role = "dev" | "requester";
 export interface User {
   name: string;
   team: string;
+  /** dev: 검토하고 승인 · requester: 맡기고 결과 받기 */
+  role: Role;
+  /** 자유 표기: "CS", "백엔드", "PM" */
+  title: string;
 }
+export const ROLE_KO: Record<Role, string> = { dev: "개발자: 검토하고 승인", requester: "요청자: 맡기고 결과 받기" };
+export const DEFAULT_USER: User = { name: "이해준", team: "platform", role: "dev", title: "" };
 const USER_KEY = "willnew.user";
 export function loadUser(): User {
   try {
     const u = JSON.parse(localStorage.getItem(USER_KEY) ?? "null");
-    if (u?.name && u?.team) return u;
+    if (u?.name && u?.team) return { ...DEFAULT_USER, ...u, role: u.role === "requester" ? "requester" : "dev", title: typeof u.title === "string" ? u.title : "" };
   } catch {
     /* storage blocked */
   }
-  return { name: "이해준", team: "platform" };
+  return DEFAULT_USER;
 }
 export function saveUser(u: User) {
   try {

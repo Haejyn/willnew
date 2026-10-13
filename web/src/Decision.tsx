@@ -103,7 +103,7 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
   const direct = !!winner && (agentId ? passed : !touched.length && !pf?.conflicts);
   const revise = onRevise ?? (() => go(`/runs/${run.id}/review`));
   useEffect(() => {
-    if (!keys || phase !== "turn") return;
+    if (!keys || phase !== "turn" || user.role === "requester") return;
     const on = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest("textarea, input")) return;
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && direct && winner) void approve(winner.id);
@@ -117,7 +117,10 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
   let info: ReactNode;
   let act: ReactNode = null;
 
-  if (phase === "turn") {
+  if (phase === "turn" && user.role === "requester") {
+    // 요청자는 읽을 수만 있다. 승인은 개발자 몫이라 버튼을 두지 않는다
+    info = <span className="dbar-text">개발자 검토 대기{winner ? ` · ${winner.label} 결과를 개발자가 보고 있어요` : ""}</span>;
+  } else if (phase === "turn") {
     const reason = !winner
       ? "추천할 결과를 고르지 못했어요 · 검토 화면에서 골라 주세요"
       : agentId && !passed

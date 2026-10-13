@@ -645,3 +645,37 @@ button.apill:hover { background: var(--ctl); }
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { transition-duration: 0s !important; animation-duration: 0s !important; }
 }
+
+/* 내 요청 */
+.mine-card { display: flex; flex-direction: column; gap: 14px; padding: 20px 22px; border-radius: var(--r-panel); background: var(--card); }
+.mine-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.mine-top h2 { font-size: var(--fs-body); font-weight: 700; min-width: 0; }
+.mine-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.mine-step { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; color: var(--text4); font-size: var(--fs-meta); }
+.mine-step .moon, .mine-step .dot { flex: none; }
+.mine-step .dot { width: 10px; height: 10px; margin: 5px; border-radius: 50%; border: 1.5px solid currentColor; }
+.mine-step.done { color: var(--text3); }
+.mine-step.done .dot { background: currentColor; }
+.mine-step.now { color: var(--text); font-weight: 600; }
+.mine-step.now.stop { color: var(--warn); }
+.mine-step .lab { line-height: 1.35; overflow-wrap: anywhere; }
+.mine-detail { margin: 0; font-size: var(--fs-caption); color: var(--text2); }
+.mine-note { margin: 0; padding: 10px 14px; border-radius: var(--r-card); background: var(--ctl); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; gap: 4px; }
+.mine-note .lab { font-size: var(--fs-meta); color: var(--text3); }
+.title-chip { align-self: center; padding: 0 8px; height: 18px; display: inline-flex; align-items: center; border-radius: 999px; background: var(--ctl); color: var(--text3); font-size: var(--fs-meta); }
+.mention.me { background: var(--text); color: var(--bg); }
+.chip.race { margin-left: 4px; }
+.race-note { white-space: nowrap; }
+.role-opts { display: flex; flex-direction: column; gap: 6px; }
+.role-opts label { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); color: var(--text2); cursor: pointer; }
+.role-opts input { accent-color: var(--text); }
+.pop-note { margin: 0; font-size: var(--fs-meta); color: var(--text3); line-height: 1.5; }
+.pop-switch { display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 767.98px) {
+  .mine-card { padding: 16px; }
+  .mine-track { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .mine-step { flex-direction: row; align-items: center; }
+  .compose-foot .race-note { display: none; }
+}
+.role-opts { border: 0; margin: 0; padding: 0; min-width: 0; }
+.role-opts legend { padding: 0; margin-bottom: 6px; font-size: var(--fs-caption); color: var(--text2); }

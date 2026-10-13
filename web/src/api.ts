@@ -110,7 +110,7 @@ export interface Api {
   agents(): Promise<AgentInfo[]>;
   channels(): Promise<Channel[]>;
   messages(channel: string): Promise<ChatMessage[]>;
-  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides): Promise<{ message: ChatMessage; reply?: ChatMessage }>;
+  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string): Promise<{ message: ChatMessage; reply?: ChatMessage }>;
   /** instant keyword plan for the compose box */
   plan(text: string): Promise<Triage>;
   /** New or replaced chat messages for one channel (same id = replace). */
@@ -198,7 +198,7 @@ export const httpApi: Api = {
   agents: () => get("/api/agents").then((r) => json<AgentInfo[]>(r)),
   channels: () => get("/api/channels").then((r) => json<Channel[]>(r)),
   messages: (ch) => get(`/api/channels/${enc(ch)}/messages`).then((r) => json<ChatMessage[]>(r)),
-  postMessage: (ch, user, text, team, overrides) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides }).then((r) => json(r)),
+  postMessage: (ch, user, text, team, overrides, userTitle) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides, userTitle }).then((r) => json(r)),
   plan: (text) => post("/api/plan", { text }).then((r) => json<Triage>(r)),
   subscribeChannel: (ch, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/stream`, on),
   templates: () => get("/api/templates").then((r) => json<Template[]>(r)),
