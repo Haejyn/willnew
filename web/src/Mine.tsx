@@ -97,7 +97,10 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; now: num
   const live = run.agents.some(isActive);
 
   const label = (s: Step, i: number) => {
-    if (i === 3) return reviewer ? `${s.label} (${reviewer})` : s.label;
+    if (i === 3) {
+      const text = at > 3 ? "개발자 검토" : s.label;
+      return reviewer ? `${text} (${reviewer})` : text;
+    }
     if (i === 4 && stopped === "rejected") return "반영 안 함";
     if (i === 2 && stopped === "empty") return "테스트 통과 못 함";
     return s.label;
