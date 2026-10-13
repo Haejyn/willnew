@@ -27,7 +27,7 @@ export function PreviewView({ api, run, agent, command }: { api: Api; run: Run; 
     setBusy(true);
     try {
       const r = await api.startPreview(run.id, agent.id);
-      if (r.status === "failed") toast("미리보기가 뜨지 않았어요 — 로그를 확인해 주세요", "err");
+      if (r.status === "failed") toast("미리보기가 뜨지 않았어요", "err");
     } catch (e) {
       toast((e as Error).message, "err");
     } finally {
@@ -47,7 +47,7 @@ export function PreviewView({ api, run, agent, command }: { api: Api; run: Run; 
         ) : null}
         <span className="preview-url mono">{p ? (url || `localhost:${p.port}`) : command || "npm run dev"}</span>
         <span className="grow" />
-        {p?.log ? (
+        {p?.log && p.status !== "failed" ? (
           <button className="btn q sm" onClick={() => setShowLog((s) => !s)}>
             로그
           </button>
@@ -69,11 +69,11 @@ export function PreviewView({ api, run, agent, command }: { api: Api; run: Run; 
         ) : (
           <button className="btn w sm" onClick={start} disabled={busy}>
             {busy ? <Spinner size={12} /> : <IconPlay size={13} />}
-            {p ? "다시 띄우기" : "이 결과로 띄우기"}
+            {p ? "다시 시작" : "이 결과로 띄우기"}
           </button>
         )}
       </div>
-      {showLog && p ? <pre className="preview-log mono">{p.log}</pre> : null}
+      {showLog && p && p.status !== "failed" ? <pre className="preview-log mono">{lastLines(p.log, 20)}</pre> : null}
       <div className="preview-frame">
         {p?.status === "ready" ? (
           url ? (
@@ -83,8 +83,12 @@ export function PreviewView({ api, run, agent, command }: { api: Api; run: Run; 
           )
         ) : p?.status === "starting" ? (
           <div className="pane-empty">
-            <Spinner size={16} />
             <span>워크트리에서 개발 서버를 띄우는 중이에요</span>
+          </div>
+        ) : p?.status === "failed" ? (
+          <div className="preview-fail">
+            <b>미리보기가 뜨지 않았어요</b>
+            <pre className="preview-log mono">{lastLines(p.log, 20) || "로그가 없어요"}</pre>
           </div>
         ) : (
           <div className="pane-empty">
@@ -95,6 +99,9 @@ export function PreviewView({ api, run, agent, command }: { api: Api; run: Run; 
     </div>
   );
 }
+
+/** 로그 끝 n줄 — 왜 안 떴는지는 보통 마지막에 있다 */
+const lastLines = (log: string | undefined, n: number) => (log ?? "").trimEnd().split(/\r?\n/).slice(-n).join("\n");
 
 const demoPage = (label: string) => `<!doctype html><meta charset="utf-8"><style>
 body{margin:0;font:15px/1.6 system-ui,sans-serif;background:#f7f7f8;color:#111;padding:28px}

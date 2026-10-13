@@ -11,17 +11,17 @@ function themeFromCss() {
   return {
     background: "rgba(0,0,0,0)",
     foreground: v("--text2", "#c9d1d9"),
-    cursor: v("--accent", "#58a6ff"),
+    cursor: v("--text", "#e6edf3"),
     cursorAccent: v("--bg", "#0d1117"),
-    selectionBackground: "rgba(255,255,255,0.2)",
+    selectionBackground: v("--sel", "#3d444d"),
     black: "#21262d",
     brightBlack: v("--text4", "#7d8590"),
     green: v("--ok", "#3fb950"),
     brightGreen: v("--ok", "#3fb950"),
     red: v("--danger", "#f85149"),
     brightRed: v("--danger", "#f85149"),
-    yellow: v("--accent", "#58a6ff"),
-    brightYellow: v("--accent", "#58a6ff"),
+    yellow: v("--warn", "#d29922"),
+    brightYellow: v("--warn", "#d29922"),
   };
 }
 

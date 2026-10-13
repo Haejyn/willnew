@@ -1,6 +1,6 @@
 # willnew
 
-팀 AI 에이전트 플랫폼. 채널에서 `@willnew` 로 맡기면 계획 에이전트가 나누고, Claude Code · Codex 가 각자 git 워크트리에서 동시에 일하고, **테스트를 통과한 결과만** 사람에게 올라와 승인으로 병합됩니다.
+AI 에이전트에게 일을 맡기고, **테스트를 통과한 결과 하나만** 받는 팀 도구. 채널에서 `@willnew` 로 한 줄 남기면 Claude Code · Codex 가 각자 git 워크트리에서 겨루고, 검증을 통과한 것만 사람에게 올라옵니다. 사람은 승인 · 고쳐 달라 · 반려 중 하나만 고릅니다.
 
 ![tests](https://img.shields.io/badge/tests-20%20passed-16a34a)
 ![node](https://img.shields.io/badge/node-%E2%89%A520-339933)
@@ -8,6 +8,30 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
 ![willnew](docs/media/demo.gif)
+
+## 만든 이유
+
+에이전트에게 일을 시키는 건 이미 쉽습니다. 어려운 건 결과를 받는 쪽입니다. 에이전트 여러 개를 돌리면 사람이 터미널과 워크트리를 지켜보고, 테스트가 깨진 결과까지 열어 보고, 끝나면 남은 브랜치를 치웁니다.
+
+willnew 는 사람이 보는 순간을 줄입니다.
+
+- **던지고 잊는다** — 한 줄로 맡기면 계획, 겨루기, 테스트, 실패 시 한 번 자기 수정, `main` 충돌 확인까지 알아서 합니다
+- **통과한 것만, 하나만** — 검증을 못 넘은 결과는 올라오지 않습니다. 통과한 것 중 하나를 근거와 함께 추천합니다. 테스트 파일을 고쳐서 통과한 결과는 따로 표시하고, 바로 승인하지 않고 검토를 거치게 합니다
+- **결정만 한다** — 승인하면 `main` 에 병합합니다. 워크트리는 지울 때까지 남아 다시 열어 볼 수 있습니다
+
+## 달
+
+맡긴 일은 달처럼 차오릅니다. 보름달이 뜨면 사람 차례입니다.
+
+| | 단계 |
+|---|---|
+| 삭 → 초승 | 읽는 중 → 계획 |
+| 반달 | 에이전트가 일하는 중 |
+| 볼록 | 검증 중 (실패하면 한 번 다시) |
+| **보름** | **내 차례** — 통과한 결과와 추천 |
+| 흐린 보름 · 그믐 | 병합 · 반려 |
+
+첫 화면 "내 차례" 에는 보름달만 올라옵니다. 화면에서 빛나는 건 보름달과 그 승인 버튼뿐이고, 나머지는 열어 보지 않아도 됩니다.
 
 ## 혼자 쓰는 에이전트 도구와 다른 점
 
@@ -31,15 +55,17 @@
 
 ## 화면
 
-| 작업 공간 — 실행 중, 자기 수정 | 터미널 · 미리보기 |
+| 내 차례 — 보름달만 올라와요 | 작업 공간 — 차오르는 중, 자기 수정 |
 |---|---|
-| ![workspace](docs/shots/workspace.png) | ![ide](docs/shots/ide.png) |
-| **검토 · 승인 — 줄 댓글, 병합 전 확인** | **새로 맡기기 (⌘K)** |
-| ![review](docs/shots/review.png) | ![compose](docs/shots/compose.png) |
-| **팀 채널** | **지표 (실측 3건)** |
-| ![chat](docs/shots/chat.png) | ![metrics](docs/shots/metrics.png) |
+| ![home](docs/shots/home.png) | ![workspace](docs/shots/workspace.png) |
+| **에이전트 칸 — 결과를 띄워 직접 눌러 보기** | **검토 · 승인 — 줄 댓글, 결정 바** |
+| ![ide](docs/shots/ide.png) | ![review](docs/shots/review.png) |
+| **새로 맡기기 (⌘K) — 계획 한 줄 미리보기** | **팀 채널** |
+| ![compose](docs/shots/compose.png) | ![chat](docs/shots/chat.png) |
+| **지표 — 데모 데이터** | |
+| ![metrics](docs/shots/metrics.png) | |
 
-<img src="docs/shots/mobile.png" alt="휴대폰 — 내 차례, 밀어서 승인" width="420">
+<img src="docs/shots/mobile.png" alt="휴대폰 — 내 차례" width="420">
 
 스크린샷과 GIF 는 서버 없이 도는 데모 모드(`/?demo`)에 개인 테마를 입혀 찍었습니다. 저장소에는 중립 기본 테마가 들어 있습니다([테마](#테마)).
 
@@ -75,7 +101,8 @@ node dist/server/cli.js serve --repo ../willnew-demo --check "npm test" --previe
 
 | 키 | 동작 |
 |---|---|
-| `⌘K` · `⌘N` | 새로 맡기기 |
+| `⌘K` · `⌘N` | 새로 맡기기 · 기존 요청 검색 |
+| `?` | 단축키 보기 |
 | `⌘1` `⌘2` … | 에이전트 칸으로 이동해 지시 입력 |
 | `↵` | 지시 보내기 |
 | `J` `K` · `C` | 검토에서 다음 · 이전 파일, 줄 댓글 |
@@ -129,6 +156,8 @@ pnpm typecheck   # 서버 + 웹
 - 이어서 지시 · 줄 댓글 다시 맡기기는 오프라인 에이전트로 검증했습니다. 실제 Claude Code(`--resume`) · Codex(`exec resume`) CLI 로는 아직 돌려 보지 않았습니다
 - 터미널은 `@lydell/node-pty` 가 있으면 진짜 PTY, 없으면 줄 편집 없는 간이 셸
 - Codex 는 Windows 에서 `danger-full-access`, 워크트리로 격리. Codex 비용 미보고
+- 승인한 뒤에도 워크트리는 남고, 실행을 지울 때 함께 지워집니다
+- 사용자 계정이 없습니다. 이름은 각자 설정에서 적고, 에이전트는 서버를 띄운 PC 의 Claude · Codex 로그인으로 돕니다. 한 사람의 구독으로 팀원 요청을 처리하는 것은 Anthropic 이용 조건에 맞지 않으므로, 지금은 혼자 또는 각자 자기 서버로 쓰는 용도입니다. 팀원마다 자기 PC 에서 자기 구독으로 실행하는 구조(허브 · 러너)를 설계 중입니다
 - 미구현: Slack 앱 연동, 동시 실행 한도, 원격 실행기
 
 코드는 MIT. 이름 · 로고 · 스크린샷 속 개인 테마는 라이선스에 포함되지 않아요([NOTICE](NOTICE)).

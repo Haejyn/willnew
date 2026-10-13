@@ -1,11 +1,12 @@
-/** 새로 맡기기 (⌘K · ⌘N) — 쓰면 계획 에이전트가 미리 읽은 것을 보여 주고, 바꿀 수 있다. 보내면 팀 채널에 남는다. */
-import { useEffect, useMemo, useRef, useState } from "react";
+/** 새로 맡기기 (⌘K · ⌘N) — 한 줄을 쓰면 계획이 한 줄로 뜨고(눌러서 고친다), 이미 맡긴 일도 같이 찾아 준다. 보내면 팀 채널에 남는다. */
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentInfo, AgentSpec, Api, Channel, Run, Template, Triage } from "./api";
-import { AgentMark, IconHistory, IconSend, IconSpark, IconTerminal } from "./icons";
-import { Kbd, Spinner, useToast } from "./ui";
-import { TEAM_KO, adapterName, relTime, type User } from "./util";
+import { AgentMark, IconChevron, IconSend, IconSpark, IconTerminal } from "./icons";
+import { Moon, runPhase } from "./moon";
+import { Kbd, Spinner, useOutside, useToast } from "./ui";
+import { TEAM_KO, type User } from "./util";
 
-export function Compose({ api, user, agents, runs, onClose, go, initialChannel }: {
+export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText }: {
   api: Api;
   user: User;
   agents: AgentInfo[] | null;
@@ -13,9 +14,12 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
   onClose: () => void;
   go: (p: string) => void;
   initialChannel?: string;
+  /** 시트 대신 화면 안에 그대로 놓는다(첫 실행) */
+  inline?: boolean;
+  initialText?: string;
 }) {
   const toast = useToast();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText ?? "");
   const [plan, setPlan] = useState<Triage | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -24,7 +28,16 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
   const [picked, setPicked] = useState<AgentSpec[] | null>(null);
   const [check, setCheck] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false); // 계획 줄을 눌러 펼친 고치는 칸
+  const [chOpen, setChOpen] = useState(false);
+  const [sel, setSel] = useState(-1); // 찾은 일 중 고른 것
   const area = useRef<HTMLTextAreaElement>(null);
+  const chBox = useRef<HTMLDivElement>(null);
+  const chOpenRef = useRef(false);
+  chOpenRef.current = chOpen;
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useOutside(chBox, chOpen, useCallback(() => setChOpen(false), []));
 
   useEffect(() => {
     api.templates().then(setTemplates).catch(() => undefined);
@@ -33,10 +46,21 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
       setChannel((cur) => cur || c.find((x) => x.team === user.team)?.id || c[0]?.id || "");
     }).catch(() => undefined);
     area.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    if (inline) return;
+    // 채널 메뉴가 열려 있으면 Esc 는 메뉴만 닫는다
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !chOpenRef.current && closeRef.current();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [api, user.team, onClose]);
+  }, [api, user.team, inline]);
+
+  // 입력 높이는 글에 맞춘다
+  useEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    setSel(-1);
+  }, [text]);
 
   // instant preview from keyword rules while typing; the planner agent decides for real on send
   useEffect(() => {
@@ -47,7 +71,6 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
 
   const tplId = template ?? plan?.template ?? "bugfix";
   const tpl = templates.find((t) => t.id === tplId);
-  const chosen = picked ?? tpl?.agents ?? plan?.agents ?? [];
   const checkCmd = check ?? (tpl?.check || plan?.check || "");
   const options = useMemo(() => {
     const out: AgentSpec[] = [];
@@ -57,6 +80,18 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
     return out;
   }, [templates, agents]);
   const installed = new Set((agents ?? []).filter((a) => a.installed).map((a) => a.id));
+  const noAgent = !!agents && !installed.size;
+  // 기본으로 고르는 에이전트는 이 PC 에 있는 것만
+  const base = tpl?.agents ?? plan?.agents ?? [];
+  const chosen = picked ?? (agents ? base.filter((s) => installed.has(s.adapter)) : base);
+
+  // ⌘K 는 검색도 겸한다 — 쓴 글이 이미 맡긴 일 제목에 들어 있으면 최대 3개
+  const q = text.trim().toLowerCase();
+  const found = useMemo(() => (inline || !q ? [] : (runs ?? []).filter((r) => `${r.triage?.title ?? ""} ${r.title}`.toLowerCase().includes(q)).slice(0, 3)), [inline, q, runs]);
+  const goRun = (id: string) => {
+    onClose();
+    go(`/runs/${id}`);
+  };
 
   const toggle = (s: AgentSpec) => {
     const cur = chosen;
@@ -67,7 +102,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
   const send = async (alsoGo = true) => {
     const body = text.trim();
     if (!body || busy || !channel) return;
-    if (!chosen.length) return toast("에이전트를 하나 이상 고르세요", "err");
+    if (!chosen.length) return toast("에이전트를 하나 이상 골라 주세요", "err");
     setBusy(true);
     const t0 = Date.now();
     try {
@@ -76,7 +111,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
         agents: chosen,
         check: checkCmd,
       });
-      toast("맡겼어요 — 계획 에이전트가 읽고 바로 시작해요", "ok");
+      toast("맡겼어요 · 계획 에이전트가 읽고 바로 시작해요", "ok");
       onClose();
       if (!alsoGo) return go(`/chat/${channel}`);
       // the run is created after planning; follow it as soon as it exists
@@ -93,34 +128,57 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
     }
   };
 
-  const recent = (runs ?? []).slice(0, 3);
+  const askId = useId();
+  const chName = channels.find((c) => c.id === channel)?.name;
+  const who = chosen.map((c) => c.label).join(", ");
   return (
-    <div className="modal-back compose-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="compose" role="dialog" aria-modal aria-label="새로 맡기기">
+    <div className={inline ? "compose-inline" : "modal-back compose-back"} onMouseDown={(e) => !inline && e.target === e.currentTarget && onClose()}>
+      <div className="compose" role={inline ? undefined : "dialog"} aria-modal={inline ? undefined : true} aria-label="새로 맡기기">
         <div className="compose-top">
-          <label htmlFor="ask" className="lab">
+          <label htmlFor={askId} className="sr">
             무엇을 맡길까요
           </label>
           <textarea
-            id="ask"
+            id={askId}
             ref={area}
             rows={2}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (found.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                 e.preventDefault();
-                send(!(e.metaKey || e.ctrlKey));
+                setSel((i) => Math.max(-1, Math.min(found.length - 1, i + (e.key === "ArrowDown" ? 1 : -1))));
+              } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (sel >= 0 && found[sel]) goRun(found[sel].id);
+                else send(!(e.metaKey || e.ctrlKey));
               }
             }}
-            placeholder={'예: duration 테스트 7개가 다 깨졌어. "2d3h15m" 같은 복합 시간 파싱 고쳐줘'}
+            placeholder="무엇을 맡길까요"
           />
         </div>
 
-        <div className="compose-plan">
-          <div className="plan-note">
-            <IconSpark size={14} /> {plan ? "계획 에이전트가 미리 읽은 것 · 바꿀 수 있어요" : "쓰기 시작하면 유형 · 에이전트 · 검증을 미리 골라 둬요"}
-          </div>
+        {noAgent ? (
+          <p className="compose-note">
+            이 PC 에 쓸 수 있는 에이전트가 없어요 · Claude Code 나 Codex 를 설치해 주세요{" "}
+            <a href="https://github.com/Haejyn/willnew#실행" target="_blank" rel="noreferrer">
+              설치 안내
+            </a>
+          </p>
+        ) : null}
+
+        {text.trim() ? (
+          <button className="compose-plan" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            <IconSpark size={14} />
+            <span className="plan-text">
+              {tpl?.name ?? "계획"} · {chosen.length ? `${who} ${chosen.length > 1 ? "가 겨뤄요" : "가 맡아요"}` : "에이전트를 골라 주세요"} ·{" "}
+              {checkCmd ? <span className="mono">{checkCmd} 로 확인</span> : <span className="warn-chip">검증 없이 사람이 판단</span>}
+            </span>
+            <IconChevron size={13} />
+          </button>
+        ) : null}
+
+        {open ? (
           <div className="plan-grid">
             <span className="k">유형</span>
             <span className="chips">
@@ -130,24 +188,15 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
                 </button>
               ))}
             </span>
-            <span className="k">채널</span>
-            <span className="chips">
-              {channels.map((c) => (
-                <button key={c.id} className={`chip ${c.id === channel ? "on" : ""}`} aria-pressed={c.id === channel} onClick={() => setChannel(c.id)}>
-                  #{c.name} <span className="dim">{TEAM_KO[c.team] ?? c.team}</span>
-                </button>
-              ))}
-            </span>
             <span className="k">에이전트</span>
             <span className="chips">
               {options.map((s) => {
                 const on = chosen.some((c) => c.label === s.label);
-                const off = agents && !installed.has(s.adapter);
+                const off = !!agents && !installed.has(s.adapter);
                 return (
-                  <button key={s.label} className={`chip ${on ? "on" : ""}`} aria-pressed={on} onClick={() => toggle(s)} title={off ? `${adapterName(s.adapter)} 가 이 PC 에 없어요` : undefined}>
+                  <button key={s.label} className={`chip ${on ? "on" : ""} ${off ? "off" : ""}`} aria-pressed={on} disabled={off && !on} onClick={() => toggle(s)} title={off ? "이 PC 에 없어요" : undefined}>
                     <AgentMark adapter={s.adapter} size={16} />
                     {s.label}
-                    {off ? <span className="dim">· 없음</span> : null}
                   </button>
                 );
               })}
@@ -161,32 +210,43 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel }
               <span className="dim small">실패하면 로그를 붙여 1번 더 · 통과한 결과만 올라와요</span>
             </span>
           </div>
-        </div>
+        ) : null}
 
-        <div className="compose-foot">
-          <span className="hints">
-            <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 맡기고 채널로 <Kbd>esc</Kbd> 닫기
-          </span>
-          <span className="grow" />
-          <button className="btn m" onClick={() => send()} disabled={!text.trim() || busy || !chosen.length}>
-            {busy ? <Spinner size={12} /> : <IconSend size={15} />} 맡기기
-          </button>
-        </div>
-
-        {recent.length ? (
-          <div className="compose-recent">
-            <span className="lab">최근 맡긴 일</span>
-            {recent.map((r) => (
-              <button key={r.id} onClick={() => setText(r.task.replace(/^.*?Request:\s*/s, ""))}>
-                <IconHistory size={14} /> {r.triage?.title ?? r.title}
-                <span className="dim small">
-                  {r.channel ? `#${r.channel} · ` : ""}
-                  {relTime(r.createdAt)} · 다시 쓰기
-                </span>
+        {found.length ? (
+          <div className="compose-found" role="listbox" aria-label="이미 맡긴 일">
+            <span className="lab">이미 맡긴 일</span>
+            {found.map((r, i) => (
+              <button key={r.id} role="option" aria-selected={i === sel} className={i === sel ? "on" : ""} onClick={() => goRun(r.id)}>
+                <Moon phase={runPhase(r).phase} size={14} />
+                <span className="fname">{r.triage?.title ?? r.title}</span>
               </button>
             ))}
           </div>
         ) : null}
+
+        <div className="compose-foot">
+          <div className="menu-wrap" ref={chBox}>
+            <button className="btn sm" aria-haspopup="menu" aria-expanded={chOpen} disabled={!channels.length} onClick={() => setChOpen((o) => !o)}>
+              {chName ? `#${chName}` : "채널"} <IconChevron size={12} />
+            </button>
+            {chOpen ? (
+              <div className="menu up" role="menu">
+                {channels.map((c) => (
+                  <button key={c.id} role="menuitemradio" aria-checked={c.id === channel} onClick={() => { setChannel(c.id); setChOpen(false); }}>
+                    #{c.name} <span className="dim">{TEAM_KO[c.team] ?? c.team}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <span className="hints">
+            <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 채널로 {found.length ? <><Kbd>↑↓</Kbd> 이동</> : null} {inline ? null : <><Kbd>esc</Kbd> 닫기</>}
+          </span>
+          <span className="grow" />
+          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || !chosen.length || noAgent}>
+            {busy ? <Spinner size={12} /> : <IconSend size={15} />} 맡기기
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -2,10 +2,10 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { AgentEvent, AgentRun, Api, Run } from "./api";
 import { DiffAll } from "./Diff";
-import { AgentMark, IconCheckCircle, IconEdit, IconFile, IconHistory, IconSend, IconSpark, IconStop, IconTerminal, IconXCircle, Star } from "./icons";
+import { AgentMark, IconCheckCircle, IconEdit, IconFile, IconHistory, IconSend, IconSpark, IconStop, IconTerminal, IconXCircle } from "./icons";
 import { PreviewView } from "./Preview";
 import { TerminalView } from "./Terminal";
-import { Spinner, Tag, agentState, useToast } from "./ui";
+import { Spinner, agentState, useToast } from "./ui";
 import { agentElapsed, fmtClock, fmtCost, fmtTokens, isActive, shortenPaths, totalTokens, type User } from "./util";
 
 export type PaneTab = "log" | "term" | "diff" | "preview";
@@ -16,6 +16,28 @@ export const TABS: { id: PaneTab; label: string }[] = [
   { id: "preview", label: "미리보기" },
 ];
 
+/** 에이전트 알약 — 이름 + 상태(점 하나). 시도 번호·통과 여부는 상태 글자에 합친다. */
+export function AgentPill({ a, maxAttempts, on, onClick, hint }: { a: AgentRun; maxAttempts: number; on?: boolean; onClick?: () => void; hint?: string }) {
+  const st = agentState(a, maxAttempts);
+  const body = (
+    <>
+      <AgentMark adapter={a.adapter} size={16} />
+      <span className="apill-name">{a.label}</span>
+      <span className={`apill-st s-${st.tone ?? "none"}`}>
+        <i />
+        {st.text}
+      </span>
+    </>
+  );
+  return onClick ? (
+    <button role="tab" aria-selected={!!on} className={`apill ${on ? "on" : ""}`} title={hint} onClick={onClick}>
+      {body}
+    </button>
+  ) : (
+    <span className="apill">{body}</span>
+  );
+}
+
 export function AgentPane({
   api,
   run,
@@ -24,10 +46,10 @@ export function AgentPane({
   user,
   tab,
   onTab,
-  focused,
   onFocus,
   previewCommand,
   inputRef,
+  showName,
 }: {
   api: Api;
   run: Run;
@@ -36,24 +58,29 @@ export function AgentPane({
   user: User;
   tab: PaneTab;
   onTab: (t: PaneTab) => void;
-  focused: boolean;
   onFocus: () => void;
   previewCommand: string;
   inputRef?: (el: HTMLTextAreaElement | null) => void;
+  /** 나란히 볼 때는 칸마다 이름 알약이 필요하다 */
+  showName?: boolean;
 }) {
   const toast = useToast();
-  const st = agentState(a, run.maxAttempts);
   const active = isActive(a);
   const cost = a.usage.costUsd;
-  const holds = active; // this agent holds the turn right now
 
   return (
-    <section className={`pane ${holds ? "holds" : ""} ${focused ? "focused" : ""}`} aria-label={a.label} onMouseDown={onFocus}>
+    <section className="pane" aria-label={a.label} onMouseDown={onFocus}>
       <header className="pane-head">
-        <AgentMark adapter={a.adapter} size={20} />
-        <b className="pane-name">{a.label}</b>
-        <Tag>시도 {a.attempt}</Tag>
-        <Tag tone={st.tone}>{st.text}</Tag>
+        {showName ? <AgentPill a={a} maxAttempts={run.maxAttempts} /> : null}
+        <div className="pane-tabs" role="tablist" aria-label={`${a.label} 보기`}>
+          {TABS.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
+              {t.label}
+              {t.id === "diff" && a.diff.files ? <span className="tab-count">{a.diff.files}</span> : null}
+              {t.id === "preview" && a.preview?.status === "ready" ? <span className="tab-live" /> : null}
+            </button>
+          ))}
+        </div>
         <span className="grow" />
         <span className="pane-meter mono">
           {fmtClock(agentElapsed(a, now))}
@@ -71,15 +98,6 @@ export function AgentPane({
           </button>
         ) : null}
       </header>
-      <div className="pane-tabs" role="tablist" aria-label={`${a.label} 보기`}>
-        {TABS.map((t) => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
-            {t.label}
-            {t.id === "diff" && a.diff.files ? <span className="tab-count">{a.diff.files}</span> : null}
-            {t.id === "preview" && a.preview?.status === "ready" ? <span className="tab-live" /> : null}
-          </button>
-        ))}
-      </div>
       <div className="pane-body">
         {tab === "log" ? <Transcript a={a} active={active} /> : null}
         {tab === "term" ? <TerminalView api={api} run={run} agent={a} /> : null}
@@ -221,7 +239,7 @@ const Line = memo(function Line({ e, startedAt, worktree }: { e: AgentEvent; sta
       <div className="ln steer-ln">
         <span className="ln-t">{t}</span>
         <span className="ln-i">
-          <Star size={12} />
+          <IconSend size={12} />
         </span>
         <span className="ln-x">{text}</span>
       </div>

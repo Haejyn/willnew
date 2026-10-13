@@ -1,7 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentRun, Run } from "./api";
-import { IconCheck, IconX, Star } from "./icons";
-import { fmtDuration, isActive, runElapsed } from "./util";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import type { AgentRun } from "./api";
+import { IconCheck, IconX } from "./icons";
 
 export function Spinner({ size = 12 }: { size?: number }) {
   return <span className="spin" style={{ width: size, height: size }} aria-label="진행 중" />;
@@ -11,11 +10,25 @@ export function Kbd({ children }: { children: ReactNode }) {
   return <kbd className="kbd">{children}</kbd>;
 }
 
+/** Calls `onOut` on a press outside `ref` or on Escape — for popovers and menus. */
+export function useOutside(ref: RefObject<HTMLElement | null>, open: boolean, onOut: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && onOut();
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onOut();
+    document.addEventListener("mousedown", down);
+    window.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      window.removeEventListener("keydown", key);
+    };
+  }, [ref, open, onOut]);
+}
+
 export type Tone = "ok" | "bad" | "now" | "dim" | undefined;
 export function Tag({ tone, mono, children, title }: { tone?: Tone; mono?: boolean; children: ReactNode; title?: string }) {
   return (
     <span className={`tag ${tone ? `t-${tone}` : ""} ${mono ? "mono" : ""}`} title={title}>
-      {tone === "now" ? <Star size={10} /> : null}
       {children}
     </span>
   );
@@ -25,92 +38,6 @@ export function Avatar({ name, size = 28, bot }: { name: string; size?: number; 
   return (
     <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 32 ? 12 : 11 }} aria-hidden>
       {size < 24 ? name.slice(-1) : name.slice(-2)}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------------------------- rail
-
-/**
- * 별자리 레일 — 요청 · 계획 · 실행 · 검증 관문 · 승인. 지금 차례인 단계만 달빛 별.
- * d done · n now · h now (partly) · - todo · g merged · r rejected/no result · f failed then retrying · o done (closed run)
- */
-export type Stage = "d" | "n" | "h" | "-" | "g" | "r" | "f" | "o";
-export const STAGE_NAMES = ["요청", "계획", "실행", "검증 관문", "승인"];
-
-export function runStages(run: Run, now = Date.now()): { states: Stage[]; details: string[] } {
-  const a = run.agents;
-  const planned = !!run.triage || a.length > 0;
-  const working = a.some((x) => x.status === "queued" || x.status === "running" || x.status === "retrying");
-  const checking = a.some((x) => x.status === "checking");
-  const finished = a.length > 0 && !a.some(isActive);
-  const retried = a.some((x) => x.attempt > 1 && isActive(x));
-  const states: Stage[] = ["d", planned ? "d" : "n", "-", "-", "-"];
-  if (planned) states[2] = working ? "h" : "d";
-  if (planned && !working) states[3] = checking ? "n" : finished ? "d" : "-";
-  if (retried && working) states[3] = "f";
-  if (finished) {
-    states[4] = run.review.status === "approved" ? "g" : run.review.status === "rejected" ? "r" : run.review.status === "pending" ? "n" : "r";
-    if (run.review.status === "approved" || run.review.status === "rejected") for (const i of [0, 1, 2, 3]) states[i] = "o";
-  }
-  const passed = a.filter((x) => x.check.status === "passed").length;
-  const details = [
-    run.requester,
-    run.triage ? `${run.triage.by === "llm" ? "계획 에이전트" : "키워드"}${run.triage.durationMs ? ` · ${fmtDuration(run.triage.durationMs)}` : ""}` : a.length ? "직접 맡김" : "읽는 중",
-    a.length ? `에이전트 ${a.length} · ${fmtDuration(runElapsed(run, now))}` : "",
-    run.checkCmd ? (finished || checking ? `${run.checkCmd} · ${passed}/${a.length}` : run.checkCmd) : "검증 없음",
-    run.review.status === "approved"
-      ? `병합 · ${run.review.reviewer ?? ""}`
-      : run.review.status === "rejected"
-        ? `반려 · ${run.review.reviewer ?? ""}`
-        : run.review.status === "pending"
-          ? "사람 차례"
-          : finished
-            ? "반영할 결과 없음"
-            : "사람",
-  ];
-  return { states, details };
-}
-
-function Node({ s, big = true }: { s: Stage; big?: boolean }) {
-  if (s === "n" || s === "h") return <Star size={big ? 16 : 11} className="node-star" />;
-  return <span className={`node n-${s === "-" ? "todo" : s} ${big ? "" : "sm"}`} />;
-}
-
-export function Rail({ run, labels = true, now }: { run: Run; labels?: boolean; now?: number }) {
-  const { states, details } = runStages(run, now);
-  const reached = (s?: Stage) => !!s && s !== "-";
-  return (
-    <ol className={`rail ${labels ? "" : "bare"}`} aria-label="진행 단계">
-      {states.map((s, i) => (
-        <li key={i} className={`stage s-${s === "-" ? "todo" : s}`} aria-current={s === "n" || s === "h" ? "step" : undefined}>
-          <div className="stage-line">
-            <span className="stage-node">
-              <Node s={s} />
-            </span>
-            {i < states.length - 1 ? <span className={`link ${reached(states[i + 1]) ? "on" : ""}`} /> : null}
-          </div>
-          {labels ? (
-            <div className="stage-text">
-              <span className="stage-name">{STAGE_NAMES[i]}</span>
-              {details[i] ? <span className="stage-detail">{details[i]}</span> : null}
-            </div>
-          ) : null}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-export function MiniRail({ run }: { run: Run }) {
-  const { states } = runStages(run);
-  return (
-    <span className="minirail" aria-hidden>
-      {states.map((s, i) => (
-        <span key={i} className="mr-cell">
-          <Node s={s} big={false} />
-        </span>
-      ))}
     </span>
   );
 }
@@ -166,7 +93,7 @@ export function SlideToApprove({ label, onDone, disabled }: { label: string; onD
       }}
     >
       <span className="slide-thumb" style={{ transform: `translateX(${x}px)` }}>
-        <Star size={22} />
+        <IconCheck size={22} />
       </span>
       <span className="slide-label">{label}</span>
     </button>

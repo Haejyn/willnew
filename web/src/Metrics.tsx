@@ -2,7 +2,7 @@ import { AgentMark } from "./icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdapterMetrics, Api, Metrics as M } from "./api";
 import { isDemo } from "./api";
-import { Empty, ErrorBox, Spinner, Tag } from "./ui";
+import { Empty, ErrorBox, Tag } from "./ui";
 import { TEAM_KO, adapterName, fmtCost, fmtDuration, fmtPct, fmtTokens, relTime } from "./util";
 
 type Key = "passRate" | "medianDurationMs" | "avgCost" | "avgTokens" | "avgFilesChanged";
@@ -54,24 +54,25 @@ export function Metrics({ api }: { api: Api }) {
     <div className="page wide">
       <div className="page-head">
         <h1>지표</h1>
-        {isDemo() ? <span className="tag">데모 · 2026-09-30 실측 3건</span> : null}
+        {isDemo() ? <span className="tag">데모 데이터</span> : null}
       </div>
 
       {error && !data ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={load} /> : null}
       {!data && !error ? (
-        <div className="loading">
-          <Spinner size={16} /> 불러오는 중
+        <div className="kpis" aria-busy>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="skel kpi-skel" />
+          ))}
         </div>
       ) : null}
       {data && t && t.requests === 0 ? <Empty title="데이터 없음" /> : null}
 
       {data && t && t.requests > 0 ? (
         <>
-          <div className="kpis five">
-            <Kpi label="맡긴 일" value={String(t.requests)} />
+          <div className="kpis">
+            <Kpi label="요청" value={String(t.requests)} />
             <Kpi label="자동 해결률" value={fmtPct(t.autoResolved / t.requests)} />
             <Kpi label="승인율" value={decided ? fmtPct(t.approved / decided) : "—"} />
-            <Kpi label="절약 시간" value={`${t.estHoursSaved.toFixed(1)}시간`} est sub="템플릿 가정 × 승인 건" />
             <Kpi label="비용" value={fmtCost(t.costUsd)} />
           </div>
 
@@ -231,15 +232,11 @@ export function Metrics({ api }: { api: Api }) {
   );
 }
 
-function Kpi({ label, value, sub, est }: { label: string; value: string; sub?: string; est?: boolean }) {
+function Kpi({ label, value }: { label: string; value: string }) {
   return (
     <div className="kpi">
-      <div className="kpi-l">
-        {label}
-        {est ? <span className="est">추정</span> : null}
-      </div>
+      <div className="kpi-l">{label}</div>
       <div className="kpi-v mono">{value}</div>
-      {sub ? <div className="kpi-s">{sub}</div> : null}
     </div>
   );
 }
@@ -339,6 +336,7 @@ function BarChart({ entries, metric }: { entries: [string, AdapterMetrics][]; me
                   <span>{adapterName(r.id)}</span>
                 </div>
               </foreignObject>
+              <rect x={labelW} y={y + 6} width={plotW} height={rowH - 12} rx={4} className="track" />
               {r.v == null ? (
                 <text x={labelW + 6} y={y + rowH / 2 + 4} className="bna">
                   보고 안 함
