@@ -305,7 +305,7 @@ function RunCardBody({ api, run, user, go, now }: { api: Api; run: Run; user: Us
             <div key={a.id} className="rc-agent">
               <AgentMark adapter={a.adapter} size={20} />
               {a.label}
-              {a.id === winner ? <Tag tone="now">추천</Tag> : null}
+              {a.id === winner && run.agents.length > 1 ? <Tag tone="now">추천</Tag> : null}
               <span className={`mono small rc-res ${st.tone ?? ""}`}>
                 {st.text}
                 {a.durationMs && !isActive(a) ? ` · ${fmtDuration(a.durationMs)}` : ""}

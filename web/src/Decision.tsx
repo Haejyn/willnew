@@ -125,7 +125,9 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
       ? "추천할 결과를 고르지 못했어요 · 검토 화면에서 골라 주세요"
       : agentId && !passed
         ? `${winner.label} 은 검증을 넘기지 못했어요 · 다른 결과를 고르거나 고쳐 달라고 해 주세요`
-        : `${winner.label} ${agentId ? "· " : "추천 · "}${winnerReason(run, winner.id)}`;
+        : run.agents.length === 1
+          ? `${winner.label} · ${winner.attempt > 1 ? `${winner.attempt}차 시도에 통과했어요.` : winnerReason(run, winner.id)}`
+          : `${winner.label} ${agentId ? "· " : "추천 · "}${winnerReason(run, winner.id)}`;
     info = (
       <>
         <span className="dbar-text" title={reason}>{reason}</span>

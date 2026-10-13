@@ -133,7 +133,7 @@ function MoonCard({ api, user, run, now, go }: { api: Api; user: User; run: Run;
           <div className="mc-rec" title={winnerReason(run, winner.id)}>
             <AgentMark adapter={winner.adapter} size={16} />
             <span>
-              {winner.label || adapterName(winner.adapter)} 추천
+              {winner.label || adapterName(winner.adapter)}{run.agents.length > 1 ? " 추천" : ""}
             </span>
             <span className="mono">
               {fmtDuration(winner.durationMs)} · +{winner.diff.insertions} −{winner.diff.deletions}
