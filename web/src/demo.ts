@@ -137,6 +137,68 @@ index 5c2e1a0..e03c9a4 100644
  }
 `;
 
+const PATCH_RENEWAL_S = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..2fd93be 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -3,9 +3,11 @@
+  * anchorDay is the day of month the user signed up on (1-31).
+  */
+ export function nextBillingDate(from, anchorDay = from.getDate()) {
+-  const d = new Date(from);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
++  const y = from.getFullYear();
++  const month = from.getMonth() + 1;
++  const last = new Date(y, month + 1, 0).getDate();
++  const day = Math.min(anchorDay, last);
++  return new Date(y, month, day, from.getHours(), from.getMinutes(), from.getSeconds());
+ }
+
+ /** Trial ends 14 days after signup; the first charge is that day. */
+`;
+
+/** codex, first attempt: clamps to the month end but uses the current day, so the anchor is lost after February. */
+const PATCH_RENEWAL_C1 = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..b3e5d60 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -3,9 +3,10 @@
+  * anchorDay is the day of month the user signed up on (1-31).
+  */
+ export function nextBillingDate(from, anchorDay = from.getDate()) {
+-  const d = new Date(from);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
++  const next = new Date(from.getFullYear(), from.getMonth() + 1, 1, from.getHours(), from.getMinutes(), from.getSeconds());
++  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
++  next.setDate(Math.min(from.getDate(), last));
++  return next;
+ }
+
+ /** Trial ends 14 days after signup; the first charge is that day. */
+`;
+
+const PATCH_RENEWAL_C = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..c19a7f4 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -3,9 +3,10 @@
+  * anchorDay is the day of month the user signed up on (1-31).
+  */
+ export function nextBillingDate(from, anchorDay = from.getDate()) {
+-  const d = new Date(from);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
++  const next = new Date(from.getFullYear(), from.getMonth() + 1, 1, from.getHours(), from.getMinutes(), from.getSeconds());
++  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
++  next.setDate(Math.min(anchorDay, last));
++  return next;
+ }
+
+ /** Trial ends 14 days after signup; the first charge is that day. */
+`;
+
 /** settlement-batch: dedupe in three places → one helper. The tests imported a private helper, so the agent edited a test. */
 const PATCH_SETTLE_S = `diff --git a/settle/dedupe.py b/settle/dedupe.py
 new file mode 100644
@@ -625,6 +687,15 @@ const CHECK_FAIL = nodeOut(
   "61.3",
 );
 
+const RENEWAL_TESTS = names(["mid-month", "jan 31 → feb 28", "leap year jan 31 → feb 29", "keeps anchor day: feb 28 → mar 31", "dec → jan next year", "30th in april", "trial end"]);
+const CHECK_RENEWAL_OK = nodeOut("billing-api@2.3.0", RENEWAL_TESTS, undefined, "46.1");
+const CHECK_RENEWAL_FAIL = nodeOut(
+  "billing-api@2.3.0",
+  RENEWAL_TESTS,
+  { i: 3, at: "src/billing/renewal.test.js:24:1", err: ["AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:", "", "'2026-03-28' !== '2026-03-31'", "", "    at TestContext.<anonymous> (file:///./src/billing/renewal.test.js:27:10)", "    at Test.runInAsyncScope (node:async_hooks:206:9)"] },
+  "53.8",
+);
+
 const WEBHOOK_TESTS = names(["verifies signature", "rejects a bad signature", "handles invoice.paid", "handles invoice.payment_failed", "ignores unknown event types", "skips an already processed event", "processes concurrent duplicates once", "returns 200 on duplicate", "stores the event payload", "rolls back the claim when dispatch throws", "logs the event id", "refund.created", "refund.created twice", "health check"]);
 const CHECK_WEBHOOK = nodeOut("billing-api@2.3.0", WEBHOOK_TESTS, undefined, "81937.2");
 const SUMMARY_TESTS = names(["summarize total", "summarize count", "summary route", "maxAmount", "avgAmount rounds", "route keeps old fields", "empty list", "single item", "negative credit note", "customer filter", "month filter", "csv header"]);
@@ -828,6 +899,74 @@ function durationScenario(channel: string, requester: string, team: string, text
     task: "Find the root cause in duration.js and fix it. Do not modify duration.test.js. Run `npm test` to confirm.",
     reason: "테스트 실패를 고치는 요청이라 버그 수정 템플릿. 테스트가 판정할 수 있어 두 에이전트를 겨루게 하고 자기 수정 1회를 허용.",
     steps: durationSteps,
+  };
+}
+
+const RENEWAL_SONNET_SUMMARY =
+  "원인은 `nextBillingDate` 의 `setMonth(getMonth() + 1)` 이에요. 1월 31일에서 한 달을 더하면 2월 31일이 되고, JS 가 이걸 3월 3일로 넘겨 버립니다. 다음 달 말일을 구해 가입일(anchorDay)과 비교해 작은 쪽을 쓰도록 고쳤고, 3월에는 다시 31일로 돌아와요. 테스트는 건드리지 않았고 7개 모두 통과.";
+const RENEWAL_CODEX_SUMMARY_1 = "nextBillingDate 가 월말을 넘기지 않도록 말일로 맞췄습니다.";
+const RENEWAL_CODEX_SUMMARY_2 =
+  "1차 시도는 현재 날짜(28일)를 기준으로 잘라서 3월에도 28일로 갱신됐습니다. 가입일 anchorDay 를 기준으로 말일과 비교하도록 고쳤고, 7개 테스트 모두 통과.";
+
+/** The composer scenario: a subscription renewal date rolls over after a short month. ~31 s end to end. */
+function renewalSteps(id: string): Step[] {
+  return [
+    bot(0.7, "ack", "받았어요. 계획 세우는 중"),
+    { ...bot(3.1, "triage", "계획: 버그 수정 · sonnet, codex 둘이 겨뤄요 · npm test"), run: {} },
+    begin(3.8, SONNET, id),
+    begin(3.9, CODEX, id),
+    ev(5.1, SONNET, "text", "renewal.test.js 와 renewal.js 부터 볼게요.", [3100, 120, 9000]),
+    ev(5.4, CODEX, "text", "갱신일 계산 함수와 테스트를 먼저 확인하겠습니다.", [5200, 90, 4000]),
+    ev(6.1, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.test.js"}', [1800, 60, 12000]),
+    ev(6.6, CODEX, "tool", "shell cat src/billing/renewal.test.js src/billing/renewal.js", [2400, 70, 6000]),
+    ev(6.8, SONNET, "tool_result", cat(['import test from "node:test";', 'import assert from "node:assert/strict";', 'import { nextBillingDate } from "./renewal.js";', "", 'test("jan 31 → feb 28", () => {'])),
+    ev(7.1, CODEX, "tool_result", 'exit 0 import test from "node:test";\nimport assert from "node:assert/strict";\nimport { nextBillingDate } from "./renewal.js";\n'),
+    ev(8.2, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.js"}', [1500, 50, 14000]),
+    ev(8.8, SONNET, "tool_result", cat(["/**", " * Next billing date for a monthly plan.", " * anchorDay is the day of month the user signed up on (1-31).", " */", "export function nextBillingDate(from, anchorDay = from.getDate()) {"])),
+    ev(10.2, CODEX, "text", "다음 달 말일을 구해서 날짜가 넘어가지 않게 맞추겠습니다.", [3800, 260, 8000]),
+    ev(11.0, SONNET, "text", "원인 찾았어요: `setMonth(getMonth() + 1)` 이 1월 31일을 2월 31일로 만들고, JS 가 그걸 3월 3일로 넘겨요. 말일로 자르되 기준은 가입일(anchorDay)로 할게요.", [2600, 310, 15000]),
+    ev(13.0, CODEX, "tool", "edit src/billing/renewal.js", [2100, 540, 6000]),
+    ev(13.6, SONNET, "tool", 'Edit {"file_path":"./src/billing/renewal.js","old_string":"d.setMonth(d.getMonth() + 1);","new_string":"const last = new Date(y, month + 1, 0).getDate();"}', [2200, 620, 16000]),
+    ev(14.3, SONNET, "tool_result", "The file ./src/billing/renewal.js has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     6\t  const y = from.getFullYear();\n     7\t  const month = from.getMonth() + 1;"),
+    ev(15.3, CODEX, "text", RENEWAL_CODEX_SUMMARY_1, [1900, 180, 5000], { patch: { summary: RENEWAL_CODEX_SUMMARY_1, turns: 1 } }),
+    checkStart(15.8, CODEX, "npm test", PATCH_RENEWAL_C1),
+    ev(16.3, SONNET, "tool", 'Bash {"command":"node --test"}', [1600, 40, 17000]),
+    checkFail(17.5, CODEX, "1.0", CHECK_RENEWAL_FAIL, true),
+    retryNote(17.9, CODEX, 2),
+    ev(18.0, SONNET, "tool_result", CHECK_RENEWAL_OK.split("\n").slice(3).join("\n")),
+    ev(19.3, SONNET, "text", RENEWAL_SONNET_SUMMARY, [2400, 480, 18000], { patch: { summary: RENEWAL_SONNET_SUMMARY, turns: 6 } }),
+    ev(19.5, CODEX, "text", "2월 28일에서 출발하면 3월에도 28일이 돼요. 말일과 비교하는 값을 현재 날짜가 아니라 가입일 anchorDay 로 바꿉니다.", [6400, 280, 9000], { attempt: 2 }),
+    checkStart(19.7, SONNET, "npm test", PATCH_RENEWAL_S),
+    checkPass(21.4, SONNET, "0.4", CHECK_RENEWAL_OK),
+    ev(22.1, CODEX, "tool", "edit src/billing/renewal.js", [2300, 610, 7000], { attempt: 2 }),
+    ev(24.0, CODEX, "tool", "shell node --test", [1200, 30, 4000], { attempt: 2 }),
+    ev(26.5, CODEX, "tool_result", `exit 0 ${CHECK_RENEWAL_OK.split("\n").slice(3, 6).join("\n")}`, undefined, { attempt: 2 }),
+    ev(27.6, CODEX, "text", RENEWAL_CODEX_SUMMARY_2, [1700, 350, 5000], { attempt: 2, patch: { summary: RENEWAL_CODEX_SUMMARY_2, turns: 2 } }),
+    checkStart(28.0, CODEX, "npm test", PATCH_RENEWAL_C, 2),
+    checkPass(29.9, CODEX, "0.5", CHECK_RENEWAL_OK, 2),
+    bot(31.0, "review", "둘 다 통과. sonnet 이 8초 빠르고 변경도 작아서 이걸로 추천해요", { review: { status: "pending" } }),
+  ];
+}
+
+function renewalScenario(channel: string, requester: string, team: string, text: string, ago: number): Scenario {
+  return {
+    channel,
+    requester,
+    team,
+    text,
+    ago,
+    title: "1월 31일 가입자 다음 결제일이 3월 3일로 잡힘",
+    triageMs: 2400,
+    plan: [
+      "1월 31일 가입자의 다음 결제일을 재현한다",
+      "src/billing/renewal.js 에서 원인을 찾는다 (테스트는 수정 금지)",
+      "가입일(anchorDay)은 유지하고 짧은 달에는 말일로 맞춘다",
+      "npm test 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다",
+      "통과한 결과 중 하나를 골라 요청자 검토를 받는다",
+    ],
+    task: "Fix nextBillingDate in src/billing/renewal.js so a Jan 31 signup renews on the last day of February. Keep the signup day as the anchor for later months. Do not modify renewal.test.js. Run `npm test` to confirm.",
+    reason: "결제일이 잘못 나오는 버그라 버그 수정 템플릿. 테스트가 판정할 수 있어 두 에이전트를 겨루게 하고 자기 수정 1회를 허용.",
+    steps: renewalSteps,
   };
 }
 
@@ -1245,9 +1384,9 @@ function launch(sc: Scenario): Run {
   return run;
 }
 
-/** A request typed into the demo composer: the scripted duration race, whatever the text says. */
+/** A request typed into the demo composer: the scripted renewal-date race, whatever the text says. */
 function spawn(channel: string, requester: string, team: string, text: string, ago = 0): Run {
-  return launch(durationScenario(channel, requester, team, text, ago));
+  return launch(renewalScenario(channel, requester, team, text, ago));
 }
 
 // ---------------------------------------------------------------------------------------------- history
@@ -1765,7 +1904,7 @@ function ensureSeed() {
     triageMs: 25100, steps: csvSteps,
   });
   // the scripted race, started a few seconds ago so the first screen can still show it running
-  spawn("backend", "이해준", "platform", "@willnew 어제 배포 이후로 parseDuration 테스트 7개 다 깨짐. 1h30m 같은 거 못 읽는 듯", 4 * SEC);
+  launch(durationScenario("backend", "이해준", "platform", "@willnew 어제 배포 이후로 parseDuration 테스트 7개 다 깨짐. 1h30m 같은 거 못 읽는 듯", 4 * SEC));
 }
 
 // ---------------------------------------------------------------------------------------------- metrics
