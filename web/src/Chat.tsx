@@ -6,6 +6,7 @@ import { useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
 import { DEMO_REQUEST } from "./demo";
 import { Moon, runPhase } from "./moon";
+import { ShipRow } from "./Ship";
 import { Avatar, ErrorBox, Spinner, Tag, agentState, useToast } from "./ui";
 import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type User } from "./util";
 
@@ -80,7 +81,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
     if (!v || sending) return;
     setSending(true);
     try {
-      const { message } = await api.postMessage(channelId, user.name, v, user.team, undefined, user.title || undefined);
+      const { message } = await api.postMessage(channelId, user.name, v, user.team, undefined, user.title || undefined, user.avatar);
       setMessages((list) => (list && !list.some((x) => x.id === message.id) ? [...list, message] : list));
       setText("");
       stick.current = true;
@@ -233,7 +234,7 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
             <Logo size={20} />
           </span>
         ) : (
-          <Avatar name={m.user} size={36} />
+          <Avatar name={m.user} size={36} src={m.userAvatar} />
         )}
       </div>
       <div className="msg-body">
@@ -241,6 +242,7 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
           <div className="msg-head">
             <b>{m.bot ? "willnew" : m.user}</b>
             {!m.bot && m.userTitle ? <span className="title-chip">{m.userTitle}</span> : null}
+            {m.via ? <span className="via-tag">willnew로 보냄</span> : null}
             <span className="dim small">{clockTime(m.ts)}</span>
           </div>
         ) : null}
@@ -315,6 +317,7 @@ function RunCardBody({ api, run, user, go, now }: { api: Api; run: Run; user: Us
           );
         })}
       </div>
+      {run.ship ? <ShipRow ship={run.ship} base={run.baseBranch} /> : null}
       <div className="row-btns">
         {run.review.status === "pending" && user.role === "requester" ? (
           <>

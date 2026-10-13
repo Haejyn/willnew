@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Api, Preflight, Run } from "./api";
 import { IconBell, IconCheck } from "./icons";
 import { Moon, runPhase } from "./moon";
+import { ShipRow } from "./Ship";
 import { Modal, SlideToApprove, Spinner, useToast } from "./ui";
 import { isActive, relTime, suggestWinner, winnerReason, type User } from "./util";
 
@@ -169,11 +170,15 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
     );
   } else if (phase === "merged" || phase === "rejected") {
     const r = run.review;
+    const head = run.ship && r.status === "approved" ? `승인됨 · ${label}` : label === "병합" ? "병합됨" : "반려됨";
     info = (
-      <span className="dbar-text">
-        {label === "병합" ? "병합됨" : "반려됨"} · {r.reviewer} · {relTime(r.at ?? run.createdAt, now)}
-        {r.comment ? <span className="dim"> · “{r.comment}”</span> : null}
-      </span>
+      <>
+        <span className="dbar-text">
+          {head} · {r.reviewer} · {relTime(r.at ?? run.createdAt, now)}
+          {r.comment ? <span className="dim"> · “{r.comment}”</span> : null}
+        </span>
+        {run.ship ? <ShipRow ship={run.ship} base={run.baseBranch} /> : null}
+      </>
     );
   } else {
     info = (

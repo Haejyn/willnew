@@ -135,7 +135,7 @@ export function App() {
   if (route.page === "metrics") page = <Metrics api={api} />;
   else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
-  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} runs={runs} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
   else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
@@ -245,10 +245,12 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(user.name);
   const [title, setTitle] = useState(user.title);
+  const [avatar, setAvatar] = useState(user.avatar ?? "");
   useEffect(() => {
     setName(user.name);
     setTitle(user.title);
-  }, [user.name, user.title]);
+    setAvatar(user.avatar ?? "");
+  }, [user.name, user.title, user.avatar]);
   const box = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useOutside(box, open, close);
@@ -256,14 +258,14 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
   return (
     <div className="me" ref={box}>
       <button className="me-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="설정" data-tip={user.name}>
-        <Avatar name={user.name} size={36} />
+        <Avatar name={user.name} size={36} src={user.avatar} />
       </button>
       {open ? (
         <div className="pop" role="dialog" aria-label="설정">
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (name.trim()) onChange({ ...user, name: name.trim(), title: title.trim() });
+              if (name.trim()) onChange({ ...user, name: name.trim(), title: title.trim(), avatar: avatar.trim() || undefined });
               setOpen(false);
             }}
           >
@@ -284,6 +286,10 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
             <label className="field">
               <span>직함 (자유롭게)</span>
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="CS, 백엔드, PM" maxLength={12} />
+            </label>
+            <label className="field">
+              <span>프로필 이미지 주소 (선택)</span>
+              <input value={avatar} onChange={(e) => setAvatar(e.target.value)} placeholder="https://…" inputMode="url" />
             </label>
             <fieldset className="role-opts">
               <legend>역할</legend>

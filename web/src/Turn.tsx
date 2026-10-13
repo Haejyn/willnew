@@ -5,7 +5,7 @@ import { Compose } from "./Compose";
 import { useDecide } from "./Decision";
 import { AgentMark, IconPlus } from "./icons";
 import { Moon, PHASE_FILL, isDone, runPhase, type Phase } from "./moon";
-import { ErrorBox, Spinner } from "./ui";
+import { Avatar, ErrorBox, Spinner } from "./ui";
 import { adapterName, fmtDuration, isActive, relTime, runElapsed, suggestWinner, testSummary, useNow, winnerReason, type User } from "./util";
 
 const EXAMPLES = [
@@ -127,6 +127,7 @@ function MoonCard({ api, user, run, now, go }: { api: Api; user: User; run: Run;
         </h2>
         <div className="mc-meta">
           {run.channel ? `#${run.channel} · ` : ""}
+          <Avatar name={run.requester} size={18} src={run.requesterAvatar} />
           {run.requester} · {relTime(run.createdAt, now)}
         </div>
         {winner ? (

@@ -118,7 +118,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
         template: tplId,
         agents: chosen,
         check: checkCmd,
-      }, user.title || undefined);
+      }, user.title || undefined, user.avatar);
       toast("맡겼어요 · 계획 에이전트가 읽고 바로 시작해요", "ok");
       onClose();
       if (!alsoGo) return go(`/chat/${channel}`);

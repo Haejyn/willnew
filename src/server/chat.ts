@@ -143,7 +143,7 @@ export class Chat {
     const failed = (s.checks ?? []).filter((c) => c.state === "fail").map((c) => c.name);
     const note = run.agents.find((a) => a.id === run.review.agentId)?.userNote;
     const env = s.env ?? "production";
-    const say = (t: string) => this.bot(run.channel!, t, "result", run.id);
+    const say = (t: string) => this.bot(run.channel!, t, "result");
     if (e === "pr") say(`PR #${s.prNumber} 올렸어요`);
     else if (e === "ci_passed") say(`CI ${s.checks?.length ?? 0}개 통과`);
     else if (e === "ci_failed") say(/^(git|gh) /.test(failed[0] ?? "") ? `PR 을 올리지 못했어요: ${failed[0]}` : `CI 실패: ${failed.join(", ") || "시간 초과"}. 자동으로 다시 돌리지 않았어요`);

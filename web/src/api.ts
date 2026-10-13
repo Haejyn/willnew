@@ -12,13 +12,14 @@ import type {
   Preview,
   Review,
   ReviewComment,
+  Ship,
   Run,
   RunUpdate,
   Template,
   Triage,
 } from "../../src/server/types";
 
-export type { AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
+export type { Ship, AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
 
 export interface AgentInfo {
   id: string;
@@ -103,6 +104,11 @@ export interface ServerConfig {
   repo: string;
   check: string;
   preview: string;
+  /** 승인 뒤 반영 방식: 로컬 병합 또는 PR */
+  ship?: "merge" | "pr";
+  /** 배포 확인 명령이 있는가 */
+  deploy?: boolean;
+  deployEnv?: string;
 }
 
 export interface Api {
@@ -110,7 +116,7 @@ export interface Api {
   agents(): Promise<AgentInfo[]>;
   channels(): Promise<Channel[]>;
   messages(channel: string): Promise<ChatMessage[]>;
-  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string): Promise<{ message: ChatMessage; reply?: ChatMessage }>;
+  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string): Promise<{ message: ChatMessage; reply?: ChatMessage }>;
   /** instant keyword plan for the compose box */
   plan(text: string): Promise<Triage>;
   /** New or replaced chat messages for one channel (same id = replace). */
@@ -198,7 +204,7 @@ export const httpApi: Api = {
   agents: () => get("/api/agents").then((r) => json<AgentInfo[]>(r)),
   channels: () => get("/api/channels").then((r) => json<Channel[]>(r)),
   messages: (ch) => get(`/api/channels/${enc(ch)}/messages`).then((r) => json<ChatMessage[]>(r)),
-  postMessage: (ch, user, text, team, overrides, userTitle) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides, userTitle }).then((r) => json(r)),
+  postMessage: (ch, user, text, team, overrides, userTitle, userAvatar) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides, userTitle, userAvatar }).then((r) => json(r)),
   plan: (text) => post("/api/plan", { text }).then((r) => json<Triage>(r)),
   subscribeChannel: (ch, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/stream`, on),
   templates: () => get("/api/templates").then((r) => json<Template[]>(r)),

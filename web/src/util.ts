@@ -86,6 +86,8 @@ export interface User {
   role: Role;
   /** 자유 표기: "CS", "백엔드", "PM" */
   title: string;
+  /** 프로필 이미지 주소. 없으면 이름 끝 두 글자 */
+  avatar?: string;
 }
 export const ROLE_KO: Record<Role, string> = { dev: "개발자: 검토하고 승인", requester: "요청자: 맡기고 결과 받기" };
 export const DEFAULT_USER: User = { name: "이해준", team: "platform", role: "dev", title: "" };
@@ -93,7 +95,7 @@ const USER_KEY = "willnew.user";
 export function loadUser(): User {
   try {
     const u = JSON.parse(localStorage.getItem(USER_KEY) ?? "null");
-    if (u?.name && u?.team) return { ...DEFAULT_USER, ...u, role: u.role === "requester" ? "requester" : "dev", title: typeof u.title === "string" ? u.title : "" };
+    if (u?.name && u?.team) return { ...DEFAULT_USER, ...u, role: u.role === "requester" ? "requester" : "dev", title: typeof u.title === "string" ? u.title : "", avatar: typeof u.avatar === "string" && u.avatar ? u.avatar : undefined };
   } catch {
     /* storage blocked */
   }

@@ -153,7 +153,7 @@ function Steer({ api, run, a, user, inputRef }: { api: Api; run: Run; a: AgentRu
         rows={1}
         value={text}
         disabled={closed}
-        placeholder={closed ? "병합된 요청이에요" : `${a.label} 에게 이어서 지시…`}
+        placeholder={closed ? "승인된 요청이에요" : `${a.label} 에게 이어서 지시…`}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
