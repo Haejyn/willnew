@@ -28,9 +28,14 @@ export function reviewMessage(reviewer: string, agent: AgentRun | undefined, bas
   return `@${reviewer} 검토 차례예요.${parts.length ? ` ${parts.join(", ")}` : ""}`;
 }
 
-/** Reply to the requester after the merge. It says the change is in the branch, never that it is live. */
-export function mergedReply(run: Pick<Run, "requester">, note: string | undefined, reviewer: string | undefined): string {
-  return `@${run.requester} 반영했어요.${note ? ` ${note}` : ""}${reviewer ? ` (승인: ${reviewer})` : ""}`;
+/** Reply to the requester after the merge. It says the change is in the branch, never that it is live. Sent as the approver. */
+export function mergedReply(run: Pick<Run, "requester">, note: string | undefined): string {
+  return `@${run.requester} 반영했어요.${note ? ` ${note}` : ""}`;
+}
+
+/** Same, once deploy tracking has confirmed the merge commit is live. */
+export function deployedReply(run: Pick<Run, "requester">, note: string | undefined): string {
+  return `@${run.requester} 배포까지 끝났어요.${note ? ` ${note}` : ""}`;
 }
 
 export function rejectedReply(run: Pick<Run, "requester">, comment: string | undefined): string {

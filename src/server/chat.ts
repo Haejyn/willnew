@@ -6,9 +6,10 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
-import { mergedReply, pickReviewer, rejectedReply, reviewMessage } from "./handoff.js";
+import { deployedReply, mergedReply, pickReviewer, rejectedReply, reviewMessage } from "./handoff.js";
 import { defaultChannels, templateById, wantsRace, withRace } from "./templates.js";
 import { triage } from "./triage.js";
+import type { ShipEvent } from "./ship.js";
 import type { AgentSpec, Channel, ChatMessage, Run } from "./types.js";
 
 /** What the person changed in the compose box before sending — wins over the planner's choice. */
@@ -38,6 +39,7 @@ export class Chat {
     this.bus.setMaxListeners(200);
     runs.bus.on("finished", (run: Run) => void this.onFinished(run));
     runs.bus.on("reviewed", (run: Run) => this.onReviewed(run));
+    runs.bus.on("ship", (run: Run, e: ShipEvent) => this.onShip(run, e));
   }
 
   list(channel: string): ChatMessage[] {
@@ -59,10 +61,10 @@ export class Chat {
     return this.push({ id: msgId, channel, ts: Date.now(), user: "willnew", bot: true, text, kind, runId });
   }
 
-  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string) {
+  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string) {
     const channel = this.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error("unknown channel");
-    const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, userTitle: userTitle || undefined, bot: false, text });
+    const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, userTitle: userTitle || undefined, userAvatar: userAvatar || undefined, bot: false, text });
     if (!/@willnew\b/i.test(text)) return { message };
 
     const ackId = id();
@@ -85,7 +87,7 @@ export class Chat {
           `\n투입 ${plan.agents.length > 1 ? "겨루기 " : ""}${plan.agents.map((a) => a.label).join(" · ")}${plan.check ? ` · 검증 \`${plan.check}\`` : ""}`,
           "triage", undefined, ackId);
         const run = await this.runs.create({ repo: channel.repo, task: plan.task, title: plan.title, agents: plan.agents,
-          check: plan.check, requester: user, requesterTitle: userTitle || undefined, team: team ?? channel.team, template: plan.template, channel: channelId, triage: plan });
+          check: plan.check, requester: user, requesterTitle: userTitle || undefined, requesterAvatar: userAvatar || undefined, team: team ?? channel.team, template: plan.template, channel: channelId, triage: plan });
         this.bot(channelId, run.agents.length > 1
           ? `작업 시작 · 겨루기 ${run.agents.length}개 병렬 · 워크트리 격리`
           : `작업 시작 · ${run.agents[0].label} · 워크트리 격리`, "progress", run.id);
@@ -113,14 +115,44 @@ export class Chat {
     this.bot(run.channel, reviewMessage(reviewer, w, run.baseBranch, conflicts), "review", run.id);
   }
 
+  /** The approver's own answer to the requester, sent through willnew (shown with a "willnew로 보냄" tag). */
+  private answer(run: Run, text: string) {
+    const who = run.review.reviewer;
+    if (!run.channel || !who) return;
+    this.push({ id: id(), channel: run.channel, ts: Date.now(), user: who, bot: false, via: "willnew", text, runId: run.id });
+  }
+
   private onReviewed(run: Run) {
     if (!run.channel) return;
     const r = run.review;
     const who = run.agents.find((a) => a.id === r.agentId)?.label ?? "";
+    const pr = run.ship?.mode === "pr";
+    const why = r.comment ? ` · “${r.comment}”` : "";
     this.bot(run.channel, r.status === "approved"
-      ? `승인 · ${r.reviewer} · **${who}** → \`${run.baseBranch}\` 반영${r.comment ? ` · “${r.comment}”` : ""}`
-      : `반려 · ${r.reviewer}${r.comment ? ` · “${r.comment}”` : ""}`, "result", run.id);
+      ? (pr ? `승인 · ${r.reviewer} · ${who} 결과로 PR 을 올려요${why}` : `승인 · ${r.reviewer} · **${who}** → \`${run.baseBranch}\` 반영${why}`)
+      : `반려 · ${r.reviewer}${why}`, "result", run.id);
     const note = run.agents.find((a) => a.id === r.agentId)?.userNote;
-    this.bot(run.channel, r.status === "approved" ? mergedReply(run, note, r.reviewer) : rejectedReply(run, r.comment), "result", run.id);
+    if (r.status === "rejected") this.answer(run, rejectedReply(run, r.comment));
+    else if (!pr) this.answer(run, mergedReply(run, note));
+  }
+
+  /** One short bot line per pipeline stage; the requester hears back from the approver at the last stage. */
+  private onShip(run: Run, e: ShipEvent) {
+    if (!run.channel || !run.ship) return;
+    const s = run.ship;
+    const failed = (s.checks ?? []).filter((c) => c.state === "fail").map((c) => c.name);
+    const note = run.agents.find((a) => a.id === run.review.agentId)?.userNote;
+    const env = s.env ?? "production";
+    const say = (t: string) => this.bot(run.channel!, t, "result", run.id);
+    if (e === "pr") say(`PR #${s.prNumber} 올렸어요`);
+    else if (e === "ci_passed") say(`CI ${s.checks?.length ?? 0}개 통과`);
+    else if (e === "ci_failed") say(/^(git|gh) /.test(failed[0] ?? "") ? `PR 을 올리지 못했어요: ${failed[0]}` : `CI 실패: ${failed.join(", ") || "시간 초과"}. 자동으로 다시 돌리지 않았어요`);
+    else if (e === "merged") {
+      say(`${run.baseBranch}에 병합했어요`);
+      if (!s.env) this.answer(run, mergedReply(run, note));
+    } else if (e === "deployed") {
+      say(`${env} 배포 끝났어요`);
+      this.answer(run, deployedReply(run, note));
+    } else say(`${env} 배포가 확인되지 않았어요. 정해 둔 시간 안에 끝나지 않았어요`);
   }
 }

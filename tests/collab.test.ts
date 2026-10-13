@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { mergedReply, parseUserNote, passedTests, pickReviewer, rejectedReply, reviewMessage } from "../src/server/handoff.js";
+import { deployedReply, mergedReply, parseUserNote, passedTests, pickReviewer, rejectedReply, reviewMessage } from "../src/server/handoff.js";
 import { rulesTriage } from "../src/server/triage.js";
 import { TEMPLATES, wantsRace, withRace } from "../src/server/templates.js";
 import type { AgentRun, ChatMessage, Run } from "../src/server/types.js";
@@ -76,8 +76,9 @@ describe("review handoff words", () => {
     expect(pickReviewer({ reviewers: [] }, "윤서아")).toBeUndefined();
   });
   it("answers the requester after merge or reject", () => {
-    expect(mergedReply({ requester: "윤서아" }, "2/28에 결제돼요.", "이해준")).toBe("@윤서아 반영했어요. 2/28에 결제돼요. (승인: 이해준)");
-    expect(mergedReply({ requester: "윤서아" }, undefined, "이해준")).toBe("@윤서아 반영했어요. (승인: 이해준)");
+    expect(mergedReply({ requester: "윤서아" }, "2/28에 결제돼요.")).toBe("@윤서아 반영했어요. 2/28에 결제돼요.");
+    expect(mergedReply({ requester: "윤서아" }, undefined)).toBe("@윤서아 반영했어요.");
+    expect(deployedReply({ requester: "윤서아" }, "2/28에 결제돼요.")).toBe("@윤서아 배포까지 끝났어요. 2/28에 결제돼요.");
     expect(rejectedReply({ requester: "윤서아" }, "범위가 달라요")).toBe("@윤서아 이번엔 반영하지 않았어요. 사유: 범위가 달라요");
   });
 });
@@ -125,10 +126,14 @@ describe("chat in a channel (stub run manager)", () => {
     expect(texts().some((t) => t === "@이해준 검토 차례예요. 테스트 7개 통과, main과 충돌 없음")).toBe(true);
 
     runs.bus.emit("reviewed", { ...r, review: { status: "approved", reviewer: "이해준", agentId: "a1", at: 2 } });
-    expect(texts().at(-1)).toBe("@윤서아 반영했어요. 2월은 28일에 결제돼요. (승인: 이해준)");
+    const last = () => chat.list("backend").at(-1)!;
+    expect(texts().at(-1)).toBe("@윤서아 반영했어요. 2월은 28일에 결제돼요.");
+    // the answer comes from the approver, sent through willnew
+    expect(last()).toMatchObject({ user: "이해준", bot: false, via: "willnew" });
 
     runs.bus.emit("reviewed", { ...r, review: { status: "rejected", reviewer: "이해준", comment: "범위가 달라요", at: 3 } });
     expect(texts().at(-1)).toBe("@윤서아 이번엔 반영하지 않았어요. 사유: 범위가 달라요");
+    expect(last()).toMatchObject({ user: "이해준", via: "willnew" });
   });
 
   it("does not mention anyone when the requester is the only reviewer", async () => {

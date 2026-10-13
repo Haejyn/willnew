@@ -35,8 +35,8 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; manager?: RunManager }) {
-  const runs = opts.manager ?? new RunManager({ preview: opts.preview });
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager }) {
+  const runs = opts.manager ?? new RunManager({ preview: opts.preview, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers);
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
@@ -60,7 +60,7 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.onError((err, c) => c.json({ error: err.message }, 400));
 
   app.get("/api/agents", (c) => c.json(Object.values(ADAPTERS).map((a) => ({ id: a.id, name: a.name, installed: installed(a) }))));
-  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand }));
+  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand, ship: runs.shipper.mode, deploy: runs.shipper.tracksDeploy, deployEnv: runs.shipper.opts.deployEnv ?? "production" }));
   app.get("/api/runs", (c) => c.json(runs.list().map(lite)));
   app.post("/api/runs", async (c) => {
     const body = (await c.req.json()) as CreateRunInput;
@@ -158,8 +158,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/channels", (c) => c.json(chat.channels));
   app.get("/api/channels/:id/messages", (c) => c.json(chat.list(c.req.param("id"))));
   app.post("/api/channels/:id/messages", async (c) => {
-    const { user, text, team, overrides, userTitle } = await c.req.json();
-    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined));
+    const { user, text, team, overrides, userTitle, userAvatar } = await c.req.json();
+    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
 

@@ -12,6 +12,7 @@ import { basename, join } from "node:path";
 import { ADAPTERS } from "./adapters.js";
 import { addWorktree, commitAll, diffSummary, mergeBranch, mergeConflicts, removeWorktree, repoInfo } from "./git.js";
 import { parseUserNote, USER_NOTE_RULE } from "./handoff.js";
+import { Shipper, type ShipOptions } from "./ship.js";
 import type { AgentEvent, AgentRun, CreateRunInput, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
 
 export const HOME = process.env.WILLNEW_HOME ?? join(homedir(), ".willnew");
@@ -49,7 +50,10 @@ export class RunManager {
   private interrupted = new Set<string>();
   private previews = new Map<string, ChildProcess>();
 
-  constructor(private opts: { preview?: string } = {}) {
+  readonly shipper: Shipper;
+
+  constructor(private opts: { preview?: string; ship?: ShipOptions } = {}) {
+    this.shipper = new Shipper(opts.ship ?? { mode: "merge" });
     mkdirSync(RUNS_DIR, { recursive: true });
     for (const f of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json"))) {
       try {
@@ -443,14 +447,30 @@ export class RunManager {
     if (input.decision === "reject" && !input.comment?.trim()) throw new Error("반려 사유를 적어 주세요");
     let message = "반려됨";
     const agentId = input.agentId ?? run.review.agentId ?? suggestWinner(run)?.id;
+    const pr = input.decision === "approve" && this.shipper.mode === "pr";
     if (input.decision === "approve") {
       if (!agentId) throw new Error("반영할 결과가 없습니다");
-      message = await this.merge(runId, agentId);
+      const a = run.agents.find((x) => x.id === agentId);
+      if (a?.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
+      // pr mode: the decision is recorded now, merge happens through the PR once CI passes
+      message = pr ? "승인했어요. PR 을 올리고 CI 를 기다려요" : await this.merge(runId, agentId);
     }
+    if (pr) this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "pr", env: this.shipper.tracksDeploy ? (this.shipper.opts.deployEnv ?? "production") : undefined, at: Date.now() } });
     this.emit(run, undefined, {}, undefined, { review: { status: input.decision === "approve" ? "approved" : "rejected",
       reviewer: input.reviewer, comment: input.comment, agentId, at: Date.now() } });
     this.bus.emit(`reviewed:${run.id}`, run);
     this.bus.emit("reviewed", run);
+    if (pr) {
+      const agent = run.agents.find((a) => a.id === agentId)!;
+      void this.shipper.run(run, agent, input.reviewer, {
+        set: (ship) => this.emit(run, undefined, {}, undefined, { ship }),
+        event: (e) => this.bus.emit("ship", run, e),
+        merged: () => this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨 (PR 병합)` }),
+      }).catch((e: Error) => {
+        this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "ci_failed", checks: [{ name: e.message.slice(0, 80), state: "fail" }], at: Date.now() } });
+        this.bus.emit("ship", run, "ci_failed");
+      });
+    }
     return message;
   }
 
