@@ -26,12 +26,13 @@ import type {
   ReviewComment,
   Run,
   RunUpdate,
+  Ship,
   Team,
   Template,
   Triage,
 } from "./api";
 import { applyUpdate } from "./api";
-import { mergedReply, pickReviewer, reviewMessage } from "../../src/server/handoff";
+import { deployedReply, pickReviewer, rejectedReply, reviewMessage } from "../../src/server/handoff";
 import { saveUser, suggestWinner as pickWinner, type User } from "./util";
 
 const SEC = 1000;
@@ -70,16 +71,17 @@ const TEMPLATES: Template[] = [
 
 /** 데모에 나오는 사람들. 역할은 스스로 고른 값이고 권한을 막지는 않는다. */
 const PEOPLE: Record<string, User> = {
-  이해준: { name: "이해준", team: "platform", role: "dev", title: "백엔드" },
+  이해준: { name: "이해준", team: "platform", role: "dev", title: "백엔드", avatar: "/demo/avatars/dev.png" },
   정하늘: { name: "정하늘", team: "platform", role: "dev", title: "백엔드" },
   박서윤: { name: "박서윤", team: "data", role: "dev", title: "데이터" },
   최민재: { name: "최민재", team: "platform", role: "dev", title: "프론트" },
   김도윤: { name: "김도윤", team: "content-ops", role: "requester", title: "PM" },
-  윤서아: { name: "윤서아", team: "cs", role: "requester", title: "CS" },
+  윤서아: { name: "윤서아", team: "cs", role: "requester", title: "CS", avatar: "/demo/avatars/cs.png" },
 };
 /** 설정에서 바꿔 볼 수 있는 두 사람 */
 export const DEMO_CAST: Record<string, User> = { 윤서아: PEOPLE.윤서아, 이해준: PEOPLE.이해준 };
 const titleOf = (name: string) => PEOPLE[name]?.title;
+const avatarOf = (name: string) => PEOPLE[name]?.avatar;
 
 /** `?demo&as=윤서아`: 그 사람으로 시작하고 이 브라우저에 저장한다. 저장된 사람이 없으면 이해준. */
 export function demoStartUser(): User | null {
@@ -1369,6 +1371,7 @@ let ticker: ReturnType<typeof setInterval> | null = null;
 
 function pushChat(m: ChatMessage) {
   if (!m.bot && !m.userTitle) m.userTitle = titleOf(m.user);
+  if (!m.bot && !m.userAvatar) m.userAvatar = avatarOf(m.user);
   const list = chat.get(m.channel) ?? [];
   const i = list.findIndex((x) => x.id === m.id);
   if (i >= 0) list[i] = m;
@@ -1544,6 +1547,7 @@ function launch(sc: Scenario): Run {
       createdAt,
       requester: sc.requester,
       requesterTitle: sc.requesterTitle ?? titleOf(sc.requester),
+      requesterAvatar: avatarOf(sc.requester),
       team: sc.team,
       template: tpl.id,
       channel: sc.channel,
@@ -1621,6 +1625,8 @@ interface Past {
   id: string;
   /** 에이전트 하나만 돈 기록(기본). 겨루기 기록은 비워 둔다 */
   single?: boolean;
+  /** 승인 뒤 CI 에서 lint 가 빨개서 멈춘 기록 */
+  ciFail?: boolean;
   /** 승인된 결과의 "요청자에게" 한 줄 */
   note?: string;
   ago: number;
@@ -1840,6 +1846,7 @@ const PAST: Past[] = [
   {
     id: "r-4e7",
     single: true,
+    ciFail: true,
     note: "화면에서 보이는 변화는 없어요. 버튼 종류를 잘못 적으면 개발 중에 바로 알려줘요.",
     ago: 1.1 * DAY,
     channel: "web",
@@ -2013,6 +2020,17 @@ const PAST: Past[] = [
   },
 ];
 
+const PR_NO: Record<string, number> = { "r-8c1": 497, "r-6a2": 503, "r-4e7": 506, "r-cs1": 509 };
+const CHECK_NAMES = ["test (node 20)", "lint", "build"];
+const prUrl = (n: number) => `https://github.com/acme/billing-api/pull/${n}`;
+/** 지난 기록의 배포 줄: 대부분 배포까지 갔고, 하나는 lint 때문에 CI 에서 멈췄다. */
+function pastShip(p: Past, run: Run): Ship {
+  const prNumber = PR_NO[p.id] ?? 500;
+  const at = (run.review.at ?? run.createdAt) + 4 * MIN;
+  if (p.ciFail) return { mode: "pr", stage: "ci_failed", prNumber, prUrl: prUrl(prNumber), checks: CHECK_NAMES.map((name) => ({ name, state: name === "lint" ? "fail" : "pass" })), env: "production", at };
+  return { mode: "pr", stage: "deployed", prNumber, prUrl: prUrl(prNumber), checks: CHECK_NAMES.map((name) => ({ name, state: "pass" as const })), env: "production", at };
+}
+
 function buildPast(p: Past): Run {
   const createdAt = T0 - p.ago;
   const agents = p.single ? p.agents(createdAt + 2 * SEC, p.id).slice(0, 1) : p.agents(createdAt + 2 * SEC, p.id);
@@ -2021,11 +2039,11 @@ function buildPast(p: Past): Run {
   const end = Math.max(...agents.map((a) => a.endedAt ?? 0));
   const tpl = TEMPLATES.find((t) => t.id === p.template)!;
   const approved = p.review.status === "approved";
-  if (approved) {
+  if (approved && !p.ciFail) {
     const a = agents.find((x) => x.id === p.review.agentId);
     if (a) a.merged = true;
   }
-  return {
+  const built: Run = {
     id: p.id,
     title: p.title,
     task: p.text.replace(/@willnew\s*/, ""),
@@ -2036,6 +2054,7 @@ function buildPast(p: Past): Run {
     createdAt,
     requester: p.requester,
     requesterTitle: titleOf(p.requester),
+    requesterAvatar: avatarOf(p.requester),
     team: p.team,
     template: p.template,
     channel: p.channel,
@@ -2055,6 +2074,8 @@ function buildPast(p: Past): Run {
     maxAttempts: 2,
     agents,
   };
+  if (approved) built.ship = pastShip(p, built);
+  return built;
 }
 
 const PAST_RUNS = PAST.map(buildPast);
@@ -2063,7 +2084,21 @@ function seedChat() {
   const add = (channel: string, ts: number, user: string, text: string, extra: Partial<ChatMessage> = {}) =>
     pushChat({ id: `m${++msgSeq}`, channel, ts, user, bot: user === "willnew", text, ...extra });
   const [orders, settle, readme, button, session, receipt] = PAST_RUNS;
-  const reply = (r: Run) => mergedReply(r, r.agents.find((a) => a.id === r.review.agentId)?.userNote, r.review.reviewer);
+  const approve = (channel: string, r: Run) => {
+    const who = r.review.reviewer ?? "이해준";
+    const t = r.review.at!;
+    const n = PR_NO[r.id];
+    add(channel, t, "willnew", `승인 · ${who} · claude-sonnet 결과로 PR 을 올려요`, { runId: r.id, kind: "result" });
+    add(channel, t + 20 * SEC, "willnew", `PR #${n} 올렸어요`, { runId: r.id, kind: "result" });
+    if (r.ship?.stage === "ci_failed") {
+      add(channel, t + 3 * MIN, "willnew", "CI 실패: lint. 자동으로 다시 돌리지 않았어요", { runId: r.id, kind: "result" });
+      return;
+    }
+    add(channel, t + 3 * MIN, "willnew", "CI 3개 통과", { runId: r.id, kind: "result" });
+    add(channel, t + 3 * MIN + 10 * SEC, "willnew", "main에 병합했어요", { runId: r.id, kind: "result" });
+    add(channel, t + 5 * MIN, "willnew", "production 배포 끝났어요", { runId: r.id, kind: "result" });
+    add(channel, t + 5 * MIN + SEC, who, deployedReply(r, r.agents.find((a) => a.id === r.review.agentId)?.userNote), { runId: r.id, kind: "result", via: "willnew" });
+  };
   const bySum = (r: Run) => r.review.at!;
 
   // #backend
@@ -2081,8 +2116,7 @@ function seedChat() {
   add("backend", orders.createdAt + 20 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: orders.id, kind: "triage" });
   add("backend", orders.createdAt + 56 * SEC, "willnew", "sonnet 통과. 테스트 9개 모두 통과했어요", { runId: orders.id, kind: "review" });
   add("backend", orders.createdAt + 57 * SEC, "willnew", reviewMessage("이해준", orders.agents[0], "main", false), { runId: orders.id, kind: "review" });
-  add("backend", bySum(orders), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: orders.id, kind: "result" });
-  add("backend", bySum(orders) + SEC, "willnew", reply(orders), { runId: orders.id, kind: "result" });
+  approve("backend", orders);
   add("backend", T0 - 9 * MIN, "이해준", "어제 배포 후로 duration 테스트가 전부 빨간불이네요");
   add("backend", T0 - 8 * MIN, "정하늘", "저도 봤어요. parseDuration 이 h 말고 m 이 섞이면 NaN 이 나오는 것 같던데 원인까진 못 봤어요");
 
@@ -2093,9 +2127,8 @@ function seedChat() {
   add("web", button.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · 에이전트 1개 (sonnet) · npm test", { runId: button.id, kind: "triage" });
   add("web", button.createdAt + 70 * SEC, "willnew", "sonnet 통과. 테스트 26개 모두 통과했어요", { runId: button.id, kind: "review" });
   add("web", button.createdAt + 71 * SEC, "willnew", reviewMessage("이해준", button.agents[0], "main", false), { runId: button.id, kind: "review" });
-  add("web", bySum(button), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: button.id, kind: "result" });
-  add("web", bySum(button) + SEC, "willnew", reply(button), { runId: button.id, kind: "result" });
-  add("web", bySum(button) + 2 * MIN, "최민재", "오 danger-outline 도 잡아줬네 ㄳ");
+  approve("web", button);
+  add("web", bySum(button) + 8 * MIN, "최민재", "lint 에서 걸렸네. 따로 고쳐서 다시 올릴게");
 
   // #data
   add("data", settle.createdAt - 3 * MIN, "박서윤", "어제 정산 로그 기준 중복 행 412/18,730 (2.2%). 근데 중복 제거가 settle_daily, weekly, reprocess 세 군데에 복붙돼있어요");
@@ -2112,8 +2145,7 @@ function seedChat() {
   add("content-ops", readme.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: readme.id, kind: "ack" });
   add("content-ops", readme.createdAt + 3 * SEC, "willnew", "계획: 문서화 · sonnet 이 맡아요", { runId: readme.id, kind: "triage" });
   add("content-ops", readme.createdAt + 36 * SEC, "willnew", "sonnet 이 끝냈어요. 김도윤님, 검토해 주세요", { runId: readme.id, kind: "review" });
-  add("content-ops", bySum(readme), "willnew", "김도윤님이 승인해서 main에 반영했어요.", { runId: readme.id, kind: "result" });
-  add("content-ops", bySum(readme) + SEC, "willnew", reply(readme), { runId: readme.id, kind: "result" });
+  approve("content-ops", readme);
 
   // #cs
   add("cs", receipt.createdAt - 14 * MIN, "윤서아", "부분 환불한 고객 영수증이 이상하다는 문의가 또 왔어요 ㅠ");
@@ -2123,8 +2155,7 @@ function seedChat() {
   add("cs", receipt.createdAt + 19 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: receipt.id, kind: "triage" });
   add("cs", receipt.createdAt + 36 * SEC, "willnew", "sonnet 통과. 테스트 6개 모두 통과했어요", { runId: receipt.id, kind: "review" });
   add("cs", receipt.createdAt + 37 * SEC, "willnew", reviewMessage("이해준", receipt.agents[0], "main", false), { runId: receipt.id, kind: "review" });
-  add("cs", bySum(receipt), "willnew", "이해준님이 승인해서 main에 반영했어요.", { runId: receipt.id, kind: "result" });
-  add("cs", bySum(receipt) + SEC, "willnew", reply(receipt), { runId: receipt.id, kind: "result" });
+  approve("cs", receipt);
   add("cs", bySum(receipt) + 4 * MIN, "윤서아", "넵 고객님께 안내드릴게요 감사합니다");
   add("cs", T0 - 52 * MIN, "윤서아", "오늘 환불 문의는 이걸로 끝인 듯해요");
   add("cs", T0 - 7 * MIN, "윤서아", "구독 갱신일 문의가 오늘만 3건째네요. 1/31에 가입한 분들이 많아요");
@@ -2307,6 +2338,52 @@ function demoSteer(runId: string, agentId: string, text: string, by: string) {
   say(4400, "check", "검증 통과 (exit 0, 1.2 s)", { status: "done", endedAt: Date.now() + 4400, durationMs: (a.durationMs ?? 0) + 4400, summary: `추가 지시를 반영했어요: ${text.split("\n").slice(-1)[0].slice(0, 120)}` }, { review: { status: "pending" } });
 }
 
+// ---------------------------------------------------------------------------------------------- ship (pr mode, simulated)
+
+let prSeq = 511;
+const botSay = (run: Run, text: string) => run.channel && pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, kind: "result" });
+
+/** 승인 뒤: PR 번호가 붙고, CI 세 개가 6초쯤에 걸쳐 초록이 되고, 병합, 배포 4초. 실제 gh 는 부르지 않는다. */
+function simulateShip(runId: string, agentId: string | undefined, reviewer: string) {
+  const first = findRun(runId);
+  if (!first) return;
+  const n = ++prSeq;
+  const env = "production";
+  const set = (patch: Partial<Ship>) => {
+    const cur = findRun(runId)?.ship;
+    emitAny(runId, { runId, run: { ship: { ...(cur ?? { mode: "pr" as const, stage: "pr" as const }), ...patch, at: Date.now() } as Ship } });
+  };
+  const setCheck = (name: string) => {
+    const cur = findRun(runId)?.ship?.checks ?? [];
+    set({ checks: cur.map((c) => (c.name === name ? { ...c, state: "pass" as const } : c)) });
+  };
+  const at = (ms: number, fn: () => void) => setTimeout(fn, ms);
+  at(900, () => {
+    set({ stage: "ci", prNumber: n, prUrl: prUrl(n), checks: CHECK_NAMES.map((name) => ({ name, state: "pending" as const })) });
+    botSay(findRun(runId)!, `PR #${n} 올렸어요`);
+  });
+  at(2600, () => setCheck("test (node 20)"));
+  at(4300, () => setCheck("lint"));
+  at(6200, () => {
+    setCheck("build");
+    botSay(findRun(runId)!, "CI 3개 통과");
+  });
+  at(6900, () => {
+    const run = findRun(runId)!;
+    set({ stage: "merged" });
+    if (agentId) emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨 (PR 병합)` }, agent: { merged: true } });
+    botSay(run, `${run.baseBranch}에 병합했어요`);
+  });
+  at(7400, () => set({ stage: "deploying" }));
+  at(11400, () => {
+    const run = findRun(runId)!;
+    set({ stage: "deployed" });
+    botSay(run, `${env} 배포 끝났어요`);
+    const note = run.agents.find((a) => a.id === agentId)?.userNote;
+    if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: reviewer, bot: false, via: "willnew", text: deployedReply(run, note), runId, kind: "result" });
+  });
+}
+
 // ---------------------------------------------------------------------------------------------- api
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -2314,7 +2391,7 @@ const later = <T,>(v: T, ms = 90) => new Promise<T>((res) => setTimeout(() => re
 const allRuns = () => [...[...lives.values()].map((l) => l.run), ...PAST_RUNS].sort((a, b) => b.createdAt - a.createdAt);
 
 export const demoApi: Api = {
-  config: () => later({ repo: REPO, check: "npm test", preview: "npm run dev -- --port {port}" }),
+  config: () => later({ repo: REPO, check: "npm test", preview: "npm run dev -- --port {port}", ship: "pr" as const, deploy: true, deployEnv: "production" }),
   plan: (text) => {
     const tpl = routeTemplate(text);
     return later({ by: "rules" as const, template: tpl.id, title: text.slice(0, 40), task: text, plan: [], agents: tpl.agents, check: tpl.check, reason: "" }, 60);
@@ -2428,31 +2505,21 @@ export const demoApi: Api = {
     return r ? later(clone(r)) : Promise.reject(new Error(`요청 ${id} 을 찾을 수 없어요`));
   },
   async review(runId, input) {
-    const live = lives.get(runId);
-    const run = live?.run ?? PAST_RUNS.find((p) => p.id === runId);
+    const run = findRun(runId);
     if (!run) return { ok: false, message: "요청을 찾을 수 없어요" };
-    const review = { status: input.decision === "approve" ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
+    const approve = input.decision === "approve";
+    const review = { status: approve ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
     const agent = run.agents.find((a) => a.id === input.agentId);
-    if (live) {
-      emit(live, { runId, run: { review } });
-      if (agent && input.decision === "approve") emit(live, { runId, agentId: agent.id, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨` }, agent: { merged: true } });
-    } else {
-      run.review = review;
-      if (agent && input.decision === "approve") agent.merged = true;
-    }
-    const text =
-      input.decision === "approve"
-        ? `${input.reviewer}님이 승인해서 ${run.baseBranch}에 반영했어요.`
-        : `${input.reviewer}님이 반려했어요${input.comment ? `. “${input.comment}”` : ""}`;
-    if (run.channel) {
-      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, runId, kind: "result" });
-      // 요청자에게 한 줄 답: 반영했다고만 말하고 배포했다고는 하지 않는다
-      const note = agent?.userNote;
-      const answer = input.decision === "approve" ? mergedReply(run, note, input.reviewer) : `@${run.requester} 이번엔 반영하지 않았어요.${input.comment ? ` 사유: ${input.comment}` : ""}`;
-      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: "willnew", bot: true, text: answer, runId, kind: "result" });
-    }
+    // pr 모드: 승인은 바로 기록하고, 병합은 CI 가 끝난 뒤
+    if (approve) emitAny(runId, { runId, run: { ship: { mode: "pr", stage: "pr", env: "production", at: Date.now() } } });
+    emitAny(runId, { runId, run: { review } });
+    const why = input.comment ? ` · “${input.comment}”` : "";
+    botSay(run, approve ? `승인 · ${input.reviewer} · ${agent?.label ?? "결과"} 결과로 PR 을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
+    if (approve) simulateShip(runId, input.agentId, input.reviewer);
+    else if (run.channel)
+      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: input.reviewer, bot: false, via: "willnew", text: rejectedReply(run, input.comment), runId, kind: "result" });
     await later(null, 300);
-    return { ok: true, message: input.decision === "approve" ? "승인하고 반영했어요" : "반려했어요" };
+    return { ok: true, message: approve ? "승인했어요. PR 을 올리고 CI 를 기다려요" : "반려했어요" };
   },
   async cancel(runId, agentId) {
     const live = lives.get(runId);
