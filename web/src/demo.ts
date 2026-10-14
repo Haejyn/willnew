@@ -9,6 +9,10 @@
  *   이해준 platform 리드 · 짧게 쓴다      정하늘 platform 백엔드 · 맥락을 길게
  *   박서윤 data · 숫자와 로그를 붙인다     최민재 platform 프론트 · 반말 섞임
  *   김도윤 content-ops PM · 공손, 결과 위주
+ *   윤서아 cs 요청자 · 고객 문의를 옮겨 온다 (개발자는 아니다)
+ *
+ * 에이전트는 기본 하나(claude-sonnet). 겨루기(둘)는 고르면 되고, 지난 기록 몇 개와 살아 있는 요약 건이 겨루기다.
+ * `?demo&as=윤서아` 처럼 열면 그 사람으로 본다. 설정의 "보는 사람" 으로도 바꿀 수 있다(데모 상태는 새로고침하면 사라진다).
  */
 import type {
   AgentEvent,
@@ -22,11 +26,14 @@ import type {
   ReviewComment,
   Run,
   RunUpdate,
+  Ship,
   Team,
   Template,
   Triage,
 } from "./api";
 import { applyUpdate } from "./api";
+import { deployedReply, pickReviewer, rejectedReply, reviewMessage } from "../../src/server/handoff";
+import { saveUser, suggestWinner as pickWinner, type User } from "./util";
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -37,25 +44,62 @@ const sec = (x: number) => Math.round(x * SEC);
 const REPO = "~/work/billing-api";
 
 const CHANNELS: Channel[] = [
-  { id: "backend", name: "backend", team: "platform", repo: REPO, topic: "결제·청구 서버 · 버그와 리팩터링은 @willnew 에게" },
-  { id: "web", name: "web", team: "platform", repo: "~/work/billing-web", topic: "청구 웹 프론트" },
-  { id: "data", name: "data", team: "data", repo: "~/work/settlement-batch", topic: "정산 배치 · 데이터 파이프라인" },
-  { id: "content-ops", name: "content-ops", team: "content-ops", repo: "~/work/content-tools", topic: "콘텐츠 운영 도구" },
+  { id: "backend", name: "backend", team: "platform", repo: REPO, reviewers: ["이해준", "정하늘"], topic: "결제·청구 서버 · 버그와 리팩터링은 @willnew 에게" },
+  { id: "cs", name: "cs-문의", team: "cs", repo: REPO, reviewers: ["이해준"], topic: "고객 문의 중 개발 확인이 필요한 것. @willnew 로 맡기면 백엔드가 검토" },
+  { id: "web", name: "web", team: "platform", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "청구 웹 프론트" },
+  { id: "data", name: "data", team: "data", repo: "~/work/settlement-batch", reviewers: ["이해준", "박서윤"], topic: "정산 배치 · 데이터 파이프라인" },
+  { id: "content-ops", name: "content-ops", team: "content-ops", repo: "~/work/content-tools", reviewers: ["이해준"], topic: "콘텐츠 운영 도구" },
 ];
 
 const TEAMS: Team[] = [
   { id: "platform", name: "플랫폼", budgetUsd: 50 },
   { id: "data", name: "데이터", budgetUsd: 30 },
   { id: "content-ops", name: "콘텐츠 운영", budgetUsd: 20 },
+  { id: "cs", name: "CS", budgetUsd: 10 },
 ];
 
+const SONNET_SPEC: AgentSpec = { adapter: "claude-code", model: "sonnet", label: "claude-sonnet" };
+const CODEX_SPEC: AgentSpec = { adapter: "codex", label: "codex" };
+const tpl = (id: string, name: string, keywords: string[], check: string, estMinutes: number): Template => ({ id, name, keywords, instruction: "", check, estMinutes, agents: [SONNET_SPEC] });
 const TEMPLATES: Template[] = [
-  { id: "bugfix", name: "버그 수정", keywords: ["버그", "고쳐", "깨져", "깨짐", "실패", "에러", "안 돼", "500"], instruction: "", check: "npm test", estMinutes: 60, agents: [{ adapter: "claude-code", model: "sonnet", label: "claude-sonnet" }, { adapter: "codex", label: "codex" }] },
-  { id: "tests", name: "테스트 작성", keywords: ["테스트 작성", "테스트 추가", "커버리지"], instruction: "", check: "npm test", estMinutes: 45, agents: [{ adapter: "claude-code", model: "sonnet", label: "claude-sonnet" }, { adapter: "codex", label: "codex" }] },
-  { id: "feature", name: "기능 구현", keywords: ["구현", "추가해", "추가하", "만들어", "내려주"], instruction: "", check: "npm test", estMinutes: 120, agents: [{ adapter: "claude-code", model: "opus", label: "claude-opus" }, { adapter: "codex", label: "codex" }] },
-  { id: "refactor", name: "리팩터링", keywords: ["리팩터", "정리", "중복", "합쳐", "빼주"], instruction: "", check: "npm test", estMinutes: 90, agents: [{ adapter: "claude-code", model: "sonnet", label: "claude-sonnet" }, { adapter: "codex", label: "codex" }] },
-  { id: "docs", name: "문서화", keywords: ["문서", "주석", "readme"], instruction: "", check: "", estMinutes: 30, agents: [{ adapter: "claude-code", model: "sonnet", label: "claude-sonnet" }] },
+  tpl("bugfix", "버그 수정", ["버그", "고쳐", "깨져", "깨짐", "실패", "에러", "안 돼", "500", "잡혀", "확인 부탁"], "npm test", 60),
+  tpl("tests", "테스트 작성", ["테스트 작성", "테스트 추가", "커버리지"], "npm test", 45),
+  tpl("feature", "기능 구현", ["구현", "추가해", "추가하", "만들어", "내려주"], "npm test", 120),
+  tpl("refactor", "리팩터링", ["리팩터", "정리", "중복", "합쳐", "빼주"], "npm test", 90),
+  tpl("docs", "문서화", ["문서", "주석", "readme"], "", 30),
 ];
+
+/** 데모에 나오는 사람들. 역할은 스스로 고른 값이고 권한을 막지는 않는다. */
+const PEOPLE: Record<string, User> = {
+  이해준: { name: "이해준", team: "platform", role: "dev", title: "백엔드", avatar: "/demo/avatars/dev.png" },
+  정하늘: { name: "정하늘", team: "platform", role: "dev", title: "백엔드" },
+  박서윤: { name: "박서윤", team: "data", role: "dev", title: "데이터" },
+  최민재: { name: "최민재", team: "platform", role: "dev", title: "프론트" },
+  김도윤: { name: "김도윤", team: "content-ops", role: "requester", title: "PM" },
+  윤서아: { name: "윤서아", team: "cs", role: "requester", title: "CS", avatar: "/demo/avatars/cs.png" },
+};
+/** 설정에서 바꿔 볼 수 있는 두 사람 */
+export const DEMO_CAST: Record<string, User> = { 윤서아: PEOPLE.윤서아, 이해준: PEOPLE.이해준 };
+const titleOf = (name: string) => PEOPLE[name]?.title;
+const avatarOf = (name: string) => PEOPLE[name]?.avatar;
+
+/** `?demo&as=윤서아`: 그 사람으로 시작하고 이 브라우저에 저장한다. 저장된 사람이 없으면 이해준. */
+export function demoStartUser(): User | null {
+  const as = new URLSearchParams(window.location.search).get("as");
+  if (as && PEOPLE[as]) {
+    saveUser(PEOPLE[as]);
+    return PEOPLE[as];
+  }
+  try {
+    if (!localStorage.getItem("willnew.user")) return PEOPLE.이해준;
+  } catch {
+    return PEOPLE.이해준;
+  }
+  return null; // App falls back to the stored user
+}
+
+/** 고객 문의를 옮겨 온 요청. 합성 예시이고 실제 고객 정보는 없다. */
+export const DEMO_REQUEST = "@willnew 고객 문의 들어왔어요. 1/31에 가입한 고객 다음 결제일이 3/3으로 잡혀 있대요. 2월은 말일(2/28)에 나가고 3월엔 다시 31일이어야 하는 거 맞죠? 확인 부탁드려요 #431";
 
 function routeTemplate(text: string): Template {
   const t = text.toLowerCase();
@@ -70,6 +114,11 @@ function routeTemplate(text: string): Template {
   }
   return best;
 }
+
+const planLine = (name: string, agents: AgentSpec[], check: string) =>
+  `계획: ${name} · ${agents.length > 1 ? `겨루기 ${agents.length}개 (${agents.map((a) => a.label?.replace("claude-", "")).join(", ")})` : `에이전트 1개 (${agents[0]?.label?.replace("claude-", "")})`}${check ? ` · ${check}` : ""}`;
+const REVIEW_STEP_PLAN = "통과한 결과 중 하나를 골라 요청자 검토를 받는다";
+const REVIEW_STEP_SOLO = "통과하면 담당 개발자의 검토를 받는다";
 
 // ---------------------------------------------------------------------------------------------- patches
 
@@ -136,6 +185,116 @@ index 5c2e1a0..e03c9a4 100644
 +  return text || "0s";
  }
 `;
+
+const PKG_HUNK = `diff --git a/package.json b/package.json
+index 41c09d2..7e83a55 100644
+--- a/package.json
++++ b/package.json
+@@ -14,4 +14,5 @@
+   "dependencies": {
+     "date-fns": "^3.6.0",
++    "date-fns-tz": "^3.1.3",
+     "express": "^4.19.1",
+`;
+
+const PATCH_RENEWAL_S = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..2fd93be 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -1,9 +1,12 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
+-}
++import { addMonths } from "date-fns";
++import { fromZonedTime, toZonedTime } from "date-fns-tz";
++import { BILLING_TZ } from "../config.js"; // "Asia/Seoul"
++
++/** 다음 결제일: 가입 시점(anchorAt)에서 n개월 뒤. 짧은 달은 말일, 그다음 달은 다시 가입일 */
++export function nextBillingDate(sub) {
++  const anchor = toZonedTime(sub.anchorAt, BILLING_TZ);
++  return fromZonedTime(addMonths(anchor, sub.periodsBilled + 1), BILLING_TZ);
++}
+
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+${PKG_HUNK}`;
+
+/** sonnet after the line comment: uses lib/time.js instead of date-fns-tz, package.json untouched. */
+const PATCH_RENEWAL_S2 = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..5d70e1b 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -1,9 +1,10 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
+-}
++import { addMonths } from "date-fns";
++import { fromKst, toKst } from "../lib/time.js";
++
++/** 다음 결제일: 가입 시점(anchorAt)에서 n개월 뒤. 짧은 달은 말일, 그다음 달은 다시 가입일 */
++export function nextBillingDate(sub) {
++  return fromKst(addMonths(toKst(sub.anchorAt), sub.periodsBilled + 1));
++}
+
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+`;
+
+/** codex, first attempt: adds one month to the previous period end and clamps by hand, so it sticks to the 28th after February. */
+const PATCH_RENEWAL_C1 = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..b3e5d60 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -1,9 +1,11 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
+-}
++/** 다음 결제일: 직전 결제일 + 1개월, 짧은 달은 말일로 */
++export function nextBillingDate(sub) {
++  const cur = new Date(sub.currentPeriodEnd);
++  const last = new Date(cur.getFullYear(), cur.getMonth() + 2, 0).getDate();
++  const next = new Date(cur.getFullYear(), cur.getMonth() + 1, 1, cur.getHours(), cur.getMinutes());
++  next.setDate(Math.min(cur.getDate(), last));
++  return next;
++}
+
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+`;
+
+const PATCH_RENEWAL_C = `diff --git a/src/billing/renewal.js b/src/billing/renewal.js
+index 8a41c07..c19a7f4 100644
+--- a/src/billing/renewal.js
++++ b/src/billing/renewal.js
+@@ -1,9 +1,12 @@
+-/** 다음 결제일: 직전 결제일에 한 달을 더한다 */
+-export function nextBillingDate(sub) {
+-  const d = new Date(sub.currentPeriodEnd);
+-  d.setMonth(d.getMonth() + 1);
+-  return d;
+-}
++import { addMonths } from "date-fns";
++import { fromZonedTime, toZonedTime } from "date-fns-tz";
++import { BILLING_TZ } from "../config.js";
++
++/** 다음 결제일: 가입 시점 anchorAt 기준 n개월 뒤 (BILLING_TZ) */
++export function nextBillingDate(sub) {
++  const base = toZonedTime(sub.anchorAt, BILLING_TZ);
++  return fromZonedTime(addMonths(base, sub.periodsBilled + 1), BILLING_TZ);
++}
+
+ /** 체험 종료일: 가입 후 14일 */
+ export function trialEnd(sub) {
+${PKG_HUNK}`;
 
 /** settlement-batch: dedupe in three places → one helper. The tests imported a private helper, so the agent edited a test. */
 const PATCH_SETTLE_S = `diff --git a/settle/dedupe.py b/settle/dedupe.py
@@ -625,6 +784,15 @@ const CHECK_FAIL = nodeOut(
   "61.3",
 );
 
+const RENEWAL_TESTS = names(["3/15 → 4/15", "1/31 → 2/28", "윤년 1/31 → 2/29", "2월 다음 3/31 복귀", "12/31 → 1/31", "KST 자정 직후 가입", "체험 14일 뒤 첫 결제"]);
+const CHECK_RENEWAL_OK = nodeOut("billing-api@2.3.0", RENEWAL_TESTS, undefined, "46.1");
+const CHECK_RENEWAL_FAIL = nodeOut(
+  "billing-api@2.3.0",
+  RENEWAL_TESTS,
+  { i: 3, at: "src/billing/renewal.test.js:31:1", err: ["AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:", "", "'2027-03-28' !== '2027-03-31'", "", "    at TestContext.<anonymous> (file:///./src/billing/renewal.test.js:36:10)", "    at Test.runInAsyncScope (node:async_hooks:206:9)"] },
+  "53.8",
+);
+
 const WEBHOOK_TESTS = names(["verifies signature", "rejects a bad signature", "handles invoice.paid", "handles invoice.payment_failed", "ignores unknown event types", "skips an already processed event", "processes concurrent duplicates once", "returns 200 on duplicate", "stores the event payload", "rolls back the claim when dispatch throws", "logs the event id", "refund.created", "refund.created twice", "health check"]);
 const CHECK_WEBHOOK = nodeOut("billing-api@2.3.0", WEBHOOK_TESTS, undefined, "81937.2");
 const SUMMARY_TESTS = names(["summarize total", "summarize count", "summary route", "maxAmount", "avgAmount rounds", "route keeps old fields", "empty list", "single item", "negative credit note", "customer filter", "month filter", "csv header"]);
@@ -721,6 +889,8 @@ interface Step {
   tokens?: [number, number, number];
   run?: Partial<Run>;
   chat?: Omit<ChatMessage, "id" | "channel" | "ts" | "runId">;
+  /** chat text decided when the step fires (needs the run as it is by then) */
+  late?: (live: Live) => string;
 }
 type Tokens = [number, number, number];
 
@@ -757,6 +927,8 @@ interface Scenario {
   /** how long ago the request was made; steps with `at` before that are fast-forwarded */
   ago: number;
   title?: string;
+  /** 요청자가 스스로 붙인 직함. 없으면 데모 인물 표에서 찾는다 */
+  requesterTitle?: string;
   template?: string;
   check?: string;
   agents?: AgentSpec[];
@@ -826,8 +998,108 @@ function durationScenario(channel: string, requester: string, team: string, text
       "통과한 결과 중 하나를 골라 요청자 검토를 받는다",
     ],
     task: "Find the root cause in duration.js and fix it. Do not modify duration.test.js. Run `npm test` to confirm.",
-    reason: "테스트 실패를 고치는 요청이라 버그 수정 템플릿. 테스트가 판정할 수 있어 두 에이전트를 겨루게 하고 자기 수정 1회를 허용.",
+    reason: "테스트 실패를 고치는 요청이라 버그 수정 템플릿. 테스트가 판정할 수 있어 에이전트 하나로 시작하고 자기 수정 1회를 허용.",
     steps: durationSteps,
+  };
+}
+
+const RENEWAL_NOTE = "1/31에 가입한 분은 이제 2/28에 결제되고, 3월부터는 다시 31일에 결제돼요. 이미 3/3으로 잡힌 구독은 따로 바로잡아야 해요.";
+const RENEWAL_SONNET_SUMMARY_1 = "직전 결제일에 한 달을 더하고, 말일을 넘으면 말일로 맞췄어요.";
+const RENEWAL_SONNET_SUMMARY =
+  "1차 시도는 직전 결제일(2/28)에 한 달을 더해서 3월에도 28일로 나갔고, '2월 다음 3/31 복귀' 테스트에서 걸렸어요. 원인은 직전 결제일 기준으로 계산하는 것이에요. 가입 시점(anchorAt)을 서울 시간대로 바꿔 addMonths 로 n개월 뒤를 구하게 했고, 짧은 달은 date-fns 가 말일로 맞춰서 3월에는 다시 31일이 됩니다. KST 변환용으로 date-fns-tz 를 package.json 에 추가했어요. 테스트는 그대로, 7개 통과.";
+const RENEWAL_SONNET_SUMMARY_2 =
+  "date-fns-tz 를 빼고 lib/time.js 의 toKst / fromKst 로 바꿨어요. package.json 은 원래대로 돌렸고, 계산 기준은 그대로 가입 시점(anchorAt) 이에요. 7개 통과.";
+const RENEWAL_CODEX_SUMMARY_1 = "직전 결제일에 한 달을 더하고, 말일을 넘으면 말일로 맞췄습니다.";
+const RENEWAL_CODEX_SUMMARY_2 =
+  "1차 시도는 직전 결제일(2/28) 기준이라 3월에도 28일로 나갔습니다. 기준을 가입 시점 anchorAt 으로 바꾸고, 서울 시간대에서 n개월 뒤를 구하게 했습니다. 7개 테스트 통과.";
+const withNote = (summary: string) => `${summary}\n\n요청자에게: ${RENEWAL_NOTE}`;
+
+/** codex's side of the race: same script as before, only used when the person turns 겨루기 on. */
+function renewalCodexSteps(id: string): Step[] {
+  return [
+    begin(3.9, CODEX, id),
+    ev(5.4, CODEX, "text", "결제일 계산 함수와 테스트를 먼저 확인하겠습니다.", [5200, 90, 4000]),
+    ev(6.6, CODEX, "tool", "shell cat src/billing/renewal.test.js src/billing/renewal.js", [2400, 70, 6000]),
+    ev(7.1, CODEX, "tool_result", 'exit 0 import test from "node:test";\nimport assert from "node:assert/strict";\nimport { nextBillingDate } from "./renewal.js";\n'),
+    ev(10.2, CODEX, "text", "직전 결제일에 한 달을 더하고, 말일을 넘지 않게 맞추겠습니다.", [3800, 260, 8000]),
+    ev(13.0, CODEX, "tool", "edit src/billing/renewal.js", [2100, 540, 6000]),
+    ev(15.3, CODEX, "text", RENEWAL_CODEX_SUMMARY_1, [1900, 180, 5000], { patch: { summary: RENEWAL_CODEX_SUMMARY_1, turns: 1 } }),
+    checkStart(15.8, CODEX, "npm test", PATCH_RENEWAL_C1),
+    checkFail(17.5, CODEX, "1.0", CHECK_RENEWAL_FAIL, true),
+    retryNote(17.9, CODEX, 2),
+    ev(19.5, CODEX, "text", "2/28 에서 한 달을 더하면 3/28 이에요. 직전 결제일이 아니라 anchorAt 에서 n개월 뒤를 구하도록 바꿀게요. 날짜 계산은 BILLING_TZ 기준으로 합니다.", [6400, 280, 9000], { attempt: 2 }),
+    ev(22.1, CODEX, "tool", "edit src/billing/renewal.js package.json", [2300, 610, 7000], { attempt: 2 }),
+    ev(24.0, CODEX, "tool", "shell node --test", [1200, 30, 4000], { attempt: 2 }),
+    ev(26.5, CODEX, "tool_result", `exit 0 ${CHECK_RENEWAL_OK.split("\n").slice(3, 6).join("\n")}`, undefined, { attempt: 2 }),
+    ev(27.6, CODEX, "text", withNote(RENEWAL_CODEX_SUMMARY_2), [1700, 350, 5000], { attempt: 2, patch: { summary: RENEWAL_CODEX_SUMMARY_2, userNote: RENEWAL_NOTE, turns: 2 } }),
+    checkStart(28.0, CODEX, "npm test", PATCH_RENEWAL_C, 2),
+    checkPass(29.9, CODEX, "0.5", CHECK_RENEWAL_OK, 2),
+  ];
+}
+
+/**
+ * The composer scenario: a subscription renewal date rolls over after a short month. One agent (claude-sonnet) first
+ * adds a month to the previous period end, fails "2월 다음 3/31 복귀", reads the log and counts from the sign-up anchor. ~31 s.
+ */
+function renewalSteps(id: string, race: boolean): Step[] {
+  return [
+    bot(0.7, "ack", "받았어요. 계획 세우는 중"),
+    { ...bot(3.1, "triage", planLine("버그 수정", race ? [SONNET_SPEC, CODEX_SPEC] : [SONNET_SPEC], "npm test")), run: {} },
+    begin(3.8, SONNET, id),
+    ev(5.1, SONNET, "text", "renewal.test.js 와 renewal.js 부터 볼게요.", [3100, 120, 9000]),
+    ev(6.1, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.test.js"}', [1800, 60, 12000]),
+    ev(6.8, SONNET, "tool_result", cat(['import test from "node:test";', 'import assert from "node:assert/strict";', 'import { nextBillingDate } from "./renewal.js";', "", 'test("1/31 → 2/28", () => {'])),
+    ev(8.2, SONNET, "tool", 'Read {"file_path":"./src/billing/renewal.js"}', [1500, 50, 14000]),
+    ev(8.8, SONNET, "tool_result", cat(["/** 다음 결제일: 직전 결제일에 한 달을 더한다 */", "export function nextBillingDate(sub) {", "  const d = new Date(sub.currentPeriodEnd);", "  d.setMonth(d.getMonth() + 1);", "  return d;"])),
+    ev(11.0, SONNET, "text", "currentPeriodEnd 에 setMonth(+1) 을 하면 1/31 이 2/31 이 되고 JS 가 3/3 으로 넘겨요. 직전 결제일에 한 달을 더하고 말일을 넘으면 말일로 맞출게요.", [2600, 310, 15000]),
+    ev(13.0, SONNET, "tool", 'Edit {"file_path":"./src/billing/renewal.js","old_string":"d.setMonth(d.getMonth() + 1);","new_string":"next.setDate(Math.min(cur.getDate(), last));"}', [2200, 620, 16000]),
+    ev(14.3, SONNET, "tool_result", "The file ./src/billing/renewal.js has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     6\texport function nextBillingDate(sub) {\n     7\t  const cur = new Date(sub.currentPeriodEnd);"),
+    ev(15.3, SONNET, "text", RENEWAL_SONNET_SUMMARY_1, [1900, 180, 5000], { patch: { summary: RENEWAL_SONNET_SUMMARY_1, turns: 3 } }),
+    checkStart(15.8, SONNET, "npm test", PATCH_RENEWAL_C1),
+    checkFail(17.5, SONNET, "1.0", CHECK_RENEWAL_FAIL, true),
+    retryNote(17.9, SONNET, 2),
+    ev(19.5, SONNET, "text", "2/28 에서 한 달을 더하면 3/28 이에요. 직전 결제일이 아니라 가입 시점 anchorAt 에서 n개월 뒤를 구하도록 바꿀게요. 날짜 계산은 BILLING_TZ 기준으로 합니다.", [6400, 280, 9000], { attempt: 2 }),
+    ev(22.1, SONNET, "tool", 'Edit {"file_path":"./src/billing/renewal.js","old_string":"const cur = new Date(sub.currentPeriodEnd);","new_string":"const anchor = toZonedTime(sub.anchorAt, BILLING_TZ);"}', [2300, 610, 16500], { attempt: 2 }),
+    ev(22.8, SONNET, "tool_result", "The file ./src/billing/renewal.js has been updated. Here's the result of running `cat -n` on a snippet of the edited file:\n     6\texport function nextBillingDate(sub) {\n     7\t  const anchor = toZonedTime(sub.anchorAt, BILLING_TZ);", undefined, { attempt: 2 }),
+    ev(23.4, SONNET, "tool", 'Edit {"file_path":"./package.json","old_string":"\\"date-fns\\": \\"^3.6.0\\",","new_string":"\\"date-fns\\": \\"^3.6.0\\",\\n    \\"date-fns-tz\\": \\"^3.1.3\\","}', [1400, 90, 17000], { attempt: 2 }),
+    ev(24.4, SONNET, "tool", 'Bash {"command":"node --test"}', [1600, 40, 17500], { attempt: 2 }),
+    ev(26.5, SONNET, "tool_result", CHECK_RENEWAL_OK.split("\n").slice(3, 9).join("\n"), undefined, { attempt: 2 }),
+    ev(27.6, SONNET, "text", withNote(RENEWAL_SONNET_SUMMARY), [2400, 480, 18000], { attempt: 2, patch: { summary: RENEWAL_SONNET_SUMMARY, userNote: RENEWAL_NOTE, turns: 7 } }),
+    checkStart(28.0, SONNET, "npm test", PATCH_RENEWAL_S, 2),
+    { ...checkPass(29.9, SONNET, "0.5", CHECK_RENEWAL_OK, 2), run: { review: { status: "pending" as const } } },
+    ...(race ? renewalCodexSteps(id) : []),
+    bot(
+      race ? 30.2 : 30.6,
+      "review",
+      race
+        ? "둘 다 통과. 둘 다 1차 검증에서 실패했다가 스스로 고쳤어요. sonnet 이 변경이 작아서 이걸로 추천해요"
+        : "sonnet 통과. 1차 검증에서 '2월 다음 3/31 복귀' 가 실패했고, 로그를 보고 스스로 고쳐서 7개 모두 통과했어요",
+    ),
+  ].sort((a, b) => a.at - b.at);
+}
+
+function renewalScenario(channel: string, requester: string, team: string, text: string, ago: number, race: boolean): Scenario {
+  return {
+    channel,
+    requester,
+    team,
+    text,
+    ago,
+    title: "1/31 가입자 다음 결제일이 3/3 으로 잡힘",
+    triageMs: 2400,
+    agents: race ? [SONNET_SPEC, CODEX_SPEC] : [SONNET_SPEC],
+    plan: [
+      "1/31 가입자의 다음 결제일을 재현한다",
+      "결제일 계산이 직전 결제일 기준인지 가입 시점 기준인지 확인한다 (테스트는 수정 금지)",
+      "가입 시점(anchorAt)에서 n개월 뒤를 서울 시간대로 구하게 고친다",
+      "npm test 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다",
+      race ? REVIEW_STEP_PLAN : REVIEW_STEP_SOLO,
+    ],
+    task: "Fix nextBillingDate in src/billing/renewal.js (#431): a Jan 31 subscriber's next billing date comes out as Mar 3. Count n months from the subscription anchor (anchorAt) in the billing time zone instead of adding one month to the previous period end. Short months clamp to the last day and the month after returns to the 31st. Do not modify renewal.test.js. Run `npm test` to confirm.",
+    reason: race
+      ? "결제일이 잘못 나오는 버그라 버그 수정 템플릿. 겨루기를 켜서 에이전트 둘이 따로 풀고, 자기 수정 1회를 허용."
+      : "결제일이 잘못 나오는 버그라 버그 수정 템플릿. 테스트가 판정할 수 있어 에이전트 하나로 시작하고 자기 수정 1회를 허용.",
+    steps: (id) => renewalSteps(id, race),
   };
 }
 
@@ -1098,6 +1370,8 @@ let msgSeq = 0;
 let ticker: ReturnType<typeof setInterval> | null = null;
 
 function pushChat(m: ChatMessage) {
+  if (!m.bot && !m.userTitle) m.userTitle = titleOf(m.user);
+  if (!m.bot && !m.userAvatar) m.userAvatar = avatarOf(m.user);
   const list = chat.get(m.channel) ?? [];
   const i = list.findIndex((x) => x.id === m.id);
   if (i >= 0) list[i] = m;
@@ -1175,7 +1449,7 @@ function tickOne(live: Live, now: number) {
         agent: Object.keys(patch).length ? patch : undefined,
       });
     }
-    if (s.chat) pushChat({ ...s.chat, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id });
+    if (s.chat) pushChat({ ...s.chat, text: s.late ? s.late(live) : s.chat.text, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id });
   }
 }
 
@@ -1196,7 +1470,49 @@ function ensureTicker() {
   if (!ticker) ticker = setInterval(tick, 200);
 }
 
-const BASE_REFS: Record<string, string> = { backend: "4d9d4a5", web: "e71b0c8", data: "9f23a6d", "content-ops": "30c8b1e" };
+/** 에이전트 하나만 도는 판: codex 줄을 빼고, 끝나는 시각과 안내 문구를 sonnet 에 맞춘다. */
+const SOLO_TEXT: [string | RegExp, string][] = [
+  [/계획: (.+) · sonnet, codex 둘이 겨뤄요/, "계획: $1 · 에이전트 1개 (sonnet)"],
+  ["둘 다 통과. sonnet 이 8초 빠르고 변경도 작아서 이걸로 추천해요", "sonnet 통과. 테스트 7개 모두 통과했어요"],
+  ["둘 다 통과. sonnet 이 12초 빠르고 변경도 작아서 이걸로 추천해요", "sonnet 통과. 테스트 14개 모두 통과했어요"],
+  ["둘 다 통과. sonnet 이 변경이 더 작아서 이걸로 추천해요", "sonnet 통과. 테스트 8개 모두 통과했어요"],
+  ["통과한 결과가 없어요. 둘 다 2차 시도까지 실패했어요", "통과한 결과가 없어요. 2차 시도까지 실패했어요"],
+];
+function soloSteps(steps: Step[]): Step[] {
+  const mine = steps.filter((s) => s.agent !== CODEX);
+  const lastSonnet = Math.max(...mine.filter((s) => s.agent === SONNET).map((s) => s.at));
+  return mine
+    .map((s) => {
+      if (!s.chat) return s;
+      let text = s.chat.text;
+      for (const [from, to] of SOLO_TEXT) text = text.replace(from, to);
+      const late = s.agent == null && s.at > lastSonnet && (s.chat.kind === "review" || s.chat.kind === "result");
+      return { ...s, at: late ? lastSonnet : s.at, chat: { ...s.chat, text } };
+    })
+    .sort((a, b) => a.at - b.at);
+}
+
+/** 내 차례가 되면 채널 검토자(요청자가 아닌 첫 사람)에게 멘션을 건다. 서버 chat.ts 와 같은 문장이다. */
+function withMentions(steps: Step[], channel: string, requester: string): Step[] {
+  const reviewer = pickReviewer(CHANNELS.find((c) => c.id === channel), requester);
+  if (!reviewer) return steps;
+  const out: Step[] = [];
+  for (const s of steps) {
+    out.push(s);
+    if (s.chat?.kind === "review")
+      out.push({
+        at: s.at + 400,
+        chat: { user: "willnew", bot: true, kind: "review", text: "" },
+        late: (live) => {
+          const id = pickWinner(live.run);
+          return reviewMessage(reviewer, live.run.agents.find((a) => a.id === id) ?? live.run.agents[0], live.run.baseBranch, false);
+        },
+      });
+  }
+  return out;
+}
+
+const BASE_REFS: Record<string, string> = { backend: "4d9d4a5", cs: "4d9d4a5", web: "e71b0c8", data: "9f23a6d", "content-ops": "30c8b1e" };
 let runSeq = 0;
 function launch(sc: Scenario): Run {
   const createdAt = Date.now() - sc.ago;
@@ -1204,17 +1520,18 @@ function launch(sc: Scenario): Run {
   const channel = CHANNELS.find((c) => c.id === sc.channel);
   const tpl = sc.template ? TEMPLATES.find((t) => t.id === sc.template)! : routeTemplate(sc.text);
   const clean = sc.text.replace(/@willnew\s*/g, "").trim();
-  const agents = sc.agents ?? [{ adapter: "claude-code", model: "sonnet", label: "claude-sonnet" }, { adapter: "codex", label: "codex" }];
+  const agents = sc.agents ?? [SONNET_SPEC];
   const check = sc.check ?? "npm test";
+  const race = agents.length > 1;
   const triage: Triage = {
     by: "llm",
     template: tpl.id,
     title: sc.title ?? clean.slice(0, 60),
     task: `${clean}\n\n${sc.task ?? "Find the root cause and fix it. Do not modify tests. Run `npm test` to confirm."}`,
-    plan: sc.plan ?? ["관련 코드를 읽고 원인을 찾는다", "고친다 (테스트는 수정 금지)", `${check} 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다`, "통과한 결과 중 하나를 골라 요청자 검토를 받는다"],
+    plan: (sc.plan ?? ["관련 코드를 읽고 원인을 찾는다", "고친다 (테스트는 수정 금지)", `${check} 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다`, REVIEW_STEP_PLAN]).map((l) => (!race && l === REVIEW_STEP_PLAN ? REVIEW_STEP_SOLO : l)),
     agents,
     check,
-    reason: sc.reason ?? `${tpl.name} 요청이에요. 테스트가 판정할 수 있어 두 에이전트를 겨루게 하고 자기 수정 1회를 허용.`,
+    reason: sc.reason ?? `${tpl.name} 요청이에요. 테스트가 판정할 수 있어 ${race ? "두 에이전트를 겨루게 하고" : "에이전트 하나로 시작하고"} 자기 수정 1회를 허용.`,
     durationMs: sc.triageMs ?? 21400,
     costUsd: 0.02,
   };
@@ -1229,6 +1546,8 @@ function launch(sc: Scenario): Run {
       checkCmd: check,
       createdAt,
       requester: sc.requester,
+      requesterTitle: sc.requesterTitle ?? titleOf(sc.requester),
+      requesterAvatar: avatarOf(sc.requester),
       team: sc.team,
       template: tpl.id,
       channel: sc.channel,
@@ -1237,17 +1556,18 @@ function launch(sc: Scenario): Run {
       agents: [],
     };
   const agentSpecs = agents.map((a, i) => blank(id, i, a.adapter, a.label ?? a.adapter, a.model, createdAt));
-  const live: Live = { run, channel: sc.channel, steps: sc.steps(id, sc.requester), cursor: 0, triage, agentSpecs };
+  const steps = withMentions(race ? sc.steps(id, sc.requester) : soloSteps(sc.steps(id, sc.requester)), sc.channel, sc.requester);
+  const live: Live = { run, channel: sc.channel, steps, cursor: 0, triage, agentSpecs };
   lives.set(id, live);
-  pushChat({ id: `m${++msgSeq}`, channel: sc.channel, ts: createdAt, user: sc.requester, bot: false, text: sc.text });
+  pushChat({ id: `m${++msgSeq}`, channel: sc.channel, ts: createdAt, user: sc.requester, userTitle: sc.requesterTitle ?? titleOf(sc.requester), bot: false, text: sc.text });
   tickOne(live, Date.now()); // fast-forward steps that are already in the past
   ensureTicker();
   return run;
 }
 
-/** A request typed into the demo composer: the scripted duration race, whatever the text says. */
-function spawn(channel: string, requester: string, team: string, text: string, ago = 0): Run {
-  return launch(durationScenario(channel, requester, team, text, ago));
+/** A request typed into the demo composer: the scripted renewal-date race, whatever the text says. */
+function spawn(channel: string, requester: string, team: string, text: string, race: boolean, title?: string, ago = 0): Run {
+  return launch({ ...renewalScenario(channel, requester, team, text, ago, race), requesterTitle: title });
 }
 
 // ---------------------------------------------------------------------------------------------- history
@@ -1303,6 +1623,12 @@ const RETRY_LINE = "검증 실패 → 실패 로그를 돌려주고 다시 시�
 
 interface Past {
   id: string;
+  /** 에이전트 하나만 돈 기록(기본). 겨루기 기록은 비워 둔다 */
+  single?: boolean;
+  /** 승인 뒤 CI 에서 lint 가 빨개서 멈춘 기록 */
+  ciFail?: boolean;
+  /** 승인된 결과의 "요청자에게" 한 줄 */
+  note?: string;
   ago: number;
   channel: string;
   requester: string;
@@ -1316,10 +1642,31 @@ interface Past {
   agents: (start: number, id: string) => AgentRun[];
 }
 
+const PATCH_RECEIPT = `diff --git a/src/mail/receipt.js b/src/mail/receipt.js
+index 5b1c9a3..e24d70f 100644
+--- a/src/mail/receipt.js
++++ b/src/mail/receipt.js
+@@ -14,6 +14,7 @@ export function receiptLines(order) {
+   const lines = order.items.map((it) => ({ label: it.name, amount: it.price * it.qty }));
+-  const refunded = order.refunds.reduce((s, r) => s + r.amount + r.fee, 0);
+-  lines.push({ label: "환불", amount: -refunded });
+-  lines.push({ label: "환불 수수료", amount: order.refunds.reduce((s, r) => s + r.fee, 0) });
++  const refunded = order.refunds.reduce((s, r) => s + r.amount, 0);
++  const fee = order.refunds.reduce((s, r) => s + r.fee, 0);
++  lines.push({ label: "환불", amount: -refunded });
++  if (fee) lines.push({ label: "환불 수수료", amount: fee });
+   return lines;
+ }
+`;
+const RECEIPT_TESTS = names(["items only", "partial refund", "full refund", "refund fee shown once", "no fee hides the line", "two refunds"]);
+const CHECK_RECEIPT = nodeOut("billing-api@2.3.0", RECEIPT_TESTS, undefined, "41.2");
+
 const PAST: Past[] = [
   // 정하늘 · 병합 — 짧은 승인 코멘트
   {
     id: "r-8c1",
+    single: true,
+    note: "주문 목록 API 가 빈 페이지나 limit=0 요청에도 에러 대신 정상으로 응답해요.",
     ago: 3.4 * HOUR,
     channel: "backend",
     requester: "정하늘",
@@ -1457,6 +1804,7 @@ const PAST: Past[] = [
   // 김도윤 · 병합
   {
     id: "r-6a2",
+    note: "수집기 README 가 지금 CLI 옵션 기준으로 바뀌었어요.",
     ago: 5.5 * HOUR,
     channel: "content-ops",
     requester: "김도윤",
@@ -1497,6 +1845,9 @@ const PAST: Past[] = [
   // 최민재 · 병합
   {
     id: "r-4e7",
+    single: true,
+    ciFail: true,
+    note: "화면에서 보이는 변화는 없어요. 버튼 종류를 잘못 적으면 개발 중에 바로 알려줘요.",
     ago: 1.1 * DAY,
     channel: "web",
     requester: "최민재",
@@ -1561,6 +1912,7 @@ const PAST: Past[] = [
   // 정하늘 · 반려
   {
     id: "r-5d9",
+    single: true,
     ago: 1.6 * DAY,
     channel: "backend",
     requester: "정하늘",
@@ -1624,19 +1976,74 @@ const PAST: Past[] = [
       }),
     ],
   },
+  // 윤서아 · #cs — 하루쯤 전에 맡겨 이미 반영된 것
+  {
+    id: "r-cs1",
+    single: true,
+    note: "부분 환불한 고객 영수증 메일에 환불 수수료가 한 번만 나와요. 이미 나간 메일은 그대로예요.",
+    ago: 5.2 * HOUR,
+    channel: "cs",
+    requester: "윤서아",
+    team: "cs",
+    template: "bugfix",
+    title: "부분 환불 영수증에 환불 수수료가 두 번 나옴",
+    text: "@willnew 부분 환불한 고객 영수증 메일에 환불 수수료가 두 번 찍혀서 나간대요. 고객이 금액이 이상하다고 문의 주셨어요 #418",
+    check: "npm test",
+    plan: ["부분 환불 주문으로 영수증 줄을 재현한다", "src/mail/receipt.js 에서 수수료가 두 번 들어가는 곳을 고친다 (테스트는 수정 금지)", "npm test 로 검증하고, 실패하면 로그를 붙여 한 번 더 시도한다", REVIEW_STEP_PLAN],
+    review: { status: "approved", reviewer: "이해준", agentId: "r-cs1-a0", at: 0, comment: "확인했어요" },
+    agents: (s, id) => [
+      pastAgent(id, 0, "claude-sonnet", "claude-code", "sonnet", s, {
+        beats: [
+          [1.2, "text", "receiptLines 에서 환불 금액에 수수료를 더하고, 수수료 줄을 또 넣고 있어요. 수수료는 한 줄로만 나오게 할게요."],
+          [2.0, "tool", 'Read {"file_path":"./src/mail/receipt.js"}'],
+          [2.6, "tool_result", cat(["export function receiptLines(order) {", "  const lines = order.items.map((it) => ({ label: it.name, amount: it.price * it.qty }));", "  const refunded = order.refunds.reduce((s, r) => s + r.amount + r.fee, 0);"])],
+          [6.0, "tool", 'Edit {"file_path":"./src/mail/receipt.js","old_string":"s + r.amount + r.fee","new_string":"s + r.amount"}'],
+          [6.6, "tool_result", "The file ./src/mail/receipt.js has been updated."],
+          [9.5, "tool", 'Bash {"command":"node --test"}'],
+          [11.8, "tool_result", CHECK_RECEIPT.split("\n").slice(3, 8).join("\n")],
+          [13.0, "text", "환불 금액과 수수료를 따로 계산하고, 수수료가 0이면 줄을 빼요. 테스트 6개 모두 통과해요."],
+          [13.4, "check", "$ npm test"],
+          [14.6, "check", "검증 통과 (exit 0, 1.2 s)"],
+        ],
+        ms: 15 * SEC,
+        attempt: 1,
+        ok: true,
+        out: CHECK_RECEIPT,
+        checkMs: 1200,
+        cost: 0.08,
+        tokens: 94_000,
+        summary: "환불 금액과 수수료를 따로 계산하고, 수수료가 0이면 줄을 빼요. 테스트 6개 모두 통과해요.",
+        patch: PATCH_RECEIPT,
+        turns: 4,
+      }),
+    ],
+  },
 ];
+
+const PR_NO: Record<string, number> = { "r-8c1": 497, "r-6a2": 503, "r-4e7": 506, "r-cs1": 509 };
+const CHECK_NAMES = ["test (node 20)", "lint", "build"];
+const prUrl = (n: number) => `https://github.com/acme/billing-api/pull/${n}`;
+/** 지난 기록의 배포 줄: 대부분 배포까지 갔고, 하나는 lint 때문에 CI 에서 멈췄다. */
+function pastShip(p: Past, run: Run): Ship {
+  const prNumber = PR_NO[p.id] ?? 500;
+  const at = (run.review.at ?? run.createdAt) + 4 * MIN;
+  if (p.ciFail) return { mode: "pr", stage: "ci_failed", prNumber, prUrl: prUrl(prNumber), checks: CHECK_NAMES.map((name) => ({ name, state: name === "lint" ? "fail" : "pass" })), env: "production", at };
+  return { mode: "pr", stage: "deployed", prNumber, prUrl: prUrl(prNumber), checks: CHECK_NAMES.map((name) => ({ name, state: "pass" as const })), env: "production", at };
+}
 
 function buildPast(p: Past): Run {
   const createdAt = T0 - p.ago;
-  const agents = p.agents(createdAt + 2 * SEC, p.id);
+  const agents = p.single ? p.agents(createdAt + 2 * SEC, p.id).slice(0, 1) : p.agents(createdAt + 2 * SEC, p.id);
+  const noted = agents.find((x) => x.id === p.review.agentId) ?? agents[0];
+  if (p.note && noted) noted.userNote = p.note;
   const end = Math.max(...agents.map((a) => a.endedAt ?? 0));
   const tpl = TEMPLATES.find((t) => t.id === p.template)!;
   const approved = p.review.status === "approved";
-  if (approved) {
+  if (approved && !p.ciFail) {
     const a = agents.find((x) => x.id === p.review.agentId);
     if (a) a.merged = true;
   }
-  return {
+  const built: Run = {
     id: p.id,
     title: p.title,
     task: p.text.replace(/@willnew\s*/, ""),
@@ -1646,6 +2053,8 @@ function buildPast(p: Past): Run {
     checkCmd: p.check,
     createdAt,
     requester: p.requester,
+    requesterTitle: titleOf(p.requester),
+    requesterAvatar: avatarOf(p.requester),
     team: p.team,
     template: p.template,
     channel: p.channel,
@@ -1654,17 +2063,19 @@ function buildPast(p: Past): Run {
       template: p.template,
       title: p.title,
       task: `${p.text.replace(/@willnew\s*/, "")}\n\nDo not modify tests.${p.check ? ` Run \`${p.check}\` to confirm.` : ""}`,
-      plan: p.plan,
+      plan: p.single ? p.plan.map((l) => (l === REVIEW_STEP_PLAN ? REVIEW_STEP_SOLO : l)) : p.plan,
       agents: agents.map((a) => ({ adapter: a.adapter, model: a.model, label: a.label })),
       check: p.check,
       reason: `${tpl.name} 요청이에요.`,
       durationMs: p.template === "docs" ? 12 : p.id === "r-8c1" ? 17900 : 23100,
       costUsd: p.template === "docs" ? 0 : 0.02,
     },
-    review: p.review.status === "pending" ? p.review : { ...p.review, at: end + (p.id === "r-8c1" ? 11 : p.id === "r-6a2" ? 26 : p.id === "r-4e7" ? 140 : 95) * MIN },
+    review: p.review.status === "pending" ? p.review : { ...p.review, at: end + (p.id === "r-8c1" ? 11 : p.id === "r-6a2" ? 26 : p.id === "r-4e7" ? 140 : p.id === "r-cs1" ? 14 : 95) * MIN },
     maxAttempts: 2,
     agents,
   };
+  if (approved) built.ship = pastShip(p, built);
+  return built;
 }
 
 const PAST_RUNS = PAST.map(buildPast);
@@ -1672,24 +2083,40 @@ const PAST_RUNS = PAST.map(buildPast);
 function seedChat() {
   const add = (channel: string, ts: number, user: string, text: string, extra: Partial<ChatMessage> = {}) =>
     pushChat({ id: `m${++msgSeq}`, channel, ts, user, bot: user === "willnew", text, ...extra });
-  const [orders, settle, readme, button, session] = PAST_RUNS;
+  const [orders, settle, readme, button, session, receipt] = PAST_RUNS;
+  const approve = (channel: string, r: Run) => {
+    const who = r.review.reviewer ?? "이해준";
+    const t = r.review.at!;
+    const n = PR_NO[r.id];
+    add(channel, t, "willnew", `${who}님이 승인해서 PR을 올려요`, { runId: r.id, kind: "result" });
+    add(channel, t + 20 * SEC, "willnew", `PR #${n} 올렸어요`, { runId: r.id, kind: "result" });
+    if (r.ship?.stage === "ci_failed") {
+      add(channel, t + 3 * MIN, "willnew", "CI 실패: lint. 자동으로 다시 돌리지 않았어요", { runId: r.id, kind: "result" });
+      return;
+    }
+    add(channel, t + 3 * MIN, "willnew", "CI 3개 통과", { runId: r.id, kind: "result" });
+    add(channel, t + 3 * MIN + 10 * SEC, "willnew", "main에 병합했어요", { runId: r.id, kind: "result" });
+    add(channel, t + 5 * MIN, "willnew", "production 배포 끝났어요", { runId: r.id, kind: "result" });
+    add(channel, t + 5 * MIN + SEC, who, deployedReply(r, r.agents.find((a) => a.id === r.review.agentId)?.userNote), { runId: r.id, kind: "result", via: "willnew" });
+  };
   const bySum = (r: Run) => r.review.at!;
 
   // #backend
   add("backend", session.createdAt - 4 * MIN, "정하늘", "어제 배포하고 나서부터 세션이 이상하게 빨리 끊긴다는 문의가 들어오고 있어요. 지금까지 3건이에요");
   add("backend", session.createdAt, "정하늘", PAST[4].text);
   add("backend", session.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: session.id, kind: "ack" });
-  add("backend", session.createdAt + 24 * SEC, "willnew", "계획: 버그 수정 · sonnet, codex 둘이 겨뤄요 · npm test", { runId: session.id, kind: "triage" });
-  add("backend", session.createdAt + 2 * MIN + 10 * SEC, "willnew", "sonnet 만 통과했어요. 정하늘님, 검토해 주세요", { runId: session.id, kind: "review" });
+  add("backend", session.createdAt + 24 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: session.id, kind: "triage" });
+  add("backend", session.createdAt + 2 * MIN + 10 * SEC, "willnew", "sonnet 통과. 시각 계산을 고쳤다고 해요. 정하늘님, 검토해 주세요", { runId: session.id, kind: "review" });
   add("backend", bySum(session) - 6 * MIN, "정하늘", "diff 봤는데 +9h 를 그냥 더했네요. 이건 아닌 듯");
   add("backend", bySum(session), "willnew", "정하늘님이 반려했어요. “증상만 가렸어요. 서버 TZ 설정 문제라 제가 직접 볼게요”", { runId: session.id, kind: "result" });
   add("backend", bySum(session) + 3 * MIN, "이해준", "TZ 는 어제 인프라에서 컨테이너 이미지 바꾸면서 풀린 거 같음. 하늘님 확인하면 알려줘요");
   add("backend", orders.createdAt - 6 * MIN, "정하늘", "주문 목록 API 500 나는 거 로그 잡았어요. limit=0 이랑 빈 페이지 둘 다 같은 줄에서 터져요");
   add("backend", orders.createdAt, "정하늘", PAST[0].text);
   add("backend", orders.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: orders.id, kind: "ack" });
-  add("backend", orders.createdAt + 20 * SEC, "willnew", "계획: 버그 수정 · sonnet, codex 둘이 겨뤄요 · npm test", { runId: orders.id, kind: "triage" });
-  add("backend", orders.createdAt + 56 * SEC, "willnew", "둘 다 통과. sonnet 이 13초 빠르고 변경도 작아서 이걸로 추천해요", { runId: orders.id, kind: "review" });
-  add("backend", bySum(orders), "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: orders.id, kind: "result" });
+  add("backend", orders.createdAt + 20 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: orders.id, kind: "triage" });
+  add("backend", orders.createdAt + 56 * SEC, "willnew", "sonnet 통과. 테스트 9개 모두 통과했어요", { runId: orders.id, kind: "review" });
+  add("backend", orders.createdAt + 57 * SEC, "willnew", reviewMessage("이해준", orders.agents[0], "main", false), { runId: orders.id, kind: "review" });
+  approve("backend", orders);
   add("backend", T0 - 9 * MIN, "이해준", "어제 배포 후로 duration 테스트가 전부 빨간불이네요");
   add("backend", T0 - 8 * MIN, "정하늘", "저도 봤어요. parseDuration 이 h 말고 m 이 섞이면 NaN 이 나오는 것 같던데 원인까진 못 봤어요");
 
@@ -1697,18 +2124,20 @@ function seedChat() {
   add("web", button.createdAt - 2 * MIN, "최민재", "Button 쓰는 데마다 variant 오타가 하나씩 있네 ㅋㅋ");
   add("web", button.createdAt, "최민재", PAST[3].text);
   add("web", button.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: button.id, kind: "ack" });
-  add("web", button.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · sonnet, codex 둘이 겨뤄요 · npm test", { runId: button.id, kind: "triage" });
-  add("web", button.createdAt + 70 * SEC, "willnew", "둘 다 통과. sonnet 이 16초 빠르고 변경이 작아서 이걸로 추천해요", { runId: button.id, kind: "review" });
-  add("web", bySum(button), "willnew", "이해준님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: button.id, kind: "result" });
-  add("web", bySum(button) + 2 * MIN, "최민재", "오 danger-outline 도 잡아줬네 ㄳ");
+  add("web", button.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · 에이전트 1개 (sonnet) · npm test", { runId: button.id, kind: "triage" });
+  add("web", button.createdAt + 70 * SEC, "willnew", "sonnet 통과. 테스트 26개 모두 통과했어요", { runId: button.id, kind: "review" });
+  add("web", button.createdAt + 71 * SEC, "willnew", reviewMessage("이해준", button.agents[0], "main", false), { runId: button.id, kind: "review" });
+  approve("web", button);
+  add("web", bySum(button) + 8 * MIN, "최민재", "lint 에서 걸렸네. 따로 고쳐서 다시 올릴게");
 
   // #data
   add("data", settle.createdAt - 3 * MIN, "박서윤", "어제 정산 로그 기준 중복 행 412/18,730 (2.2%). 근데 중복 제거가 settle_daily, weekly, reprocess 세 군데에 복붙돼있어요");
   add("data", settle.createdAt, "박서윤", PAST[1].text);
   add("data", settle.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: settle.id, kind: "ack" });
-  add("data", settle.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · sonnet, codex 둘이 겨뤄요 · pytest -q", { runId: settle.id, kind: "triage" });
-  add("data", settle.createdAt + 2 * MIN + 5 * SEC, "willnew", "sonnet 만 통과했어요. 1차 검증 실패 후 스스로 고쳤고 테스트 파일을 건드렸어요. 박서윤님, 검토해 주세요", { runId: settle.id, kind: "review" });
-  add("data", settle.createdAt + 6 * MIN, "박서윤", "test_settle.py 건드린 거 import 한 줄이면 괜찮은데 diff 보고 올릴게요");
+  add("data", settle.createdAt + 22 * SEC, "willnew", "계획: 리팩터링 · 겨루기 2개 (sonnet, codex) · pytest -q", { runId: settle.id, kind: "triage" });
+  add("data", settle.createdAt + 2 * MIN + 5 * SEC, "willnew", "sonnet 만 통과했어요. 1차 검증 실패 후 스스로 고쳤고 테스트 파일을 건드렸어요", { runId: settle.id, kind: "review" });
+  add("data", settle.createdAt + 2 * MIN + 6 * SEC, "willnew", reviewMessage("이해준", settle.agents[0], "main", false), { runId: settle.id, kind: "review" });
+  add("data", settle.createdAt + 6 * MIN, "이해준", "test_settle.py 건드린 거 import 한 줄이면 괜찮은데 diff 보고 올릴게요");
 
   // #content-ops
   add("content-ops", readme.createdAt - MIN, "김도윤", "신입분들이 수집기 쓰는 법을 또 물어보셨어요. README 가 예전 기준이라 헷갈려 하세요");
@@ -1716,7 +2145,21 @@ function seedChat() {
   add("content-ops", readme.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: readme.id, kind: "ack" });
   add("content-ops", readme.createdAt + 3 * SEC, "willnew", "계획: 문서화 · sonnet 이 맡아요", { runId: readme.id, kind: "triage" });
   add("content-ops", readme.createdAt + 36 * SEC, "willnew", "sonnet 이 끝냈어요. 김도윤님, 검토해 주세요", { runId: readme.id, kind: "review" });
-  add("content-ops", bySum(readme), "willnew", "김도윤님이 claude-sonnet 결과를 승인했어요. main 에 반영했어요.", { runId: readme.id, kind: "result" });
+  approve("content-ops", readme);
+
+  // #cs
+  add("cs", receipt.createdAt - 14 * MIN, "윤서아", "부분 환불한 고객 영수증이 이상하다는 문의가 또 왔어요 ㅠ");
+  add("cs", receipt.createdAt - 9 * MIN, "이해준", "수수료 줄이 두 번 나가는 거면 메일 쪽일 거예요. 주문번호 있으면 같이 적어줘요");
+  add("cs", receipt.createdAt, "윤서아", PAST[5].text, { userTitle: "CS" });
+  add("cs", receipt.createdAt + 2 * SEC, "willnew", "받았어요. 계획 세우는 중", { runId: receipt.id, kind: "ack" });
+  add("cs", receipt.createdAt + 19 * SEC, "willnew", "계획: 버그 수정 · 에이전트 1개 (sonnet) · npm test", { runId: receipt.id, kind: "triage" });
+  add("cs", receipt.createdAt + 36 * SEC, "willnew", "sonnet 통과. 테스트 6개 모두 통과했어요", { runId: receipt.id, kind: "review" });
+  add("cs", receipt.createdAt + 37 * SEC, "willnew", reviewMessage("이해준", receipt.agents[0], "main", false), { runId: receipt.id, kind: "review" });
+  approve("cs", receipt);
+  add("cs", bySum(receipt) + 4 * MIN, "윤서아", "넵 고객님께 안내드릴게요 감사합니다");
+  add("cs", T0 - 52 * MIN, "윤서아", "오늘 환불 문의는 이걸로 끝인 듯해요");
+  add("cs", T0 - 7 * MIN, "윤서아", "구독 갱신일 문의가 오늘만 3건째네요. 1/31에 가입한 분들이 많아요");
+  add("cs", T0 - 6 * MIN, "이해준", "월말 가입자면 날짜 계산 쪽일 수 있어요. 케이스 하나 정확히 적어서 willnew한테 넘겨봐요");
 }
 
 function seedLiveChat(now: number) {
@@ -1724,7 +2167,7 @@ function seedLiveChat(now: number) {
   const t = now - SUMMARY_AGO;
   const bots: [number, NonNullable<ChatMessage["kind"]>, string][] = [
     [2, "ack", "받았어요. 계획 세우는 중"],
-    [24, "triage", "계획: 기능 구현 · sonnet, codex 둘이 겨뤄요 · npm test"],
+    [24, "triage", "계획: 기능 구현 · 겨루기 2개 (sonnet, codex) · npm test"],
     [78, "review", "둘 다 통과. sonnet 이 5초 빠르고 변경도 작아서 이걸로 추천해요"],
   ];
   const runId = [...lives.values()].find((l) => l.run.template === "feature")?.run.id;
@@ -1765,7 +2208,7 @@ function ensureSeed() {
     triageMs: 25100, steps: csvSteps,
   });
   // the scripted race, started a few seconds ago so the first screen can still show it running
-  spawn("backend", "이해준", "platform", "@willnew 어제 배포 이후로 parseDuration 테스트 7개 다 깨짐. 1h30m 같은 거 못 읽는 듯", 4 * SEC);
+  launch(durationScenario("backend", "이해준", "platform", "@willnew 어제 배포 이후로 parseDuration 테스트 7개 다 깨짐. 1h30m 같은 거 못 읽는 듯", 4 * SEC));
 }
 
 // ---------------------------------------------------------------------------------------------- metrics
@@ -1862,6 +2305,24 @@ function demoSteer(runId: string, agentId: string, text: string, by: string) {
   if (!wasDone) return;
   const file = a.diff.fileStats?.[0]?.path ?? "./src/index.js";
   const cmd = run.checkCmd || "npm test";
+  if (a.diff.fileStats?.some((x) => x.path === "src/billing/renewal.js") && a.label === "claude-sonnet") {
+    // the renewal demo: the reviewer asks for lib/time.js instead of a new dependency
+    const say2 = (ms: number, kind: AgentEvent["kind"], t: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
+      setTimeout(() => {
+        emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind, text: t, attempt: a.attempt }, agent: patch });
+        if (runPatch) emitAny(runId, { runId, run: runPatch });
+      }, ms);
+    emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind: "plan", text: "추가 지시를 반영해 이어서 작업" }, agent: { status: "running" } });
+    emitAny(runId, { runId, run: { review: { status: "none" } } });
+    say2(1200, "text", "lib/time.js 의 toKst / fromKst 로 바꿀게요. date-fns-tz 는 빼고 package.json 도 원래대로 돌립니다.");
+    say2(2200, "tool", 'Edit {"file_path":"./src/billing/renewal.js"}');
+    say2(2600, "tool_result", "The file ./src/billing/renewal.js has been updated.");
+    say2(3000, "tool", 'Edit {"file_path":"./package.json"}');
+    say2(3300, "tool_result", "The file ./package.json has been updated.");
+    say2(3700, "check", `$ ${cmd}`, { status: "checking", diff: diffOf(PATCH_RENEWAL_S2) });
+    say2(5100, "check", "검증 통과 (exit 0, 0.5 s)", { status: "done", endedAt: Date.now() + 5100, durationMs: (a.durationMs ?? 0) + 5100, summary: RENEWAL_SONNET_SUMMARY_2, check: { status: "passed", exitCode: 0, output: CHECK_RENEWAL_OK, durationMs: 500 } }, { review: { status: "pending" } });
+    return;
+  }
   const say = (ms: number, kind: AgentEvent["kind"], t: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
     setTimeout(() => {
       emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind, text: t, attempt: a.attempt }, agent: patch });
@@ -1877,6 +2338,52 @@ function demoSteer(runId: string, agentId: string, text: string, by: string) {
   say(4400, "check", "검증 통과 (exit 0, 1.2 s)", { status: "done", endedAt: Date.now() + 4400, durationMs: (a.durationMs ?? 0) + 4400, summary: `추가 지시를 반영했어요: ${text.split("\n").slice(-1)[0].slice(0, 120)}` }, { review: { status: "pending" } });
 }
 
+// ---------------------------------------------------------------------------------------------- ship (pr mode, simulated)
+
+let prSeq = 511;
+const botSay = (run: Run, text: string) => run.channel && pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, kind: "result" });
+
+/** 승인 뒤: PR 번호가 붙고, CI 세 개가 6초쯤에 걸쳐 초록이 되고, 병합, 배포 4초. 실제 gh 는 부르지 않는다. */
+function simulateShip(runId: string, agentId: string | undefined, reviewer: string) {
+  const first = findRun(runId);
+  if (!first) return;
+  const n = ++prSeq;
+  const env = "production";
+  const set = (patch: Partial<Ship>) => {
+    const cur = findRun(runId)?.ship;
+    emitAny(runId, { runId, run: { ship: { ...(cur ?? { mode: "pr" as const, stage: "pr" as const }), ...patch, at: Date.now() } as Ship } });
+  };
+  const setCheck = (name: string) => {
+    const cur = findRun(runId)?.ship?.checks ?? [];
+    set({ checks: cur.map((c) => (c.name === name ? { ...c, state: "pass" as const } : c)) });
+  };
+  const at = (ms: number, fn: () => void) => setTimeout(fn, ms);
+  at(900, () => {
+    set({ stage: "ci", prNumber: n, prUrl: prUrl(n), checks: CHECK_NAMES.map((name) => ({ name, state: "pending" as const })) });
+    botSay(findRun(runId)!, `PR #${n} 올렸어요`);
+  });
+  at(2600, () => setCheck("test (node 20)"));
+  at(4300, () => setCheck("lint"));
+  at(6200, () => {
+    setCheck("build");
+    botSay(findRun(runId)!, "CI 3개 통과");
+  });
+  at(6900, () => {
+    const run = findRun(runId)!;
+    set({ stage: "merged" });
+    if (agentId) emitAny(runId, { runId, agentId, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨 (PR 병합)` }, agent: { merged: true } });
+    botSay(run, `${run.baseBranch}에 병합했어요`);
+  });
+  at(7400, () => set({ stage: "deploying" }));
+  at(11400, () => {
+    const run = findRun(runId)!;
+    set({ stage: "deployed" });
+    botSay(run, `${env} 배포 끝났어요`);
+    const note = run.agents.find((a) => a.id === agentId)?.userNote;
+    if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: reviewer, bot: false, via: "willnew", text: deployedReply(run, note), runId, kind: "result" });
+  });
+}
+
 // ---------------------------------------------------------------------------------------------- api
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -1884,7 +2391,7 @@ const later = <T,>(v: T, ms = 90) => new Promise<T>((res) => setTimeout(() => re
 const allRuns = () => [...[...lives.values()].map((l) => l.run), ...PAST_RUNS].sort((a, b) => b.createdAt - a.createdAt);
 
 export const demoApi: Api = {
-  config: () => later({ repo: REPO, check: "npm test", preview: "npm run dev -- --port {port}" }),
+  config: () => later({ repo: REPO, check: "npm test", preview: "npm run dev -- --port {port}", ship: "pr" as const, deploy: true, deployEnv: "production" }),
   plan: (text) => {
     const tpl = routeTemplate(text);
     return later({ by: "rules" as const, template: tpl.id, title: text.slice(0, 40), task: text, plan: [], agents: tpl.agents, check: tpl.check, reason: "" }, 60);
@@ -1965,15 +2472,17 @@ export const demoApi: Api = {
     ensureSeed();
     return later(clone((chat.get(ch) ?? []).slice().sort((a, b) => a.ts - b.ts)));
   },
-  async postMessage(ch, user, text) {
+  async postMessage(ch, user, text, _team, overrides, userTitle) {
     ensureSeed();
     const team = CHANNELS.find((c) => c.id === ch)?.team ?? "platform";
     if (/@willnew/i.test(text)) {
-      spawn(ch, user, team, text);
+      // 겨루기: 토글을 켰거나 "겨뤄" / "둘 다" 라고 쓴 경우
+      const race = (overrides?.agents?.length ?? 0) > 1 || (!overrides?.agents && /겨뤄|둘 다/.test(text));
+      spawn(ch, user, team, text, race, userTitle);
       const list = chat.get(ch)!;
       return { message: clone(list[list.length - 1]) };
     }
-    const message: ChatMessage = { id: `m${++msgSeq}`, channel: ch, ts: Date.now(), user, bot: false, text };
+    const message: ChatMessage = { id: `m${++msgSeq}`, channel: ch, ts: Date.now(), user, userTitle, bot: false, text };
     pushChat(message);
     return { message: clone(message) };
   },
@@ -1996,25 +2505,20 @@ export const demoApi: Api = {
     return r ? later(clone(r)) : Promise.reject(new Error(`요청 ${id} 을 찾을 수 없어요`));
   },
   async review(runId, input) {
-    const live = lives.get(runId);
-    const run = live?.run ?? PAST_RUNS.find((p) => p.id === runId);
+    const run = findRun(runId);
     if (!run) return { ok: false, message: "요청을 찾을 수 없어요" };
-    const review = { status: input.decision === "approve" ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
-    const agent = run.agents.find((a) => a.id === input.agentId);
-    if (live) {
-      emit(live, { runId, run: { review } });
-      if (agent && input.decision === "approve") emit(live, { runId, agentId: agent.id, event: { ts: Date.now(), kind: "status", text: `${run.baseBranch} 에 반영됨` }, agent: { merged: true } });
-    } else {
-      run.review = review;
-      if (agent && input.decision === "approve") agent.merged = true;
-    }
-    const text =
-      input.decision === "approve"
-        ? `${input.reviewer}님이 ${agent?.label ?? "결과"} 를 승인했어요. ${run.baseBranch} 에 반영했어요.`
-        : `${input.reviewer}님이 반려했어요${input.comment ? `. “${input.comment}”` : ""}`;
-    if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, runId, kind: "result" });
+    const approve = input.decision === "approve";
+    const review = { status: approve ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
+    // pr 모드: 승인은 바로 기록하고, 병합은 CI 가 끝난 뒤
+    if (approve) emitAny(runId, { runId, run: { ship: { mode: "pr", stage: "pr", env: "production", at: Date.now() } } });
+    emitAny(runId, { runId, run: { review } });
+    const why = input.comment ? ` · “${input.comment}”` : "";
+    botSay(run, approve ? `${input.reviewer}님이 승인해서 PR을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
+    if (approve) simulateShip(runId, input.agentId, input.reviewer);
+    else if (run.channel)
+      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: input.reviewer, bot: false, via: "willnew", text: rejectedReply(run, input.comment), runId, kind: "result" });
     await later(null, 300);
-    return { ok: true, message: input.decision === "approve" ? "승인하고 반영했어요" : "반려했어요" };
+    return { ok: true, message: approve ? "승인했어요. PR을 올리고 CI를 기다려요" : "반려했어요" };
   },
   async cancel(runId, agentId) {
     const live = lives.get(runId);

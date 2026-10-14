@@ -43,7 +43,6 @@ Decide how willnew should handle it. Reply with ONLY a JSON object, no prose:
  "task": precise English instruction for coding agents (what to change, constraints, how to verify),
  "plan": 3-5 short Korean steps,
  "check": shell command that verifies the result ("" if none),
- "agents": number of parallel agents — 2 for ordinary code changes (so results can be compared), 3 for larger features or risky changes, 1 only for docs,
  "reason": one short Korean sentence why}`;
 
 export async function triage(text: string, repo: string, defaultCheck: string): Promise<Triage> {
@@ -63,14 +62,11 @@ export async function triage(text: string, repo: string, defaultCheck: string): 
     }
     if (!j) throw new Error("no plan");
     const tpl = templateById(String(j.template));
-    const n = Math.max(1, Math.min(3, Number(j.agents) || tpl.agents.length));
-    const pool = [...tpl.agents, ...TEMPLATES.find((x) => x.id === "feature")!.agents]
-      .filter((a, i, arr) => arr.findIndex((b) => b.label === a.label) === i);
     return {
       by: "llm", template: tpl.id, title: String(j.title ?? "").slice(0, 60) || rulesTriage(text, defaultCheck).title,
       task: `${tpl.instruction}\n\n${String(j.task ?? text)}`,
       plan: Array.isArray(j.plan) ? j.plan.map((x: unknown) => String(x).replace(/^\s*\d+[.)]\s*/, "")).slice(0, 6) : [],
-      agents: pool.slice(0, n), check: typeof j.check === "string" ? j.check : defaultCheck,
+      agents: tpl.agents, check: typeof j.check === "string" ? j.check : defaultCheck,
       reason: String(j.reason ?? ""), durationMs: Date.now() - t0,
       costUsd: typeof envelope.total_cost_usd === "number" ? envelope.total_cost_usd : null,
     };

@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import type { AgentInfo, Api, ServerConfig, Team } from "./api";
+import type { AgentInfo, Api, Channel, ServerConfig, Team } from "./api";
 import { httpApi, isDemo } from "./api";
 import type { PaneTab } from "./AgentPane";
 import { Chat } from "./Chat";
 import { Compose } from "./Compose";
-import { DEMO_CHANNEL, demoApi } from "./demo";
+import { DEMO_CAST, DEMO_CHANNEL, demoApi, demoStartUser } from "./demo";
 import { useRuns, useWatch } from "./flow";
-import { AgentMark, AppIcon, IconChart, IconChat, IconHelp, IconList, IconMoon, IconPlus } from "./icons";
+import { AgentMark, AppIcon, IconChart, IconChat, IconHelp, IconInbox, IconList, IconMoon, IconPlus } from "./icons";
 import { Metrics } from "./Metrics";
+import { Mine } from "./Mine";
 import { Review } from "./Review";
 import { RunList } from "./Runs";
 import { Turn } from "./Turn";
 import { Avatar, Empty, Kbd, ToastProvider, useOutside } from "./ui";
-import { TEAM_KO, adapterName, isActive, loadUser, saveUser, useMedia, type User } from "./util";
+import { ROLE_KO, TEAM_KO, adapterName, isActive, loadUser, saveUser, useMedia, type Role, type User } from "./util";
 import { Workspace } from "./Workspace";
 
 function readPath() {
@@ -40,6 +41,7 @@ function useHashRoute() {
 
 type Route =
   | { page: "home" }
+  | { page: "mine" }
   | { page: "runs" }
   | { page: "run"; id: string; agent?: string; tab?: PaneTab }
   | { page: "review"; id: string; agent?: string }
@@ -55,6 +57,7 @@ function parse(path: string): Route {
   if ((m = /^\/chat\/([^/]+)/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]) };
   if (path.startsWith("/chat")) return { page: "chat", channel: DEMO_CHANNEL };
   if (path.startsWith("/metrics")) return { page: "metrics" };
+  if (path.startsWith("/mine")) return { page: "mine" };
   return { page: "home" };
 }
 
@@ -76,7 +79,8 @@ export function App() {
   const [agentsDown, setAgentsDown] = useState(false);
   const [teams, setTeams] = useState<Team[]>([]);
   const [config, setConfig] = useState<ServerConfig | null>(null);
-  const [user, setUser] = useState<User>(loadUser);
+  const [user, setUser] = useState<User>(() => (demo ? demoStartUser() : null) ?? loadUser());
+  const [channels, setChannels] = useState<Channel[]>([]);
   const [compose, setCompose] = useState(false);
   const [help, setHelp] = useState(false);
   const { runs, error: runsError, reload } = useRuns(api);
@@ -87,6 +91,7 @@ export function App() {
     api.agents().then((a) => { setAgents(a.filter((x) => x.id !== "script")); setAgentsDown(false); }).catch(() => setAgentsDown(true));
     api.teams().then(setTeams).catch(() => undefined);
     api.config().then(setConfig).catch(() => undefined);
+    api.channels().then(setChannels).catch(() => undefined);
   }, [api]);
   // 끊겼다 다시 이어지면 에이전트 목록도 다시 읽는다
   useEffect(() => {
@@ -96,13 +101,14 @@ export function App() {
   // the run that needs you most: your turn first, then whatever is running, then the latest
   const home = useMemo(() => runs?.find((r) => r.review.status === "pending") ?? runs?.find((r) => r.agents.some(isActive)) ?? runs?.[0], [runs]);
   const openId = route.page === "run" || route.page === "review" ? route.id : route.page === "runs" && !phone ? home?.id : undefined;
-  const pendingN = runs?.filter((r) => r.review.status === "pending").length ?? 0;
+  const requester = user.role === "requester";
+  const pendingN = requester ? 0 : runs?.filter((r) => r.review.status === "pending").length ?? 0;
 
   useEffect(() => {
     const run = runs?.find((r) => r.id === openId);
-    const t = route.page === "metrics" ? "지표" : route.page === "chat" ? `#${route.channel}` : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
+    const t = route.page === "metrics" ? "지표" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
     document.title = `${pendingN ? `(${pendingN}) ` : ""}${t} · willnew`;
-  }, [route.page, openId, runs, route, pendingN]);
+  }, [route.page, openId, runs, route, pendingN, user.role]);
 
   // ⌘K / ⌘N anywhere: hand over a new piece of work · ? lists the keys
   useEffect(() => {
@@ -129,6 +135,7 @@ export function App() {
   if (route.page === "metrics") page = <Metrics api={api} />;
   else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
+  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
   else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
@@ -154,11 +161,13 @@ export function App() {
     );
 
   const nav: { id: string; href: string; name: string; Icon: ComponentType<{ size?: number; filled?: boolean }>; on: boolean; badge?: number }[] = [
-    { id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN },
+    ...(requester ? [] : [{ id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN }]),
+    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || (requester && route.page === "home") },
     { id: "runs", href: "#/runs", name: "작업", Icon: IconList, on: route.page === "runs" || route.page === "run" || route.page === "review" },
-    { id: "chat", href: `#/chat/${DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
+    { id: "chat", href: `#/chat/${channels.find((c) => c.team === user.team)?.id ?? DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
     { id: "metrics", href: "#/metrics", name: "지표", Icon: IconChart, on: route.page === "metrics" },
   ];
+  const half = Math.ceil(nav.length / 2);
   const item = (n: (typeof nav)[number], size: number) => (
     <a key={n.id} href={n.href} className={`nav-i ${n.on ? "on" : ""}`} data-tip={n.name} aria-label={n.name} aria-current={n.on ? "page" : undefined}>
       <n.Icon size={size} filled={n.on} />
@@ -186,12 +195,12 @@ export function App() {
 
         <main className="main">{page}</main>
 
-        <nav className="tabbar" aria-label="화면">
-          {nav.slice(0, 2).map((n) => item(n, 22))}
+        <nav className="tabbar" aria-label="화면" style={{ gridTemplateColumns: `repeat(${half}, 1fr) 76px repeat(${nav.length - half}, 1fr)` }}>
+          {nav.slice(0, half).map((n) => item(n, 22))}
           <button className="fab" onClick={() => setCompose(true)} aria-label="새로 맡기기">
             <IconPlus size={24} />
           </button>
-          {nav.slice(2).map((n) => item(n, 22))}
+          {nav.slice(half).map((n) => item(n, 22))}
         </nav>
 
         {offline ? (
@@ -235,6 +244,13 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
 function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(user.name);
+  const [title, setTitle] = useState(user.title);
+  const [avatar, setAvatar] = useState(user.avatar ?? "");
+  useEffect(() => {
+    setName(user.name);
+    setTitle(user.title);
+    setAvatar(user.avatar ?? "");
+  }, [user.name, user.title, user.avatar]);
   const box = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useOutside(box, open, close);
@@ -242,14 +258,14 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
   return (
     <div className="me" ref={box}>
       <button className="me-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="설정" data-tip={user.name}>
-        <Avatar name={user.name} size={36} />
+        <Avatar name={user.name} size={36} src={user.avatar} />
       </button>
       {open ? (
         <div className="pop" role="dialog" aria-label="설정">
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (name.trim()) onChange({ ...user, name: name.trim() });
+              if (name.trim()) onChange({ ...user, name: name.trim(), title: title.trim(), avatar: avatar.trim() || undefined });
               setOpen(false);
             }}
           >
@@ -267,9 +283,27 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
                 ))}
               </select>
             </label>
+            <label className="field">
+              <span>직함 (자유롭게)</span>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="CS, 백엔드, PM" maxLength={12} />
+            </label>
+            <label className="field">
+              <span>프로필 이미지 주소 (선택)</span>
+              <input value={avatar} onChange={(e) => setAvatar(e.target.value)} placeholder="https://…" inputMode="url" />
+            </label>
+            <fieldset className="role-opts">
+              <legend>역할</legend>
+              {(Object.keys(ROLE_KO) as Role[]).map((r) => (
+                <label key={r}>
+                  <input type="radio" name="role" checked={user.role === r} onChange={() => onChange({ ...user, role: r })} />
+                  {ROLE_KO[r]}
+                </label>
+              ))}
+            </fieldset>
             <button className="btn w sm" type="submit">
               저장
             </button>
+            <p className="pop-note">계정 없이 이 브라우저에만 저장돼요. 역할은 직접 고르는 값이라 권한을 막지는 않아요.</p>
           </form>
           <dl className="pop-info">
             <dt>저장소</dt>
@@ -290,6 +324,14 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
               <>
                 <dt>데이터</dt>
                 <dd>데모</dd>
+                <dt>보는 사람</dt>
+                <dd className="pop-switch">
+                  {Object.values(DEMO_CAST).map((c) => (
+                    <button key={c.name} type="button" className={`chip ${c.name === user.name ? "on" : ""}`} aria-pressed={c.name === user.name} onClick={() => { onChange(c); setOpen(false); }}>
+                      {c.name}
+                    </button>
+                  ))}
+                </dd>
               </>
             ) : null}
           </dl>

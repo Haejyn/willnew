@@ -11,6 +11,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { ADAPTERS } from "./adapters.js";
 import { addWorktree, commitAll, diffSummary, mergeBranch, mergeConflicts, removeWorktree, repoInfo } from "./git.js";
+import { parseUserNote, USER_NOTE_RULE } from "./handoff.js";
+import { Shipper, type ShipOptions } from "./ship.js";
 import type { AgentEvent, AgentRun, CreateRunInput, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
 
 export const HOME = process.env.WILLNEW_HOME ?? join(homedir(), ".willnew");
@@ -19,6 +21,9 @@ const MAX_EVENTS = 500;
 const CHECK_TIMEOUT_MS = 5 * 60_000;
 const FINISHED = new Set(["done", "failed", "cancelled"]);
 const PREVIEW_READY_MS = 90_000;
+
+/** What the worker agent is asked to do: the task plus the rule for the closing line to the requester. */
+const taskPrompt = (run: Run) => `${run.task}\n\n${USER_NOTE_RULE}`;
 
 const id = (n = 6) => Math.random().toString(36).slice(2, 2 + n);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "agent";
@@ -45,7 +50,10 @@ export class RunManager {
   private interrupted = new Set<string>();
   private previews = new Map<string, ChildProcess>();
 
-  constructor(private opts: { preview?: string } = {}) {
+  readonly shipper: Shipper;
+
+  constructor(private opts: { preview?: string; ship?: ShipOptions } = {}) {
+    this.shipper = new Shipper(opts.ship ?? { mode: "merge" });
     mkdirSync(RUNS_DIR, { recursive: true });
     for (const f of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json"))) {
       try {
@@ -94,7 +102,7 @@ export class RunManager {
     const run: Run = {
       id: runId, title: input.title?.trim() || input.task.trim().split("\n")[0].slice(0, 60), task: input.task.trim(),
       repo: root, baseRef, baseBranch, checkCmd: input.check?.trim() ?? "", createdAt: Date.now(),
-      requester: input.requester ?? "anonymous", team: input.team ?? "platform", template: input.template ?? "bugfix",
+      requester: input.requester ?? "anonymous", requesterTitle: input.requesterTitle, team: input.team ?? "platform", template: input.template ?? "bugfix",
       channel: input.channel, triage: input.triage, review: { status: "none" },
       maxAttempts: input.maxAttempts ?? 2, agents,
     };
@@ -134,7 +142,7 @@ export class RunManager {
     const startedAt = Date.now();
     this.emit(run, agent, { status: "running", startedAt }, { ts: startedAt, kind: "status", text: `작업 시작 · ${agent.worktree}` });
     const early = this.take(agent.id);
-    await this.attempt(run, agent, early.length ? `${run.task}\n\nAdditional instructions from the requester:\n${early.map((t) => `- ${t}`).join("\n")}` : run.task);
+    await this.attempt(run, agent, early.length ? `${taskPrompt(run)}\n\nAdditional instructions from the requester:\n${early.map((t) => `- ${t}`).join("\n")}` : taskPrompt(run));
   }
 
   private take(agentId: string): string[] {
@@ -148,7 +156,7 @@ export class RunManager {
     const check = run.checkCmd ? ` Make sure \`${run.checkCmd}\` still passes (do not edit or weaken tests unless asked).` : "";
     if (agent.sessionId && ADAPTERS[agent.adapter].resume)
       return { prompt: `Follow-up from the reviewer — apply it in this working tree:\n${ask}\n${check}`, resume: true };
-    return { prompt: `${run.task}\n\nYour earlier work is already applied in this working tree. Follow-up from the reviewer:\n${ask}\n${check}`, resume: false };
+    return { prompt: `${taskPrompt(run)}\n\nYour earlier work is already applied in this working tree. Follow-up from the reviewer:\n${ask}\n${check}`, resume: false };
   }
 
   /** One pass of the agent CLI, then commit + diff + check; retries once with the failing output. */
@@ -194,7 +202,7 @@ export class RunManager {
       // self-correction: hand the verifier's output back to the same agent in the same worktree
       this.emit(run, agent, { status: "retrying", attempt: agent.attempt + 1 },
         { ts: Date.now(), kind: "plan", text: `검증 실패 → 실패 로그를 돌려주고 다시 시도 (${agent.attempt + 1}/${run.maxAttempts})` });
-      const retry = `${run.task}\n\nYour previous attempt is already applied in this working tree, but the verification command \`${run.checkCmd}\` failed:\n\n${check.output.slice(-3000)}\n\nFix the remaining problems (do not edit or weaken tests) and make the verification pass.`;
+      const retry = `${taskPrompt(run)}\n\nYour previous attempt is already applied in this working tree, but the verification command \`${run.checkCmd}\` failed:\n\n${check.output.slice(-3000)}\n\nFix the remaining problems (do not edit or weaken tests) and make the verification pass.`;
       return this.attempt(run, agent, retry);
     }
     const end = Date.now();
@@ -230,7 +238,11 @@ export class RunManager {
         patch.usage = u;
       }
       if (p.turns) patch.turns = agent.adapter === "codex" ? agent.turns + p.turns : baseTurns + p.turns;
-      if (p.summary) patch.summary = p.summary;
+      if (p.summary) {
+        const parsed = parseUserNote(p.summary);
+        patch.summary = parsed.summary;
+        if (parsed.userNote) patch.userNote = parsed.userNote;
+      }
       if (p.sessionId && p.sessionId !== agent.sessionId) patch.sessionId = p.sessionId;
       if (p.failed) failed = true;
       if (!p.events.length && Object.keys(patch).length) this.emit(run, agent, patch);
@@ -422,7 +434,7 @@ export class RunManager {
     if (!run || !agent) throw new Error("not found");
     if (agent.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
     const out = await mergeBranch(run.repo, agent.branch, agent.label);
-    this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch} 에 반영됨` });
+    this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨` });
     return out.trim() || "merged";
   }
 
@@ -435,14 +447,30 @@ export class RunManager {
     if (input.decision === "reject" && !input.comment?.trim()) throw new Error("반려 사유를 적어 주세요");
     let message = "반려됨";
     const agentId = input.agentId ?? run.review.agentId ?? suggestWinner(run)?.id;
+    const pr = input.decision === "approve" && this.shipper.mode === "pr";
     if (input.decision === "approve") {
       if (!agentId) throw new Error("반영할 결과가 없습니다");
-      message = await this.merge(runId, agentId);
+      const a = run.agents.find((x) => x.id === agentId);
+      if (a?.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
+      // pr mode: the decision is recorded now, merge happens through the PR once CI passes
+      message = pr ? "승인했어요. PR을 올리고 CI를 기다려요" : await this.merge(runId, agentId);
     }
+    if (pr) this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "pr", env: this.shipper.tracksDeploy ? (this.shipper.opts.deployEnv ?? "production") : undefined, at: Date.now() } });
     this.emit(run, undefined, {}, undefined, { review: { status: input.decision === "approve" ? "approved" : "rejected",
       reviewer: input.reviewer, comment: input.comment, agentId, at: Date.now() } });
     this.bus.emit(`reviewed:${run.id}`, run);
     this.bus.emit("reviewed", run);
+    if (pr) {
+      const agent = run.agents.find((a) => a.id === agentId)!;
+      void this.shipper.run(run, agent, input.reviewer, {
+        set: (ship) => this.emit(run, undefined, {}, undefined, { ship }),
+        event: (e) => this.bus.emit("ship", run, e),
+        merged: () => this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨 (PR 병합)` }),
+      }).catch((e: Error) => {
+        this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "ci_failed", checks: [{ name: e.message.slice(0, 80), state: "fail" }], at: Date.now() } });
+        this.bus.emit("ship", run, "ci_failed");
+      });
+    }
     return message;
   }
 

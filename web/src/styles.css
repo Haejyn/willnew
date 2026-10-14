@@ -645,3 +645,63 @@ button.apill:hover { background: var(--ctl); }
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { transition-duration: 0s !important; animation-duration: 0s !important; }
 }
+
+/* 내 요청 */
+.mine-card { display: flex; flex-direction: column; gap: 14px; padding: 20px 22px; border-radius: var(--r-panel); background: var(--card); }
+.mine-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.mine-top h2 { font-size: var(--fs-body); font-weight: 700; min-width: 0; }
+.mine-status { font-size: var(--fs-title); font-weight: 800; line-height: 1.25; }
+.mine-status.s-merged { color: var(--ok); }
+.mine-status.s-rejected, .mine-status.s-empty { color: var(--warn); }
+.mine-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; }
+.mine-step { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding-right: 8px; color: var(--text4); font-size: var(--fs-caption); }
+.mine-step .mark { position: relative; z-index: 1; flex: none; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; border: 2px solid currentColor; background: var(--card); }
+.mine-step:not(:last-child)::after { content: ""; position: absolute; top: 12px; left: 26px; right: 0; height: 2px; background: currentColor; opacity: 0.45; }
+.mine-step.done { color: var(--text2); }
+.mine-step.done .mark { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.mine-step.done:not(:last-child)::after { background: var(--accent); opacity: 1; }
+.mine-step.now { color: var(--text); font-weight: 700; }
+.mine-step.now .mark { border: 0; background: none; width: 26px; height: 26px; }
+.mine-step.now.stop { color: var(--warn); }
+.mine-step.now.stop .mark { border: 2px solid var(--warn); background: var(--card); color: var(--warn); }
+.mine-card.complete .mine-step.done .mark { background: var(--ok); border-color: var(--ok); }
+.mine-card.complete .mine-step.done:not(:last-child)::after { background: var(--ok); }
+.mine-step .lab { line-height: 1.35; overflow-wrap: anywhere; }
+.mine-detail { margin: 0; font-size: var(--fs-caption); color: var(--text2); }
+.mine-note { margin: 0; padding: 10px 14px; border-radius: var(--r-card); background: var(--ctl); color: var(--text); line-height: 1.6; display: flex; flex-direction: column; gap: 4px; }
+.mine-note .lab { font-size: var(--fs-meta); color: var(--text3); }
+.title-chip { align-self: center; padding: 0 8px; height: 18px; display: inline-flex; align-items: center; border-radius: 999px; background: var(--ctl); color: var(--text3); font-size: var(--fs-meta); }
+.mention.me { background: var(--text); color: var(--bg); }
+.chip.race { margin-left: 4px; }
+.race-note { white-space: nowrap; }
+.role-opts { display: flex; flex-direction: column; gap: 6px; }
+.role-opts label { display: flex; align-items: center; gap: 8px; font-size: var(--fs-caption); color: var(--text2); cursor: pointer; }
+.role-opts input { accent-color: var(--text); }
+.pop-note { margin: 0; font-size: var(--fs-meta); color: var(--text3); line-height: 1.5; }
+.pop-switch { display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 767.98px) {
+  .mine-card { padding: 16px; }
+  .mine-track { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .mine-step { flex-direction: row; align-items: center; gap: 12px; }
+  .mine-step:not(:last-child)::after { top: 26px; left: 12px; right: auto; width: 2px; height: 14px; }
+  .compose-foot .race-note { display: none; }
+}
+.role-opts { border: 0; margin: 0; padding: 0; min-width: 0; }
+.role-opts legend { padding: 0; margin-bottom: 6px; font-size: var(--fs-caption); color: var(--text2); }
+
+/* 사진 아바타 · 배포 줄 */
+.avatar { overflow: hidden; }
+.avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.via-tag { align-self: center; padding: 0 8px; height: 18px; display: inline-flex; align-items: center; border-radius: 999px; background: var(--ctl); color: var(--text3); font-size: var(--fs-meta); }
+.ship-row { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: var(--fs-meta); }
+.ship-step { display: inline-flex; align-items: center; gap: 6px; color: var(--text4); }
+.ship-step > a, .ship-step > span:first-child { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; background: var(--ctl); color: inherit; white-space: nowrap; }
+.ship-step.now { color: var(--text); }
+.ship-step.now > span:first-child, .ship-step.now > a { animation: shippulse 1.4s ease-in-out infinite; }
+.ship-step.done { color: var(--ok); }
+.ship-step.fail { color: var(--danger); }
+.ship-step .arrow { color: var(--text4); }
+@keyframes shippulse { 50% { opacity: 0.55; } }
+.mine-avatar { margin-right: 8px; }
+.mine-top .who { display: inline-flex; align-items: center; gap: 8px; }
+.mc-meta .avatar { vertical-align: middle; margin-right: 6px; }

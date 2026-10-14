@@ -45,6 +45,15 @@ export function runPhase(run: Run, now = Date.now()): { phase: Phase; label: str
     phase = "plan";
     detail = a.length ? "에이전트를 기다리는 중" : "에이전트를 준비하는 중";
   }
+  // 승인 뒤 PR · CI · 배포가 도는 중이거나 멈춘 경우
+  const st = run.ship?.stage;
+  if (phase === "merged" && st) {
+    if (st === "pr" || st === "ci") return { phase: "check", label: "CI 확인 중", detail: run.ship?.prNumber ? `PR #${run.ship.prNumber}` : "PR을 올리는 중" };
+    if (st === "ci_failed") return { phase: "rejected", label: "CI 실패", detail: "자동으로 다시 돌리지 않아요" };
+    if (st === "deploy_failed") return { phase: "rejected", label: "배포 확인 실패", detail: run.ship?.env ?? "" };
+    if (st === "deploying") return { phase, label: "배포 중", detail: run.ship?.env ?? "" };
+    if (st === "deployed") return { phase, label: "배포됨", detail: run.ship?.env ?? "" };
+  }
   return { phase, label: NAME[phase], detail };
 }
 

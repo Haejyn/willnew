@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Api, Preflight, Run } from "./api";
 import { IconBell, IconCheck } from "./icons";
 import { Moon, runPhase } from "./moon";
+import { ShipRow } from "./Ship";
 import { Modal, SlideToApprove, Spinner, useToast } from "./ui";
 import { isActive, relTime, suggestWinner, winnerReason, type User } from "./util";
 
@@ -103,7 +104,7 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
   const direct = !!winner && (agentId ? passed : !touched.length && !pf?.conflicts);
   const revise = onRevise ?? (() => go(`/runs/${run.id}/review`));
   useEffect(() => {
-    if (!keys || phase !== "turn") return;
+    if (!keys || phase !== "turn" || user.role === "requester") return;
     const on = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest("textarea, input")) return;
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && direct && winner) void approve(winner.id);
@@ -117,12 +118,17 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
   let info: ReactNode;
   let act: ReactNode = null;
 
-  if (phase === "turn") {
+  if (phase === "turn" && user.role === "requester") {
+    // 요청자는 읽을 수만 있다. 승인은 개발자 몫이라 버튼을 두지 않는다
+    info = <span className="dbar-text">개발자 검토 대기{winner ? ` · ${winner.label} 결과를 개발자가 보고 있어요` : ""}</span>;
+  } else if (phase === "turn") {
     const reason = !winner
       ? "추천할 결과를 고르지 못했어요 · 검토 화면에서 골라 주세요"
       : agentId && !passed
         ? `${winner.label} 은 검증을 넘기지 못했어요 · 다른 결과를 고르거나 고쳐 달라고 해 주세요`
-        : `${winner.label} ${agentId ? "· " : "추천 · "}${winnerReason(run, winner.id)}`;
+        : run.agents.length === 1
+          ? `${winner.label} · ${winner.attempt > 1 ? `${winner.attempt}차 시도에 통과했어요.` : winnerReason(run, winner.id)}`
+          : `${winner.label} ${agentId ? "· " : "추천 · "}${winnerReason(run, winner.id)}`;
     info = (
       <>
         <span className="dbar-text" title={reason}>{reason}</span>
@@ -140,7 +146,7 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
       <>
         {direct && winner ? (
           slide ? (
-            <SlideToApprove label={`밀어서 ${winner.label} 를 ${run.baseBranch} 에 병합`} onDone={() => approve(winner.id)} disabled={busy} />
+            <SlideToApprove label={`밀어서 ${run.baseBranch}에 병합`} onDone={() => approve(winner.id)} disabled={busy} />
           ) : (
             <button className="btn m" onClick={() => approve(winner.id)} disabled={busy}>
               {busy ? <Spinner size={12} /> : null}승인
@@ -164,11 +170,15 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
     );
   } else if (phase === "merged" || phase === "rejected") {
     const r = run.review;
+    const head = run.ship && r.status === "approved" ? `승인됨 · ${label}` : label === "병합" ? "병합됨" : "반려됨";
     info = (
-      <span className="dbar-text">
-        {label === "병합" ? "병합됨" : "반려됨"} · {r.reviewer} · {relTime(r.at ?? run.createdAt, now)}
-        {r.comment ? <span className="dim"> · “{r.comment}”</span> : null}
-      </span>
+      <>
+        <span className="dbar-text">
+          {head} · {r.reviewer} · {relTime(r.at ?? run.createdAt, now)}
+          {r.comment ? <span className="dim"> · “{r.comment}”</span> : null}
+        </span>
+        {run.ship ? <ShipRow ship={run.ship} base={run.baseBranch} /> : null}
+      </>
     );
   } else {
     info = (

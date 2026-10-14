@@ -54,7 +54,9 @@ export interface AgentRun {
   durationMs?: number;
   turns: number;
   usage: Usage;
-  summary: string; // the agent's final message
+  summary: string; // the agent's final message (without the 요청자에게 line)
+  /** plain-language answer for the person who asked, from the agent's `요청자에게:` line */
+  userNote?: string;
   check: { status: CheckStatus; exitCode: number | null; output: string; durationMs?: number };
   diff: DiffSummary;
   merged: boolean;
@@ -88,6 +90,20 @@ export interface Review {
   at?: number;
 }
 
+export type ShipStage = "pr" | "ci" | "merged" | "deploying" | "deployed" | "ci_failed" | "deploy_failed";
+
+/** What happens after approval: PR, CI, merge, deploy. Streamed like any other run update. */
+export interface Ship {
+  mode: "merge" | "pr";
+  stage: ShipStage;
+  prNumber?: number;
+  prUrl?: string;
+  checks?: { name: string; state: "pending" | "pass" | "fail" }[];
+  /** set only when deploy tracking is on (--deploy-check) */
+  env?: string;
+  at: number;
+}
+
 export interface Run {
   id: string;
   title: string;
@@ -98,11 +114,15 @@ export interface Run {
   checkCmd: string;
   createdAt: number;
   requester: string;
+  /** free label the requester gave themselves ("CS", "PM"), no account behind it */
+  requesterTitle?: string;
+  requesterAvatar?: string;
   team: string;
   template: string;
   channel?: string;
   triage?: Triage;
   review: Review;
+  ship?: Ship;
   maxAttempts: number;
   agents: AgentRun[];
   /** line comments left during review; sending them hands the work back to that agent */
@@ -146,6 +166,8 @@ export interface CreateRunInput {
   agents: AgentSpec[];
   check?: string;
   requester?: string;
+  requesterTitle?: string;
+  requesterAvatar?: string;
   team?: string;
   template?: string;
   channel?: string;
@@ -168,6 +190,10 @@ export interface ChatMessage {
   channel: string;
   ts: number;
   user: string;          // "willnew" for the bot
+  userTitle?: string;    // the sender's self-chosen label, shown as a chip
+  userAvatar?: string;   // image URL the sender chose, initials when absent
+  /** sent by willnew on behalf of `user` (the approver's answer to the requester) */
+  via?: "willnew";
   bot: boolean;
   text: string;
   runId?: string;        // a bot message about a run renders a live run card
@@ -180,6 +206,8 @@ export interface Channel {
   team: string;
   repo: string;
   topic: string;
+  /** who is asked to review runs from this channel, in order (first one who is not the requester) */
+  reviewers: string[];
 }
 
 export interface Template {

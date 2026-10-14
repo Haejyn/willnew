@@ -1,10 +1,14 @@
 /** 새로 맡기기 (⌘K · ⌘N) — 한 줄을 쓰면 계획이 한 줄로 뜨고(눌러서 고친다), 이미 맡긴 일도 같이 찾아 준다. 보내면 팀 채널에 남는다. */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentInfo, AgentSpec, Api, Channel, Run, Template, Triage } from "./api";
+import { isDemo } from "./api";
+import { DEMO_REQUEST } from "./demo";
 import { AgentMark, IconChevron, IconSend, IconSpark, IconTerminal } from "./icons";
 import { Moon, runPhase } from "./moon";
 import { Kbd, Spinner, useOutside, useToast } from "./ui";
 import { TEAM_KO, type User } from "./util";
+
+const RACER: AgentSpec = { adapter: "codex", label: "codex" };
 
 export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText }: {
   api: Api;
@@ -84,6 +88,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
   // 기본으로 고르는 에이전트는 이 PC 에 있는 것만
   const base = tpl?.agents ?? plan?.agents ?? [];
   const chosen = picked ?? (agents ? base.filter((s) => installed.has(s.adapter)) : base);
+  // 겨루기: 두 번째 에이전트(codex)를 붙인다. 끄면 하나만 남는다
+  const race = chosen.some((c) => c.adapter === RACER.adapter);
+  const racerHere = !agents || installed.has(RACER.adapter);
+  const setRace = (on: boolean) => setPicked(on ? [...chosen.filter((c) => c.adapter !== RACER.adapter), RACER] : chosen.filter((c) => c.adapter !== RACER.adapter));
 
   // ⌘K 는 검색도 겸한다 — 쓴 글이 이미 맡긴 일 제목에 들어 있으면 최대 3개
   const q = text.trim().toLowerCase();
@@ -110,10 +118,11 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
         template: tplId,
         agents: chosen,
         check: checkCmd,
-      });
+      }, user.title || undefined, user.avatar);
       toast("맡겼어요 · 계획 에이전트가 읽고 바로 시작해요", "ok");
       onClose();
       if (!alsoGo) return go(`/chat/${channel}`);
+      if (user.role === "requester") return go("/mine"); // 요청자는 작업 공간 대신 내 요청으로
       // the run is created after planning; follow it as soon as it exists
       for (let i = 0; i < 40; i++) {
         await new Promise((r) => setTimeout(r, 500));
@@ -158,6 +167,14 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
           />
         </div>
 
+        {isDemo() && !text ? (
+          <div className="examples compose-example">
+            <button className="chip" onClick={() => setText(DEMO_REQUEST)}>
+              {DEMO_REQUEST}
+            </button>
+          </div>
+        ) : null}
+
         {noAgent ? (
           <p className="compose-note">
             이 PC 에 쓸 수 있는 에이전트가 없어요 · Claude Code 나 Codex 를 설치해 주세요{" "}
@@ -171,7 +188,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
           <button className="compose-plan" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
             <IconSpark size={14} />
             <span className="plan-text">
-              {tpl?.name ?? "계획"} · {chosen.length ? `${who} ${chosen.length > 1 ? "가 겨뤄요" : "가 맡아요"}` : "에이전트를 골라 주세요"} ·{" "}
+              {tpl?.name ?? "계획"} · {chosen.length ? (chosen.length > 1 ? `겨루기 ${chosen.length}개 (${who})` : `에이전트 1개 (${who})`) : "에이전트를 골라 주세요"} ·{" "}
               {checkCmd ? <span className="mono">{checkCmd} 로 확인</span> : <span className="warn-chip">검증 없이 사람이 판단</span>}
             </span>
             <IconChevron size={13} />
@@ -183,7 +200,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
             <span className="k">유형</span>
             <span className="chips">
               {templates.map((t) => (
-                <button key={t.id} className={`chip ${t.id === tplId ? "on" : ""}`} aria-pressed={t.id === tplId} onClick={() => { setTemplate(t.id); setPicked(null); setCheck(null); }}>
+                <button key={t.id} className={`chip ${t.id === tplId ? "on" : ""}`} aria-pressed={t.id === tplId} onClick={() => { setTemplate(t.id); setPicked(race ? [...t.agents, RACER] : null); setCheck(null); }}>
                   {t.name}
                 </button>
               ))}
@@ -239,6 +256,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
               </div>
             ) : null}
           </div>
+          <button className={`chip race ${race ? "on" : ""}`} aria-pressed={race} disabled={!racerHere || noAgent} onClick={() => setRace(!race)} title={racerHere ? "같은 일을 에이전트 둘이 따로 풀고, 통과한 쪽을 골라요" : "Codex 가 이 PC 에 없어요"}>
+            겨루기
+          </button>
+          {race ? <span className="dim small race-note">에이전트 2개, 비용도 약 2배</span> : null}
           <span className="hints">
             <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 채널로 {found.length ? <><Kbd>↑↓</Kbd> 이동</> : null} {inline ? null : <><Kbd>esc</Kbd> 닫기</>}
           </span>
