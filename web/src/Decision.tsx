@@ -136,7 +136,7 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
           <span className="gates">
             <Gate ok={!touched.length}>{touched.length ? "테스트 파일 고침" : "테스트 파일 그대로"}</Gate>
             <Gate ok={pf ? (pf.conflicts === null ? null : !pf.conflicts) : null} loading={!pf}>
-              {!pf ? "충돌 확인 중" : pf.conflicts ? `${run.baseBranch} 과 충돌` : pf.conflicts === null ? "충돌 여부를 알 수 없어요" : `${run.baseBranch} 과 충돌 없음`}
+              {!pf ? "충돌 확인 중" : pf.conflicts ? `${run.baseBranch}과 충돌` : pf.conflicts === null ? "충돌 여부를 알 수 없어요" : `${run.baseBranch}과 충돌 없음`}
             </Gate>
           </span>
         ) : null}
