@@ -7,8 +7,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { askJson, checkBrief, checkDecline, checkProposal, checkSpec, createPlanner, extractJson, type LlmCall } from "../src/server/brief.js";
 import { codeNames, flagUnverified } from "../src/server/spec-check.js";
 import { specPrompt, proposalPrompt } from "../src/server/prompts.js";
-import { buildRunTask, canTransition, cardBodies, moveTo, parseAttachments, statusFromRun, transition, withConstraint } from "../src/server/request-state.js";
-import type { AgentRun, ChatMessage, Request, Run } from "../src/server/types.js";
+import { buildRunTask, canTransition, cardBodies, feedbackConstraints, moveTo, parseAttachments, routeAfterVerify, screensFromFiles, statusFromRun, transition, wantsMobile, withConstraint } from "../src/server/request-state.js";
+import { ShotService, type Capturer } from "../src/server/shots.js";
+import type { VisualCheck } from "../src/server/visual.js";
+import type { AgentRun, ChatMessage, Request, RequesterCheck, Run } from "../src/server/types.js";
 
 const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, ...a], { encoding: "utf8" });
 const FIX = resolve("tests/fixtures/fix-agent.mjs");
@@ -236,6 +238,14 @@ function stubRuns() {
     },
     get: (id: string) => created.find((r) => r.id === id),
     preflight: async () => ({ conflicts: false }),
+    steered: [] as { runId: string; agentId: string; text: string; by: string }[],
+    steer(runId: string, agentId: string, text: string, by: string) {
+      this.steered.push({ runId, agentId, text, by });
+      const r = created.find((x) => x.id === runId)!;
+      r.agents = r.agents.map((a) => (a.id === agentId ? { ...a, status: "running" as const } : a));
+      r.review = { status: "none" };
+      bus.emit("any", { runId });
+    },
   };
 }
 
@@ -245,11 +255,11 @@ const fakeProposer = (reply = J(PROPOSAL)) => {
   return { fn, seen };
 };
 
-function manager(opts: { brief?: unknown; decline?: string[]; spec?: unknown; repo?: string } = {}) {
+function manager(opts: { brief?: unknown; decline?: string[]; spec?: unknown; repo?: string; visual?: VisualCheck | null } = {}) {
   const runs = stubRuns();
   const { llm, prompts } = fakeLlm({ brief: [J(opts.brief ?? BRIEF)], spec: [J(opts.spec ?? SPEC)], decline: opts.decline ?? [J(DECLINE)] });
   const repo = opts.repo ?? makeRepo();
-  const m = new RequestManager(runs as never, { planner: createPlanner(() => llm), proposer: fakeProposer().fn });
+  const m = new RequestManager(runs as never, { planner: createPlanner(() => llm), proposer: fakeProposer().fn, visual: opts.visual });
   const input = { channel: "backend", repo, check: "npm test", team: "platform", requester: "한지우", requesterTitle: "디자인", reviewer: "이해준",
     text: "@willnew 결제 화면 버튼들 좀 답답해 보여요 ㅠ 여백 좀 넉넉하게 해주실 수 있나요? 시안은 피그마에 올려뒀어요 https://figma.com/file/demo/checkout" };
   return { m, runs, prompts, input, repo };
@@ -352,7 +362,8 @@ describe("developer decision on the proposal", () => {
   });
 
   it("follows the run, and logs the review decision", async () => {
-    const { m, id, runs } = await proposed();
+    // a bug fix has nothing for the requester to look at: verify goes straight to code review (a ui request goes to preview, below)
+    const { m, id, runs } = await proposed({ brief: { ...BRIEF_NO_Q, type: "bug" } });
     await m.decide(id, { decision: "proceed", by: "이해준" });
     const r = runs.created[0];
     r.agents = [agent({ status: "checking" })];
@@ -493,15 +504,16 @@ describe("chat routing and role bodies", () => {
     expect(cards()[0].bodies?.forRequester).toBe("이렇게 이해했어요: 결제 화면 버튼 안쪽 여백을 늘리고 싶으신 거죠. 확인할 게 2개 있어요");
 
     await requests.answer(requestId!, { questionId: "q1", answer: "넉넉하게 (16px)", by: "한지우" });
-    const answer = chat.list("backend").at(-1)!;
-    expect(answer).toMatchObject({ user: "한지우", bot: false, userTitle: "디자인", text: "버튼 안쪽 여백: 넉넉하게 (16px)" });
+    // the answer lives in the card's thread, not in the channel
+    const thread = () => chat.thread("backend", `req-${requestId}`);
+    expect(thread().at(-1)).toMatchObject({ user: "한지우", bot: false, userTitle: "디자인", text: "버튼 안쪽 여백: 넉넉하게 (16px)", threadId: `req-${requestId}` });
     await requests.answer(requestId!, { questionId: "q2", answer: "네", by: "한지우" });
     await until(() => requests.get(requestId!)!.status === "proposed");
     await settle();
 
     expect(cards()).toHaveLength(1);   // replaced in place
     expect(cards()[0].bodies).toEqual({ forRequester: "개발자가 제안을 보고 있어요 (이해준)", forDeveloper: `제안: ${PROPOSAL.summary}` });
-    const mention = chat.list("backend").find((m: ChatMessage) => m.kind === "mention")!;
+    const mention = thread().find((m: ChatMessage) => m.kind === "mention")!;
     expect(mention.text).toBe(`@이해준 확인할 제안이 있어요. ${PROPOSAL.summary}`);
     expect(mention.bodies?.forRequester).toBe("이해준님께 확인을 부탁했어요");
     expect(mention.bodies?.forRequester).not.toMatch(/tsx|space-|lg/);
@@ -512,7 +524,7 @@ describe("chat routing and role bodies", () => {
     const { requestId } = await chat.post("backend", "한지우", "@willnew 결제 완료 화면에 폭죽 넣어주세요", "platform");
     await until(() => requests.get(requestId!)!.status === "proposed");
     await requests.decide(requestId!, { decision: "decline", by: "이해준", text: "A/B 측정 중" });
-    const last = chat.list("backend").at(-1)!;
+    const last = chat.thread("backend", `req-${requestId}`).at(-1)!;
     expect(last).toMatchObject({ user: "이해준", via: "willnew", bot: false });
     expect(last.text).toBe(`@한지우 ${DECLINE.forRequester}\n이렇게는 할 수 있어요\n- 측정이 끝나는 11월에 다시 보기 (반나절)`);
   });
@@ -568,4 +580,306 @@ describe("request → proposal → proceed → real run → approve (offline age
     expect(m.get(r.id)!.decisions.map((d) => d.what)).toEqual(["proceed", "approve_result"]);
     await runs.remove(runId);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------------------------- B2: 요청자 확인
+
+describe("preview (요청자 확인) in the state machine", () => {
+  it("sits between verifying and code_review and can send the work back", () => {
+    expect(canTransition("verifying", "preview")).toBe(true);
+    expect(canTransition("building", "preview")).toBe(true);
+    expect(canTransition("preview", "code_review")).toBe(true);
+    expect(canTransition("preview", "building")).toBe(true);
+    expect(canTransition("preview", "merged")).toBe(false);
+    expect(canTransition("preview", "declined")).toBe(true);
+    const r = req({ status: "building" });
+    expect(moveTo(r, "preview")).toBe(true);
+    expect(r.status).toBe("preview");
+    expect(cardBodies(r)).toEqual({ forRequester: "화면을 확인해 주세요", forDeveloper: "요청자 확인 차례 (한지우)" });
+  });
+
+  it("routes ui and copy (or needsVisualCheck) to preview until a round is accepted or skipped", () => {
+    const spec = { ...SPEC, constraints: [] };
+    expect(routeAfterVerify({ type: "ui", spec })).toBe("preview");
+    expect(routeAfterVerify({ type: "copy", spec })).toBe("preview");
+    expect(routeAfterVerify({ type: "bug", spec })).toBe("code_review");
+    expect(routeAfterVerify({ type: "bug", spec: { ...spec, needsVisualCheck: true } })).toBe("preview");
+    const check = (status: RequesterCheck["status"]): RequesterCheck => ({ round: 1, runId: "r1", agentId: "a1", status, startedAt: 1, capture: "done", shots: [] });
+    expect(routeAfterVerify({ type: "ui", spec, checks: [check("changes")] })).toBe("preview");
+    expect(routeAfterVerify({ type: "ui", spec, checks: [check("approved")] })).toBe("code_review");
+    expect(routeAfterVerify({ type: "ui", spec, checks: [check("skipped")] })).toBe("code_review");
+  });
+
+  it("guesses pages from the proposal's files and sees phones in the spec", () => {
+    expect(screensFromFiles([{ path: "src/pages/Checkout.tsx" }, { path: "src/components/Button.tsx" }, { path: "app/settings/billing/page.tsx" }, { path: "src/pages/index.tsx" }]))
+      .toEqual([{ name: "Checkout", path: "/checkout" }, { name: "billing", path: "/settings/billing" }, { name: "첫 화면", path: "/" }]);
+    expect(wantsMobile({ ...SPEC, constraints: [] })).toBe(true);   // "모바일 375px 에서 버튼 줄바꿈 없음"
+    expect(wantsMobile({ ...SPEC, acceptanceCriteria: ["버튼 여백 16px"], constraints: [] })).toBe(false);
+    expect(checkSpec({ ...SPEC, screens: [{ name: "결제 화면", path: "/checkout" }], needsVisualCheck: true })).toMatchObject({ screens: [{ name: "결제 화면", path: "/checkout" }], needsVisualCheck: true });
+    expect(() => checkSpec({ ...SPEC, screens: [{ name: "결제", path: "checkout" }] })).toThrow(/start with \//);
+  });
+});
+
+/** Writes a tiny file per shot and remembers what it was asked; `fail` makes one URL throw. */
+function fakeCapturer(fail?: string) {
+  const calls: { url: string; viewport: string }[] = [];
+  let closed = false;
+  const capturer: Capturer = {
+    async shot(url, vp, file) {
+      calls.push({ url, viewport: `${vp.width}x${vp.height}` });
+      if (fail && url.includes(fail)) throw new Error("net::ERR_CONNECTION_REFUSED\nmore");
+      writeFileSync(file, "png");
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  return { factory: async () => ({ capturer }), calls, closed: () => closed };
+}
+
+describe("screenshot service (fake capturer)", () => {
+  it("captures every screen on both sides in the same viewports, desktop and mobile", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "willnew-shots-"));
+    const f = fakeCapturer();
+    const svc = new ShotService(dir, f.factory);
+    const r = await svc.capture({ requestId: "q1", round: 2, screens: [{ name: "결제 화면", path: "/checkout" }, { name: "주문 요약", path: "/summary" }], mobile: true, before: "http://127.0.0.1:5001", after: "http://127.0.0.1:5002/" });
+    expect(r.note).toBeUndefined();
+    expect(r.shots).toHaveLength(4);
+    expect(r.shots[1]).toEqual({
+      screen: "결제 화면", path: "/checkout", viewport: "mobile", width: 390, height: 844,
+      before: "/api/requests/q1/shots/2/%EA%B2%B0%EC%A0%9C-%ED%99%94%EB%A9%B4-mobile-before.png",
+      after: "/api/requests/q1/shots/2/%EA%B2%B0%EC%A0%9C-%ED%99%94%EB%A9%B4-mobile-after.png",
+    });
+    expect(f.calls.slice(0, 4)).toEqual([
+      { url: "http://127.0.0.1:5001/checkout", viewport: "1440x900" },
+      { url: "http://127.0.0.1:5002/checkout", viewport: "1440x900" },
+      { url: "http://127.0.0.1:5001/checkout", viewport: "390x844" },
+      { url: "http://127.0.0.1:5002/checkout", viewport: "390x844" },
+    ]);
+    expect(f.closed()).toBe(true);
+    expect(svc.file("q1", "2", "결제-화면-mobile-after.png")).toBe(join(dir, "q1", "2", "결제-화면-mobile-after.png"));
+    expect(svc.file("q1", "2", "../../secret.png")).toBeNull();
+    expect(svc.file("q1", "x", "a.png")).toBeNull();
+  });
+
+  it("keeps going when one page fails, and says so", async () => {
+    const f = fakeCapturer(":5002/summary");
+    const r = await new ShotService(mkdtempSync(join(tmpdir(), "willnew-shots-")), f.factory).capture({ requestId: "q2", round: 1, screens: [{ name: "a", path: "/" }, { name: "b", path: "/summary" }], mobile: false, before: "http://127.0.0.1:5001", after: "http://127.0.0.1:5002" });
+    expect(r.shots.map((s) => [s.screen, !!s.before, !!s.after, s.error])).toEqual([["a", true, true, undefined], ["b", true, false, "후 화면을 찍지 못했어요: net::ERR_CONNECTION_REFUSED"]]);
+  });
+
+  it("skips with a note when there is no capturer or no preview", async () => {
+    const none = new ShotService(mkdtempSync(join(tmpdir(), "willnew-shots-")), async () => ({ capturer: null, note: "playwright-core 가 설치돼 있지 않아요" }));
+    expect(await none.capture({ requestId: "q3", round: 1, screens: [], mobile: false, after: "http://127.0.0.1:1" })).toEqual({ shots: [], note: "playwright-core 가 설치돼 있지 않아요" });
+    expect((await none.capture({ requestId: "q3", round: 1, screens: [], mobile: false })).note).toMatch(/미리보기가 뜨지 않아/);
+  });
+});
+
+/** Previews on fixed ports, shots through the real ShotService with a fake capturer. */
+function fakeVisual(localOnly = false) {
+  const f = fakeCapturer();
+  const svc = new ShotService(mkdtempSync(join(tmpdir(), "willnew-shots-")), f.factory);
+  const seen: string[] = [];
+  const visual: VisualCheck = {
+    previews: async (run, agentId) => {
+      seen.push(`${run.id}/${agentId}`);
+      return { after: { local: "http://127.0.0.1:5002", url: "http://dev-box:5002" }, before: { local: "http://127.0.0.1:5001", url: "http://dev-box:5001" }, localOnly };
+    },
+    capture: (input) => svc.capture(input),
+    file: (id, round, name) => svc.file(id, round, name),
+  };
+  return { visual, seen, calls: f.calls };
+}
+
+/** A ui request whose run has passed verification, so it sits in preview. */
+async function inPreview(visual: VisualCheck | null = null) {
+  const ctx = await proposed({ visual });
+  await ctx.m.decide(ctx.id, { decision: "proceed", by: "이해준" });
+  const r = ctx.runs.created[0];
+  r.agents = [agent()];
+  r.review = { status: "pending", agentId: "a1" };
+  ctx.runs.bus.emit("any", { runId: r.id });
+  return { ...ctx, run: r };
+}
+
+describe("요청자 확인: preview, feedback, follow-up, skip", () => {
+  it("a passing ui result goes to the requester first, with links and before/after pairs", async () => {
+    const v = fakeVisual();
+    const { m, id, run, runs } = await inPreview(v.visual);
+    expect(m.get(id)!.status).toBe("preview");
+    await until(() => m.get(id)!.checks?.[0].capture === "done");
+    const c = m.get(id)!.checks![0];
+    expect(c).toMatchObject({ round: 1, runId: run.id, agentId: "a1", status: "waiting", previewUrl: "http://dev-box:5002", baseUrl: "http://dev-box:5001", localOnly: false });
+    // the spec mentions 모바일 375px → desktop + mobile; the page comes from the proposal's files (src/pages/Checkout.tsx)
+    expect(c.shots.map((s) => `${s.screen} ${s.viewport}`)).toEqual(["Checkout desktop", "Checkout mobile"]);
+    expect(m.get(id)!.spec?.screens).toEqual([{ name: "Checkout", path: "/checkout" }]);
+    expect(v.calls.map((x) => x.url)).toContain("http://127.0.0.1:5002/checkout");
+    expect(m.shotFile(id, "1", "Checkout-desktop-after.png")).toBeTruthy();
+    // more updates from the same run do not start another round
+    run.agents = [agent({ preview: { status: "ready", port: 5002, log: "", startedAt: 1 } })];
+    runs.bus.emit("any", { runId: run.id });
+    expect(m.get(id)!.checks).toHaveLength(1);
+  });
+
+  it("without a preview command the round is still there, with a note", async () => {
+    const { m, id } = await inPreview(null);
+    expect(m.get(id)!.checks![0]).toMatchObject({ capture: "skipped", shots: [] });
+    expect(m.get(id)!.checks![0].note).toMatch(/serve --preview/);
+  });
+
+  it("다시 봐 주세요: boxes become constraints and a log entry, and the same agent continues on the same branch", async () => {
+    const { m, id, runs, run } = await inPreview();
+    expect(() => m.requesterCheck(id, { verdict: "changes", by: "한지우", feedback: [] })).toThrow("다시 볼 곳");
+    const box = { screen: "Checkout", viewport: "mobile" as const, rect: { x: 0.1, y: 0.62, w: 0.8, h: 0.12 }, note: "모바일에서 결제 버튼 두 줄로 보여요" };
+    m.requesterCheck(id, { verdict: "changes", by: "한지우", feedback: [box] });
+    const r = m.get(id)!;
+    expect(r.status).toBe("building");
+    expect(r.checks![0]).toMatchObject({ status: "changes", by: "한지우", feedback: [box] });
+    expect(r.spec!.constraints).toEqual(feedbackConstraints(1, [box]));
+    expect(r.spec!.constraints[0]).toBe("요청자 확인 1차, Checkout (모바일): 모바일에서 결제 버튼 두 줄로 보여요 (표시한 곳: 왼쪽 10%, 위 62%, 폭 80%, 높이 12%)");
+    expect(r.decisions.at(-1)).toMatchObject({ who: "한지우", what: "preview_changes", why: "Checkout (모바일): 모바일에서 결제 버튼 두 줄로 보여요" });
+    expect(runs.steered).toHaveLength(1);
+    expect(runs.steered[0]).toMatchObject({ runId: run.id, agentId: "a1", by: "한지우" });
+    expect(runs.steered[0].text).toContain('"모바일에서 결제 버튼 두 줄로 보여요"');
+    expect(runs.steered[0].text).toContain("mobile 390x844");
+
+    // the follow-up passes again → round 2 in preview → 의도대로예요 → code review
+    run.agents = [agent({ attempt: 1 })];
+    run.review = { status: "pending", agentId: "a1" };
+    runs.bus.emit("any", { runId: run.id });
+    expect(m.get(id)!.status).toBe("preview");
+    expect(m.get(id)!.checks!.map((c) => [c.round, c.status])).toEqual([[1, "changes"], [2, "waiting"]]);
+    m.requesterCheck(id, { verdict: "ok", by: "한지우" });
+    expect(m.get(id)!.status).toBe("code_review");
+    expect(m.get(id)!.decisions.at(-1)).toMatchObject({ who: "한지우", what: "preview_ok", why: "2차 확인" });
+    expect(() => m.requesterCheck(id, { verdict: "ok", by: "한지우" })).toThrow("확인할 화면이 없어요");
+    // the run keeps saying "pending": the request stays in code review
+    runs.bus.emit("any", { runId: run.id });
+    expect(m.get(id)!.status).toBe("code_review");
+  });
+
+  it("the developer can skip the check, only with a reason, and it is logged", async () => {
+    const { m, id } = await inPreview();
+    expect(() => m.requesterCheck(id, { verdict: "skip", by: "이해준", reason: " " })).toThrow("건너뛰는 이유");
+    m.requesterCheck(id, { verdict: "skip", by: "이해준", reason: "한지우님 휴가라 시안과 같은지 제가 봤어요" });
+    const r = m.get(id)!;
+    expect(r.status).toBe("code_review");
+    expect(r.checks![0]).toMatchObject({ status: "skipped", reason: "한지우님 휴가라 시안과 같은지 제가 봤어요", by: "이해준" });
+    expect(r.decisions.at(-1)).toMatchObject({ who: "이해준", what: "preview_skip", why: "한지우님 휴가라 시안과 같은지 제가 봤어요" });
+  });
+
+  it("needsVisualCheck sends a bug fix to preview too, and the developer can edit the pages", async () => {
+    const { m, id, runs } = await proposed({ brief: { ...BRIEF_NO_Q, type: "bug" }, spec: { ...SPEC, needsVisualCheck: true, screens: [{ name: "결제", path: "/checkout" }] } });
+    expect(m.get(id)!.spec?.screens).toEqual([{ name: "결제", path: "/checkout" }]);
+    expect(() => m.setScreens(id, [{ name: "요약", path: "summary" }], "이해준")).toThrow("/ 로 시작");
+    m.setScreens(id, [{ name: "결제", path: "/checkout" }, { name: "영수증", path: "/receipt" }], "이해준");
+    expect(m.get(id)!.spec?.screens).toHaveLength(2);
+    await m.decide(id, { decision: "proceed", by: "이해준" });
+    const r = runs.created[0];
+    r.agents = [agent()];
+    r.review = { status: "pending", agentId: "a1" };
+    runs.bus.emit("any", { runId: r.id });
+    expect(m.get(id)!.status).toBe("preview");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------- threads
+
+describe("threads in the chat API", () => {
+  function chatWith(brief: unknown = BRIEF_NO_Q) {
+    const runs = stubRuns();
+    const { llm } = fakeLlm({ brief: [J(brief)], spec: [J(SPEC)], decline: [J(DECLINE)] });
+    const requests = new RequestManager(runs as never, { planner: createPlanner(() => llm), proposer: fakeProposer().fn, visual: null });
+    const chat = new Chat(runs as never, makeRepo(), "npm test", ["이해준"], requests);
+    return { chat, runs, requests };
+  }
+
+  it("a request's messages live in its card's thread; the channel keeps the root message and the card", async () => {
+    const { chat, requests } = chatWith();
+    const { message, requestId } = await chat.post("backend", "한지우", "@willnew 결제 화면 버튼 여백 넉넉하게", "platform", undefined, "디자인");
+    await until(() => requests.get(requestId!)!.status === "proposed");
+    await settle();
+    const tid = `req-${requestId}`;
+    expect(requests.get(requestId!)!.threadId).toBe(tid);
+    const channel = chat.list("backend");
+    expect(channel.some((m) => m.id === message.id)).toBe(true);
+    expect(channel.some((m) => m.id === tid && m.kind === "request")).toBe(true);
+    expect(channel.some((m) => m.threadId === tid)).toBe(false);
+    const thread = chat.thread("backend", tid);
+    expect(thread.map((m) => m.kind)).toEqual(["mention"]);
+    const sum = chat.threads("backend").find((t) => t.id === tid)!;
+    expect(sum).toMatchObject({ count: 1, users: [{ name: "willnew", bot: true }] });
+    expect(sum.replies[0].mentions).toEqual(["이해준"]);
+  });
+
+  it("replies go to the thread (and stream on its topic); 채널에도 보내기 shows them in both; @willnew in a reply is just a message", async () => {
+    const { chat, requests } = chatWith();
+    const { message: root } = await chat.post("backend", "이해준", "배포는 금요일에 할게요", "platform");
+    const heard: ChatMessage[] = [];
+    chat.bus.on(`thread:backend:${root.id}`, (m: ChatMessage) => heard.push(m));
+    const before = requests.list().length;
+    const { message: r1 } = await chat.post("backend", "한지우", "@이해준 넵 @willnew 그 전에 시안 한 번 더 볼게요", "platform", undefined, "디자인", undefined, false, { id: root.id });
+    const { message: r2 } = await chat.post("backend", "이해준", "좋아요", "platform", undefined, undefined, undefined, false, { id: root.id, broadcast: true });
+    expect(requests.list()).toHaveLength(before);
+    expect(r1).toMatchObject({ threadId: root.id });
+    expect(heard.map((m) => m.id)).toEqual([r1.id, r2.id]);
+    expect(chat.list("backend").some((m) => m.id === r1.id)).toBe(false);
+    expect(chat.list("backend").some((m) => m.id === r2.id)).toBe(true);
+    expect(chat.thread("backend", root.id).map((m) => m.text)).toEqual(["@이해준 넵 @willnew 그 전에 시안 한 번 더 볼게요", "좋아요"]);
+    const sum = chat.threads("backend").find((t) => t.id === root.id)!;
+    expect(sum.users.map((u) => u.name)).toEqual(["이해준", "한지우"]);
+    expect(sum.replies[0].mentions).toEqual(["이해준", "willnew"]);
+    await expect(chat.post("backend", "한지우", "x", "platform", undefined, undefined, undefined, false, { id: "nope" })).rejects.toThrow("스레드를 찾을 수 없어요");
+    await expect(chat.post("backend", "한지우", "x", "platform", undefined, undefined, undefined, false, { id: r1.id })).rejects.toThrow("스레드를 찾을 수 없어요");
+  });
+
+  it("the requester check talks in the thread: ask the requester, pass the boxes on, then ask the reviewer", async () => {
+    const runs = stubRuns();
+    const { llm } = fakeLlm({ brief: [J(BRIEF_NO_Q)], spec: [J(SPEC)] });
+    const requests = new RequestManager(runs as never, { planner: createPlanner(() => llm), proposer: fakeProposer().fn, visual: null });
+    const chat = new Chat(runs as never, makeRepo(), "npm test", ["이해준"], requests);
+    const { requestId } = await chat.post("backend", "한지우", "@willnew 결제 버튼 여백", "platform", undefined, "디자인");
+    await until(() => requests.get(requestId!)!.status === "proposed");
+    await requests.decide(requestId!, { decision: "proceed", by: "이해준" });
+    const r = runs.created[0];
+    r.agents = [agent()];
+    r.review = { status: "pending", agentId: "a1" };
+    runs.bus.emit("any", { runId: r.id });
+    runs.bus.emit("finished", r);
+    await settle();
+    const thread = () => chat.thread("backend", `req-${requestId}`);
+    expect(thread().filter((m) => m.kind === "review")).toHaveLength(0);   // no reviewer mention yet
+    const ask = thread().filter((m) => m.kind === "check").at(-1)!;
+    expect(ask.bodies?.forRequester).toBe("@한지우 화면을 보고 의도대로인지 알려 주세요");
+    requests.requesterCheck(requestId!, { verdict: "changes", by: "한지우", feedback: [{ screen: "Checkout", viewport: "mobile", rect: { x: 0, y: 0, w: 1, h: 0.2 }, note: "두 줄로 보여요" }] });
+    expect(thread().at(-1)!.text).toBe("@이해준 한지우님이 다시 봐 달래요 (1곳)\n- Checkout (모바일): 두 줄로 보여요\n같은 브랜치에서 2번째 시도를 시작했어요");
+    r.agents = [agent()];
+    r.review = { status: "pending", agentId: "a1" };
+    runs.bus.emit("any", { runId: r.id });
+    requests.requesterCheck(requestId!, { verdict: "ok", by: "한지우" });
+    await settle();
+    expect(thread().at(-1)).toMatchObject({ kind: "review", text: "@이해준 검토 차례예요. 테스트 3개 통과, main과 충돌 없음" });
+    expect(chat.list("backend").some((m) => m.kind === "check" || m.kind === "review")).toBe(false);
+  });
+
+  it("migrates stored messages into their request's thread on load", async () => {
+    const runs = stubRuns();
+    await runs.create({ requestId: "q-old" });   // r1 belongs to q-old
+    const old: ChatMessage[] = [
+      { id: "m1", channel: "data", ts: 1, user: "한지우", bot: false, text: "@willnew 버튼 여백" },
+      { id: "req-q-old", channel: "data", ts: 2, user: "willnew", bot: true, text: "제안", kind: "request", requestId: "q-old" },
+      { id: "m2", channel: "data", ts: 3, user: "한지우", bot: false, text: "여백: 16px", requestId: "q-old" },
+      { id: "m3", channel: "data", ts: 4, user: "willnew", bot: true, text: "@이해준 검토 차례예요", kind: "review", runId: "r1" },
+      { id: "m4", channel: "data", ts: 5, user: "willnew", bot: true, text: "바로 맡긴 일", kind: "review", runId: "r-direct" },
+    ];
+    mkdirSync(join(HOME, "chat"), { recursive: true });
+    writeFileSync(join(HOME, "chat", "data.json"), JSON.stringify(old));
+    writeFileSync(join(HOME, "requests", "q-old.json"), JSON.stringify(req({ id: "q-old", channel: "data", status: "code_review" })));
+    const requests = new RequestManager(runs as never, { planner: createPlanner(() => null), proposer: null, visual: null });
+    const chat = new Chat(runs as never, makeRepo(), "npm test", [], requests);
+    expect(chat.list("data").map((m) => m.id)).toEqual(["m1", "req-q-old", "m4"]);
+    expect(chat.thread("data", "req-q-old").map((m) => m.id)).toEqual(["m2", "m3"]);
+    expect(requests.get("q-old")!.threadId).toBe("req-q-old");
+    expect(JSON.parse(readFileSync(join(HOME, "chat", "data.json"), "utf8")).find((m: ChatMessage) => m.id === "m2").threadId).toBe("req-q-old");
+  });
 });

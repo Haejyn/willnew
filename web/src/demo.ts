@@ -37,10 +37,15 @@ import type {
   Team,
   Template,
   Triage,
+  RequesterCheck,
+  RequesterCheckInput,
+  Feedback,
 } from "./api";
 import { applyUpdate } from "./api";
 import { deployedReply, pickReviewer, rejectedReply, reviewMessage } from "../../src/server/handoff";
-import { buildRunTask, cardBodies, isOpenRequest, moveTo, parseAttachments, statusFromRun, transition, withConstraint } from "../../src/server/request-state";
+import { buildRunTask, cardBodies, feedbackConstraints, isOpenRequest, moveTo, parseAttachments, routeAfterVerify, statusFromRun, transition, withConstraint } from "../../src/server/request-state";
+import { inChannel, requestThreadId, threadSummaries } from "../../src/server/threads";
+import { checkoutPairs } from "./demo-shots";
 import { saveUser, suggestWinner as pickWinner, type User } from "./util";
 import { membersFrom } from "./people";
 
@@ -1388,6 +1393,8 @@ interface Live {
 const lives = new Map<string, Live>();
 const runListeners = new Map<string, Set<(u: RunUpdate) => void>>();
 const chatListeners = new Map<string, Set<(m: ChatMessage) => void>>();
+/** `${channel}:${threadId}` → listeners of one thread */
+const threadListeners = new Map<string, Set<(m: ChatMessage) => void>>();
 const chat = new Map<string, ChatMessage[]>();
 let msgSeq = 0;
 let ticker: ReturnType<typeof setInterval> | null = null;
@@ -1401,7 +1408,11 @@ function pushChat(m: ChatMessage) {
   else list.push(m);
   chat.set(m.channel, list);
   for (const fn of chatListeners.get(m.channel) ?? []) fn(m);
+  if (m.threadId) for (const fn of threadListeners.get(`${m.channel}:${m.threadId}`) ?? []) fn(m);
 }
+
+/** 요청에 딸린 run 의 메시지는 그 요청 카드의 스레드로 (서버 chat.ts 와 같다) */
+const threadOfRun = (run: Pick<Run, "requestId">) => (run.requestId ? requestThreadId(run.requestId) : undefined);
 
 const QUIET_KINDS = new Set(["ack", "triage", "progress", "review", "result"]);
 
@@ -1475,8 +1486,10 @@ function tickOne(live: Live, now: number) {
         agent: Object.keys(patch).length ? patch : undefined,
       });
     }
-    const hush = live.quiet && !s.late && !!s.chat && QUIET_KINDS.has(s.chat.kind ?? "");
-    if (s.chat && !hush) pushChat({ ...s.chat, text: s.late ? s.late(live) : s.chat.text, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id });
+    // 화면 수정은 요청자가 먼저 본다: 그동안 검토자 멘션은 미뤘다가 "의도대로예요" 뒤에 보낸다
+    const waiting = !!s.late && s.chat?.kind === "review" && !!live.run.requestId && reqs.get(live.run.requestId)?.status === "preview";
+    const hush = waiting || (live.quiet && !s.late && !!s.chat && QUIET_KINDS.has(s.chat.kind ?? ""));
+    if (s.chat && !hush) pushChat({ ...s.chat, text: s.late ? s.late(live) : s.chat.text, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id, threadId: threadOfRun(live.run) });
   }
 }
 
@@ -2412,7 +2425,7 @@ function simulateShip(runId: string, agentId: string | undefined, reviewer: stri
     set({ stage: "deployed" });
     botSay(run, `${env} 배포 끝났어요`);
     const note = run.agents.find((a) => a.id === agentId)?.userNote;
-    if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: reviewer, bot: false, via: "willnew", text: deployedReply(run, note), runId, kind: "result" });
+    if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: reviewer, bot: false, via: "willnew", text: deployedReply(run, note), runId, kind: "result", threadId: threadOfRun(run) });
   });
 }
 
@@ -2451,6 +2464,8 @@ function designSpec(qs: ClarifyQuestion[]): WorkSpec {
     outOfScope: ["색", "글꼴"],
     references: [FIGMA],
     constraints: [],
+    // 전후 스크린샷을 찍을 화면. 계획 에이전트가 피그마 링크와 요청에서 골랐고 개발자가 고칠 수 있다
+    screens: [{ name: "결제 화면", path: "/checkout" }],
     summary: {
       forRequester: `결제 화면 버튼 4곳의 안쪽 여백을 ${px.split(" ")[0]}로 넓혀요. ${mobile ? "모바일 화면도 같이 바꾸고, " : ""}색과 글꼴은 그대로예요.`,
       forDeveloper: `Checkout 기본 버튼 4개 padding-inline ${px}${mobile ? ", 375px 줄바꿈 없음" : ", 데스크톱만"}`,
@@ -2583,6 +2598,17 @@ const CHECK_XL = vitest(
 );
 const XL_NOTE = "결제 화면 버튼 4곳의 안쪽 여백이 16px로 넓어졌어요. 다른 화면 버튼은 그대로이고, 모바일(375px)에서도 버튼 글자가 한 줄로 보여요.";
 const XL_SUMMARY = "결제 화면 전용으로 size=xl 을 새로 만들고 --button-xl-padding-x 를 space-4 (16px) 로 뒀어요. lg 는 그대로라 다른 화면 6곳은 안 바뀌어요. 수용 기준 테스트 4개를 먼저 쓰고 통과시켰어요. 30개 통과.";
+// 요청자 확인 1차에서 한지우가 표시한 곳(모바일 결제 버튼 두 줄)을 고친 두 번째 시도
+const XL_SUMMARY_2 = "모바일(767px 이하)에서 결제 막대를 세로로 바꿔 결제 버튼과 이전 버튼이 한 줄씩 폭을 꽉 채우게 했어요. 390px 에서 결제 버튼 글자가 한 줄인지 보는 테스트를 더했고 31개 통과.";
+const XL_NOTE_2 = "휴대폰에서 결제 버튼이 한 줄로 보이게 고쳤어요. 결제 버튼이 위, 이전 버튼이 아래에 꽉 찬 폭으로 놓여요.";
+const CHECK_XL_2 = vitest(
+  "billing-web@0.9.4",
+  [...WEB_FILES, ["src/components/Button.test.tsx", 5, "38"], ["src/pages/InvoiceDetail.test.tsx", 13, "55"]],
+  [],
+  "31 passed (31)",
+  "4 passed (4)",
+  "1.78s (transform 124ms, setup 0ms, collect 1.11s, tests 140ms, environment 1.62s, prepare 284ms)",
+);
 const LG_NOTE = "결제 화면 버튼 안쪽 여백이 16px로 넓어졌어요. 같은 크기 버튼을 쓰는 다른 화면 6곳도 같이 넓어졌어요.";
 const LG_SUMMARY = "--button-lg-padding-x 를 space-4 로 바꾸고 결제 화면 버튼 4개를 lg 로 맞췄어요. 수용 기준 테스트를 먼저 썼고 30개 통과.";
 
@@ -2644,7 +2670,12 @@ const isDesign = (channel: string, text: string) => channel === "design" || /버
 function mention(r: Request) {
   if (!r.reviewer || !r.proposal) return;
   const text = `@${r.reviewer} 확인할 제안이 있어요. ${r.proposal.summary}`;
-  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind: "mention", requestId: r.id, text, bodies: { forRequester: `${r.reviewer}님께 확인을 부탁했어요`, forDeveloper: text } });
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind: "mention", requestId: r.id, threadId: requestThreadId(r.id), text, bodies: { forRequester: `${r.reviewer}님께 확인을 부탁했어요`, forDeveloper: text } });
+}
+
+/** 요청 스레드에 봇 한 줄 (역할별 본문) */
+function sayReq(r: Request, forRequester: string, forDeveloper: string, kind: ChatMessage["kind"] = "check") {
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind, requestId: r.id, threadId: requestThreadId(r.id), text: forDeveloper, bodies: { forRequester, forDeveloper } });
 }
 
 /** 명세 → (제안 에이전트가 저장소를 읽는 시간) → 제안 + 개발자 멘션 */
@@ -2672,8 +2703,9 @@ function demoCreateRequest(channel: string, user: string, text: string, userTitl
   const message: ChatMessage = { id: `m${++msgSeq}`, channel, ts: now, user, userTitle, bot: false, text };
   pushChat(message);
   const design = isDesign(channel, text);
+  const id = `q-${(now % 1e6).toString(36)}${++reqSeq}`;
   const r: Request = {
-    id: `q-${(now % 1e6).toString(36)}${++reqSeq}`, channel, repo: ch.repo, check: "npm test", team: ch.team, requester: user,
+    id, threadId: requestThreadId(id), channel, repo: ch.repo, check: "npm test", team: ch.team, requester: user,
     requesterTitle: userTitle ?? titleOf(user), requesterAvatar: avatarOf(user), text, attachments: parseAttachments(text), status: "draft",
     title: text.replace(/@willnew\s*/g, "").split(/[.?!\n]/)[0].slice(0, 40), questions: [], decisions: [], reviewer: pickReviewer(ch, user), runIds: [],
     createdAt: now, updatedAt: now,
@@ -2707,7 +2739,7 @@ function demoAnswer(id: string, questionId: string, answer: string, by: string):
   if (!q) throw new Error("질문을 찾을 수 없어요");
   Object.assign(q, { answer, answeredBy: by, answeredAt: Date.now() });
   logReq(r, by, "answer", `${q.question}: ${answer}`);
-  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: by, bot: false, text: `${q.question}: ${answer}`, requestId: r.id });
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: by, bot: false, text: `${q.question}: ${answer}`, requestId: r.id, threadId: requestThreadId(r.id) });
   saveReq(r);
   if (r.questions.every((x) => x.answer)) specThenPropose(r);
   return r;
@@ -2739,7 +2771,7 @@ function demoDecide(id: string, input: DecideInput): Request {
     r.assignee = input.by;
     transition(r, "approved");
     saveReq(r);
-    pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind: "result", requestId: r.id, text: `${input.by} 직접 작업 · AI 흐름에서 빠짐`, bodies: { forRequester: `${input.by}님이 직접 맡았어요`, forDeveloper: `${input.by} 직접 작업 · AI 흐름에서 빠짐` } });
+    sayReq(r, `${input.by}님이 직접 맡았어요`, `${input.by} 직접 작업 · AI 흐름에서 빠짐`, "result");
     return r;
   }
   if (!text) throw new Error("거절 사유를 적어 주세요");
@@ -2748,7 +2780,7 @@ function demoDecide(id: string, input: DecideInput): Request {
   r.decline = { reason: text, forRequester: `이번엔 진행하지 않기로 했어요. ${input.by}님이 남긴 이유: ${text}`, alternatives: [{ title: "범위를 줄여서 다시 요청하기", effort: "반나절" }] };
   transition(r, "declined");
   saveReq(r);
-  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: input.by, bot: false, via: "willnew", requestId: r.id,
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: input.by, bot: false, via: "willnew", requestId: r.id, threadId: requestThreadId(r.id),
     text: `@${r.requester} ${r.decline.forRequester}\n이렇게는 할 수 있어요\n${r.decline.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}` });
   return r;
 }
@@ -2757,13 +2789,117 @@ function demoDecide(id: string, input: DecideInput): Request {
 function syncReq(run: Run) {
   const r = run.requestId ? reqs.get(run.requestId) : undefined;
   if (!r || (!isOpenRequest(r.status) && r.status !== "merged")) return;
-  const to = statusFromRun(run);
+  let to = statusFromRun(run);
+  // 화면 수정은 요청자가 먼저 본다 (서버 requests.ts 와 같은 규칙)
+  if (to === "code_review" && ["approved", "building", "verifying", "preview"].includes(r.status)) to = routeAfterVerify(r);
   if (!to || to === r.status) return;
+  if (to === "preview") {
+    if (moveTo(r, "preview")) enterPreview(r, run);
+    return;
+  }
   if (to === "declined") {
     if (!r.decline) r.decline = { reason: run.review.comment ?? "", forRequester: `이번엔 반영하지 않았어요.${run.review.comment ? ` 사유: ${run.review.comment}` : ""}`, alternatives: [] };
     transition(r, "declined");
   } else if (!moveTo(r, to)) return;
   saveReq(r);
+}
+
+// ---------------------------------------------------------------------------------------------- 요청자 확인 (B2)
+//
+// 검증을 통과한 화면 수정 → 미리보기 링크와 전후 스크린샷 → 한지우가 "다시 봐 주세요" 로 모바일 결제 버튼을 표시 → 같은
+// 브랜치에서 두 번째 시도 → 다시 확인 → "의도대로예요" → 이해준 코드 검토. 스크린샷은 demo-shots.ts 의 가상 결제 화면이다.
+
+/** 데모 미리보기 주소. 기본값(127.0.0.1)이라 이 컴퓨터에서만 열린다는 안내가 같이 보인다 */
+const PREVIEW_AFTER = "http://127.0.0.1:5174";
+const PREVIEW_BEFORE = "http://127.0.0.1:5180";
+
+function enterPreview(r: Request, run: Run) {
+  const agentId = run.review.agentId ?? run.agents[0]?.id ?? "";
+  const round = (r.checks?.length ?? 0) + 1;
+  const check: RequesterCheck = { round, runId: run.id, agentId, status: "waiting", startedAt: Date.now(), capture: "running", shots: [], previewUrl: PREVIEW_AFTER, baseUrl: PREVIEW_BEFORE, localOnly: true };
+  r.checks = [...(r.checks ?? []), check];
+  saveReq(r);
+  sayReq(r, `@${r.requester} ${round > 1 ? "다시 고친 결과예요. " : ""}화면을 보고 의도대로인지 알려 주세요`, `@${r.requester} 요청자 확인 차례예요 (${round}차). 미리보기와 전후 화면을 붙여요`);
+  // 미리보기 두 개를 띄우고 찍는 데 걸리는 시간
+  setTimeout(() => {
+    const screen = r.spec?.screens?.[0];
+    check.shots = checkoutPairs(round, screen?.name, screen?.path);
+    check.capture = "done";
+    saveReq(r);
+  }, 1600);
+}
+
+/** 두 번째 시도: 같은 에이전트가 같은 브랜치에서 표시한 곳을 고치고 다시 검증한다 (~8초) */
+function followUpRun(runId: string, agentId: string) {
+  const live = lives.get(runId);
+  if (!live) return;
+  const a = live.run.agents.find((x) => x.id === agentId) ?? live.run.agents[0];
+  if (!a) return;
+  const base = a.durationMs ?? 0;
+  const t0 = Date.now();
+  const at = (ms: number, kind: AgentEvent["kind"] | null, text: string, patch?: Partial<AgentRun>, runPatch?: Partial<Run>) =>
+    setTimeout(() => {
+      const cur = lives.get(runId);
+      if (!cur) return;
+      if (kind || patch) emit(cur, { runId, agentId: a.id, event: kind ? { ts: Date.now(), kind, text, attempt: a.attempt } : undefined, agent: patch });
+      if (runPatch) emit(cur, { runId, run: runPatch });
+    }, ms);
+  emit(live, { runId, run: { review: { status: "none" } } });
+  emit(live, { runId, agentId: a.id, event: { ts: t0, kind: "plan", text: "요청자 확인 1차 표시를 반영해 이어서 작업", attempt: a.attempt }, agent: { status: "running", startedAt: t0 - base, endedAt: undefined } });
+  at(900, "text", "모바일(767px 이하)에서는 결제 막대 버튼을 한 줄에 하나씩 두고 폭을 꽉 채울게요. 결제 버튼이 위로 와요. 데스크톱은 그대로 둡니다.");
+  at(1700, "tool", 'Read {"file_path":"./src/pages/Checkout.module.css"}');
+  at(2100, "tool_result", cat([".payBar {", "  display: flex;", "  gap: var(--space-2);", "}", ".payBar > button { flex: 1 1 0; }"]));
+  at(2900, "tool", 'Edit {"file_path":"./src/components/Button.test.tsx"}');
+  at(3200, "tool_result", "The file ./src/components/Button.test.tsx has been updated.");
+  at(3900, "tool", 'Edit {"file_path":"./src/pages/Checkout.module.css"}');
+  at(4200, "tool_result", "The file ./src/pages/Checkout.module.css has been updated.");
+  at(5000, "text", `${XL_SUMMARY_2}\n\n요청자에게: ${XL_NOTE_2}`, { summary: XL_SUMMARY_2, userNote: XL_NOTE_2 });
+  at(5400, "check", "$ npm test", { status: "checking" });
+  at(7400, "check", "검증 통과 (exit 0, 1.8 s)", { status: "done", endedAt: t0 + 7400, durationMs: base + 7400, check: { status: "passed", exitCode: 0, output: CHECK_XL_2, durationMs: 1800 } }, { review: { status: "pending", agentId: a.id } });
+}
+
+function demoRequesterCheck(id: string, input: RequesterCheckInput): Request {
+  const r = reqs.get(id);
+  if (!r) throw new Error("요청을 찾을 수 없어요");
+  if (r.status !== "preview") throw new Error("지금은 확인할 화면이 없어요");
+  const check = r.checks?.at(-1);
+  if (!check) throw new Error("확인할 결과가 없어요");
+  const now = Date.now();
+  const run = lives.get(check.runId)?.run;
+  if (input.verdict === "ok") {
+    Object.assign(check, { status: "approved", by: input.by, at: now });
+    logReq(r, input.by, "preview_ok", `${check.round}차 확인`);
+    transition(r, "code_review");
+    saveReq(r);
+    sayReq(r, "확인했어요. 이제 개발자가 코드를 봐요", `${input.by}님이 의도대로라고 했어요 (${check.round}차)`);
+    if (run && r.reviewer) setTimeout(() => sayReq(r, `${r.reviewer}님이 코드를 볼 차례예요`, reviewMessage(r.reviewer!, run.agents.find((a) => a.id === check.agentId) ?? run.agents[0], run.baseBranch, false), "review"), 300);
+    return r;
+  }
+  if (input.verdict === "skip") {
+    const reason = input.reason?.trim();
+    if (!reason) throw new Error("건너뛰는 이유를 적어 주세요");
+    Object.assign(check, { status: "skipped", by: input.by, at: now, reason });
+    logReq(r, input.by, "preview_skip", reason);
+    transition(r, "code_review");
+    saveReq(r);
+    sayReq(r, `${input.by}님이 화면 확인 없이 코드 검토로 넘겼어요. 이유: ${reason}`, `${input.by}님이 요청자 확인을 건너뛰었어요. 이유: ${reason}`);
+    return r;
+  }
+  const feedback: Feedback[] = (input.feedback ?? []).filter((f) => f.note.trim());
+  const note = input.note?.trim();
+  if (!feedback.length && !note) throw new Error("다시 볼 곳을 표시하고 한 줄 적어 주세요");
+  Object.assign(check, { status: "changes", by: input.by, at: now, feedback });
+  const cons = [...feedbackConstraints(check.round, feedback), ...(note ? [`요청자 확인 ${check.round}차: ${note}`] : [])];
+  if (r.spec) r.spec = cons.reduce(withConstraint, r.spec);
+  logReq(r, input.by, "preview_changes", [...feedback.map((f) => `${f.screen}${f.viewport === "mobile" ? " (모바일)" : ""}: ${f.note}`), ...(note ? [note] : [])].join(" / "));
+  saveReq(r);
+  const lines = feedback.map((f) => `- ${f.screen}${f.viewport === "mobile" ? " (모바일)" : ""}: ${f.note}`).join("\n");
+  sayReq(r, `표시한 ${feedback.length || 1}곳을 넘겼어요. 고쳐서 다시 보여 드릴게요`,
+    `${r.reviewer ? `@${r.reviewer} ` : ""}${input.by}님이 다시 봐 달래요${feedback.length ? ` (${feedback.length}곳)` : ""}\n${lines}${lines ? "\n" : ""}같은 브랜치에서 ${check.round + 1}번째 시도를 시작했어요`);
+  moveTo(r, "building");
+  saveReq(r);
+  followUpRun(check.runId, check.agentId);
+  return r;
 }
 
 /** 지난 기록: 한지우가 이틀 전에 낸 요청, 이해준이 거절했고 요청자용 설명과 대안이 남아 있다. */
@@ -2777,7 +2913,7 @@ function seedDesign() {
   add(at, "한지우", text);
   const reason = "결제 완료 화면은 지금 전환율 A/B 테스트 중이라 11월 말까지 못 건드려요";
   const r: Request = {
-    id: "q-past1", channel: "design", repo: "~/work/billing-web", check: "npm test", team: "design", requester: "한지우", requesterTitle: "디자인",
+    id: "q-past1", threadId: requestThreadId("q-past1"), channel: "design", repo: "~/work/billing-web", check: "npm test", team: "design", requester: "한지우", requesterTitle: "디자인",
     text, attachments: [], status: "declined", stoppedFrom: "proposed", type: "ui", title: "결제 완료 화면 축하 애니메이션",
     understood: { forRequester: "이렇게 이해했어요: 결제가 끝났다는 게 더 잘 느껴지게, 결제 완료 화면에 짧은 축하 효과를 넣고 싶으신 거죠.", forDeveloper: "CheckoutDone 화면에 완료 애니메이션 추가 요청" },
     questions: [],
@@ -2805,9 +2941,11 @@ function seedDesign() {
   const b = cardBodies(r);
   pushChat({ id: `req-${r.id}`, channel: "design", ts: at + 1, user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: r.id, kind: "request" });
   const m = `@이해준 확인할 제안이 있어요. ${r.proposal!.summary}`;
-  add(at + 40 * SEC, "willnew", m, { kind: "mention", requestId: r.id, bodies: { forRequester: "이해준님께 확인을 부탁했어요", forDeveloper: m } });
-  add(decidedAt, "이해준", `@한지우 ${r.decline!.forRequester}\n이렇게는 할 수 있어요\n${r.decline!.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}`, { via: "willnew", requestId: r.id });
-  add(decidedAt + 6 * MIN, "한지우", "아 그렇군요 ㅎㅎ 메일 쪽 먼저 시안 만들어볼게요");
+  // 요청에 대한 말은 카드의 스레드에
+  const th = { requestId: r.id, threadId: r.threadId };
+  add(at + 40 * SEC, "willnew", m, { kind: "mention", ...th, bodies: { forRequester: "이해준님께 확인을 부탁했어요", forDeveloper: m } });
+  add(decidedAt, "이해준", `@한지우 ${r.decline!.forRequester}\n이렇게는 할 수 있어요\n${r.decline!.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}`, { via: "willnew", ...th });
+  add(decidedAt + 6 * MIN, "한지우", "아 그렇군요 ㅎㅎ 메일 쪽 먼저 시안 만들어볼게요", th);
   add(T0 - 25 * MIN, "이해준", "결제 화면 시안 나오면 여기 올려주세요. 버튼 쪽 손볼 때 같이 볼게요", { reactions: { "👀": ["한지우"] } });
   add(T0 - 18 * MIN, "한지우", "넵 오늘 오후에 올릴게요!", { reactions: { "👍": ["이해준"] } });
 }
@@ -2899,8 +3037,47 @@ export const demoApi: Api = {
   channels: () => later(clone(CHANNELS)),
   messages: (ch) => {
     ensureSeed();
-    return later(clone((chat.get(ch) ?? []).slice().sort((a, b) => a.ts - b.ts)));
+    return later(clone((chat.get(ch) ?? []).filter(inChannel).sort((a, b) => a.ts - b.ts)));
   },
+  threads: (ch) => {
+    ensureSeed();
+    return later(clone(threadSummaries(chat.get(ch) ?? [])));
+  },
+  threadMessages: (ch, tid) => {
+    ensureSeed();
+    return later(clone((chat.get(ch) ?? []).filter((m) => m.threadId === tid).sort((a, b) => a.ts - b.ts)));
+  },
+  subscribeThread(ch, tid, on) {
+    ensureSeed();
+    const key = `${ch}:${tid}`;
+    const set = threadListeners.get(key) ?? new Set();
+    set.add(on);
+    threadListeners.set(key, set);
+    return () => set.delete(on);
+  },
+  async reply(ch, tid, input) {
+    ensureSeed();
+    const root = (chat.get(ch) ?? []).find((m) => m.id === tid);
+    if (!root || root.threadId) throw new Error("스레드를 찾을 수 없어요");
+    if (!input.text.trim()) throw new Error("메시지가 비어 있어요");
+    const message: ChatMessage = { id: `m${++msgSeq}`, channel: ch, ts: Date.now(), user: input.user, userTitle: input.userTitle, userAvatar: input.userAvatar, bot: false, text: input.text.trim(),
+      threadId: tid, broadcast: input.broadcast || undefined, requestId: root.requestId, runId: root.runId };
+    pushChat(message);
+    return later({ message: clone(message) }, 60);
+  },
+  async requesterCheck(id, input) {
+    await later(null, 200);
+    return clone(demoRequesterCheck(id, input));
+  },
+  async setScreens(id, screens, _by) {
+    const r = reqs.get(id);
+    if (!r?.spec) throw new Error("아직 명세가 없어요");
+    for (const s of screens) if (!s.name.trim() || !s.path.startsWith("/")) throw new Error("화면마다 이름과 / 로 시작하는 경로가 있어야 해요");
+    r.spec = { ...r.spec, screens: screens.map((s) => ({ name: s.name.trim(), path: s.path.trim() })) };
+    saveReq(r);
+    return later(clone(r));
+  },
+  shotUrl: (u) => u,
   async postMessage(ch, user, text, _team, overrides, userTitle, _avatar, direct) {
     ensureSeed();
     const team = CHANNELS.find((c) => c.id === ch)?.team ?? "platform";
@@ -2983,6 +3160,7 @@ export const demoApi: Api = {
   async review(runId, input) {
     const run = findRun(runId);
     if (!run) return { ok: false, message: "요청을 찾을 수 없어요" };
+    if (run.requestId && reqs.get(run.requestId)?.status === "preview") throw new Error("요청자 확인이 먼저예요. 건너뛰려면 요청 카드에서 이유를 적어 주세요");
     const approve = input.decision === "approve";
     const review = { status: approve ? "approved" : "rejected", reviewer: input.reviewer, comment: input.comment, agentId: input.agentId, at: Date.now() } as Run["review"];
     // pr 모드: 승인은 바로 기록하고, 병합은 CI 가 끝난 뒤
@@ -2994,10 +3172,13 @@ export const demoApi: Api = {
       saveReq(linked);
     }
     const why = input.comment ? ` · “${input.comment}”` : "";
-    botSay(run, approve ? `${input.reviewer}님이 승인해서 PR을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
+    const line = approve ? `${input.reviewer}님이 승인해서 PR을 올려요${why}` : `반려 · ${input.reviewer}${why}`;
+    // 요청의 run 이면 승인 한 줄은 그 요청 스레드에 (단계별 줄은 카드에만)
+    if (run.requestId && run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text: line, kind: "result", runId, threadId: threadOfRun(run) });
+    else botSay(run, line);
     if (approve) simulateShip(runId, input.agentId, input.reviewer);
     else if (run.channel)
-      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: input.reviewer, bot: false, via: "willnew", text: rejectedReply(run, input.comment), runId, kind: "result" });
+      pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: input.reviewer, bot: false, via: "willnew", text: rejectedReply(run, input.comment), runId, kind: "result", threadId: threadOfRun(run) });
     await later(null, 300);
     return { ok: true, message: approve ? "승인했어요. PR을 올리고 CI를 기다려요" : "반려했어요" };
   },

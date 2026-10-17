@@ -110,7 +110,11 @@ export function App() {
   const requester = user.role === "requester";
   // 내 차례: 확인할 제안 + 승인할 결과
   const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
-  const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending").length ?? 0) + proposalsN;
+  // 내 요청: 내가 답할 되묻기, 내가 볼 화면(요청자 확인)
+  const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
+  // 요청자 확인 중인 결과는 아직 개발자 차례가 아니다
+  const checking = new Set(requests?.filter((r) => r.status === "preview").flatMap((r) => r.runIds) ?? []);
+  const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending" && !checking.has(r.id)).length ?? 0) + proposalsN;
 
   useEffect(() => {
     const run = runs?.find((r) => r.id === openId);
@@ -171,7 +175,7 @@ export function App() {
 
   const nav: { id: string; href: string; name: string; Icon: ComponentType<{ size?: number; filled?: boolean }>; on: boolean; badge?: number }[] = [
     ...(requester ? [] : [{ id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN }]),
-    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request" || (requester && route.page === "home") },
+    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request" || (requester && route.page === "home"), badge: mineN },
     { id: "runs", href: "#/runs", name: "작업", Icon: IconList, on: route.page === "runs" || route.page === "run" || route.page === "review" },
     { id: "chat", href: `#/chat/${channels.find((c) => c.team === user.team)?.id ?? DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
     { id: "metrics", href: "#/metrics", name: "지표", Icon: IconChart, on: route.page === "metrics" },

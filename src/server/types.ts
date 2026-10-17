@@ -133,6 +133,8 @@ export interface Run {
   reviewed?: Record<string, string[]>;
   /** the Request this run was started for (bridge flow); absent for direct runs */
   requestId?: string;
+  /** dev server on a detached worktree of baseRef, for before/after screenshots (B2) */
+  basePreview?: Preview;
 }
 
 export interface ReviewComment {
@@ -207,9 +209,23 @@ export interface ChatMessage {
   requestId?: string;
   /** role-specific bodies; the web shows forRequester to requesters and forDeveloper to developers. `text` = forDeveloper */
   bodies?: Bodies;
-  kind?: "ack" | "triage" | "progress" | "result" | "review" | "error" | "request" | "mention";
+  kind?: "ack" | "triage" | "progress" | "result" | "review" | "error" | "request" | "mention" | "check";
   /** emoji → who reacted (user content; the UI itself never writes emoji) */
   reactions?: Record<string, string[]>;
+  /** reply in the thread of this root message. A Request's thread root is its card (`req-<id>`) */
+  threadId?: string;
+  /** a thread reply that was also sent to the channel ("채널에도 보내기") */
+  broadcast?: boolean;
+}
+
+/** What the channel shows under a thread root: count, last reply, who replied, and enough to count unread and mentions. */
+export interface ThreadSummary {
+  id: string;
+  count: number;
+  lastTs: number;
+  /** most recent distinct repliers first, at most 3 */
+  users: { name: string; avatar?: string; bot?: boolean }[];
+  replies: { ts: number; user: string; mentions: string[] }[];
 }
 
 // ── bridge: Request (요청자 말 → 되묻기 → 명세 → 제안 → 개발자 확인 → run) ──
@@ -222,8 +238,8 @@ export interface Bodies {
 
 export type RequestStatus =
   | "draft" | "clarifying" | "spec_ready" | "proposed" | "approved" | "building" | "verifying"
-  // B2 inserts "preview" (요청자 확인) between verifying and code_review
-  | "code_review" | "merged" | "deployed" | "closed"
+  // preview = 요청자 확인 (B2): the requester checks the result on screen before the developer reviews the code
+  | "preview" | "code_review" | "merged" | "deployed" | "closed"
   | "declined" | "cancelled";
 
 export type RequestType = "bug" | "ui" | "copy" | "data" | "other";
@@ -258,6 +274,63 @@ export interface WorkSpec {
   summary: Bodies;
   /** after the proposal pass: criteria that name code nobody could find (shown to the developer as 확인 필요) */
   needsCheck?: SpecFlag[];
+  /** the planner thinks the requester should look at the result even though the type is not ui/copy */
+  needsVisualCheck?: boolean;
+  /** pages to capture before/after (planner fills them, the developer can edit) */
+  screens?: Screen[];
+}
+
+/** One page of the app to look at: a name the requester knows and the path on the dev server. */
+export interface Screen {
+  name: string;
+  /** path on the preview server, e.g. "/checkout" */
+  path: string;
+}
+
+export type ViewportName = "desktop" | "mobile";
+
+/** One screen in one viewport, captured on the base (전) and on the branch (후). URLs are served by the API. */
+export interface ShotPair {
+  screen: string;
+  path: string;
+  viewport: ViewportName;
+  width: number;
+  height: number;
+  before?: string;
+  after?: string;
+  error?: string;
+}
+
+/** A box the requester drew on a screenshot. rect is a fraction of the image (0..1) so it does not depend on the display size. */
+export interface Feedback {
+  screen: string;
+  viewport?: ViewportName;
+  rect: { x: number; y: number; w: number; h: number };
+  note: string;
+}
+
+/** One round of 요청자 확인: the result of one attempt, its preview, the screenshot pairs and what the requester said. */
+export interface RequesterCheck {
+  round: number;
+  runId: string;
+  agentId: string;
+  status: "waiting" | "approved" | "changes" | "skipped";
+  startedAt: number;
+  /** shareable link to the branch preview (--preview-base-url) */
+  previewUrl?: string;
+  /** the same for main */
+  baseUrl?: string;
+  /** the link only opens on the machine running willnew (127.0.0.1 / localhost) */
+  localOnly?: boolean;
+  capture: "running" | "done" | "skipped";
+  shots: ShotPair[];
+  /** why something is missing (no preview command, no playwright-core, a page failed) */
+  note?: string;
+  feedback?: Feedback[];
+  by?: string;
+  at?: number;
+  /** skip: the developer's reason */
+  reason?: string;
 }
 
 /** One acceptance criterion with the code-like names that are not in the request, the proposal's files or the repo. */
@@ -285,7 +358,8 @@ export interface Proposal {
 
 export type DecisionKind =
   | "answer" | "proceed" | "proceed_with_changes" | "take_over" | "decline" | "cancel" | "close"
-  | "approve_result" | "reject_result";
+  | "approve_result" | "reject_result"
+  | "preview_ok" | "preview_changes" | "preview_skip";
 
 /** Who decided what, when, and why. Every proposal decision lands here. */
 export interface DecisionEntry {
@@ -331,6 +405,10 @@ export interface Request {
   /** 직접 할게: the developer who took it out of the AI flow */
   assignee?: string;
   runIds: string[];
+  /** the thread every message about this request lives in (= the card's message id, `req-<id>`) */
+  threadId?: string;
+  /** 요청자 확인 rounds, oldest first. A new round starts each time a passing result reaches preview */
+  checks?: RequesterCheck[];
   planner?: { by: "llm" | "fallback"; note?: string; costUsd?: number | null };
   createdAt: number;
   updatedAt: number;

@@ -6,11 +6,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { EventEmitter } from "node:events";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { ADAPTERS } from "./adapters.js";
-import { addWorktree, commitAll, diffSummary, mergeBranch, mergeConflicts, removeWorktree, repoInfo } from "./git.js";
+import { addWorktree, commitAll, diffSummary, git, mergeBranch, mergeConflicts, removeWorktree, repoInfo } from "./git.js";
 import { parseUserNote, USER_NOTE_RULE } from "./handoff.js";
 import { Shipper, type ShipOptions } from "./ship.js";
 import type { AgentEvent, AgentRun, CreateRunInput, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
@@ -52,7 +52,7 @@ export class RunManager {
 
   readonly shipper: Shipper;
 
-  constructor(private opts: { preview?: string; ship?: ShipOptions } = {}) {
+  constructor(private opts: { preview?: string; previewBaseUrl?: string; ship?: ShipOptions } = {}) {
     this.shipper = new Shipper(opts.ship ?? { mode: "merge" });
     mkdirSync(RUNS_DIR, { recursive: true });
     for (const f of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json"))) {
@@ -62,6 +62,7 @@ export class RunManager {
           if (!FINISHED.has(a.status)) a.status = "cancelled";
           if (a.preview && a.preview.status !== "failed") a.preview = { ...a.preview, status: "stopped" };
         }
+        if (run.basePreview && run.basePreview.status !== "failed") run.basePreview = { ...run.basePreview, status: "stopped" };
         this.runs.set(run.id, run);
       } catch { /* skip corrupt file */ }
     }
@@ -377,47 +378,80 @@ export class RunManager {
     return this.opts.preview ?? "";
   }
 
-  /** Start the configured dev server inside one agent's worktree on a free port. */
-  async startPreview(runId: string, agentId: string): Promise<Preview> {
-    const run = this.runs.get(runId);
-    const agent = run?.agents.find((a) => a.id === agentId);
-    if (!run || !agent) throw new Error("not found");
-    if (!this.opts.preview) throw new Error("미리보기 명령이 없어요 — serve --preview \"npm run dev -- --port {port}\"");
-    const live = this.previews.get(agentId);
-    if (live && agent.preview && agent.preview.status !== "stopped" && agent.preview.status !== "failed") return agent.preview;
+  /** `--preview-base-url`: where other people reach a preview. Default http://127.0.0.1:{port} (this machine only). */
+  get previewBaseUrl() {
+    return this.opts.previewBaseUrl || "http://127.0.0.1:{port}";
+  }
+
+  /** The shareable link for a preview port, and whether it only opens on the machine running willnew. */
+  previewLink(port: number): { url: string; localOnly: boolean } {
+    const url = this.previewBaseUrl.replaceAll("{port}", String(port));
+    let host = "";
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      /* not a URL: treat as local */
+    }
+    return { url, localOnly: !host || host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]" };
+  }
+
+  /**
+   * Start the preview command in `cwd` on a free port and wait until the port answers. `get` and `set` read and write
+   * the Preview on whatever owns it (an agent, or the run for the base preview).
+   */
+  private async launchPreview(key: string, cwd: string, get: () => Preview | undefined, set: (p: Preview) => void, onExit?: (code: number | null) => void): Promise<Preview> {
+    if (!this.opts.preview) throw new Error("미리보기 명령이 없어요. serve --preview \"npm run dev -- --port {port}\" 처럼 띄워 주세요");
+    const cur = get();
+    if (this.previews.get(key) && cur && cur.status !== "stopped" && cur.status !== "failed") return cur;
     const port = await freePort();
     const cmd = this.opts.preview.replaceAll("{port}", String(port));
-    const preview: Preview = { status: "starting", port, log: `$ ${cmd}\n`, startedAt: Date.now() };
-    this.emit(run, agent, { preview }, { ts: Date.now(), kind: "status", text: `미리보기 시작 · :${port}` });
-    const child = spawn(cmd, { cwd: agent.worktree, shell: true, windowsHide: true, detached: process.platform !== "win32",
+    set({ status: "starting", port, log: `$ ${cmd}\n`, startedAt: Date.now() });
+    const child = spawn(cmd, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32",
       env: { ...process.env, PORT: String(port), BROWSER: "none" } });
-    this.previews.set(agentId, child);
-    let log = preview.log;
+    this.previews.set(key, child);
+    let log = get()!.log;
     const add = (d: Buffer) => {
       log = (log + d.toString("utf8")).slice(-8000);
     };
     child.stdout?.on("data", add);
     child.stderr?.on("data", add);
-    const patch = (p: Partial<Preview>) => agent.preview && this.emit(run, agent, { preview: { ...agent.preview, ...p, log } });
+    const patch = (p: Partial<Preview>) => {
+      const now = get();
+      if (now) set({ ...now, ...p, log });
+    };
     child.on("close", (code) => {
-      if (this.previews.get(agentId) !== child) return;
-      this.previews.delete(agentId);
-      patch({ status: agent.preview?.status === "stopped" ? "stopped" : "failed" });
-      if (code && agent.preview?.status === "failed") this.note(run, agent, "error", `미리보기 종료 (exit ${code})`);
+      if (this.previews.get(key) !== child) return;
+      this.previews.delete(key);
+      patch({ status: get()?.status === "stopped" ? "stopped" : "failed" });
+      if (get()?.status === "failed") onExit?.(code);
     });
     const deadline = Date.now() + PREVIEW_READY_MS;
-    while (Date.now() < deadline && this.previews.get(agentId) === child) {
+    while (Date.now() < deadline && this.previews.get(key) === child) {
       if (await portOpen(port)) {
         patch({ status: "ready" });
-        return agent.preview!;
+        return get()!;
       }
       await new Promise((r) => setTimeout(r, 400));
     }
-    if (this.previews.get(agentId) === child) {
+    if (this.previews.get(key) === child) {
       killTree(child);
       patch({ status: "failed" });
     }
-    return agent.preview!;
+    return get()!;
+  }
+
+  /** Start the configured dev server inside one agent's worktree on a free port. */
+  async startPreview(runId: string, agentId: string): Promise<Preview> {
+    const run = this.runs.get(runId);
+    const agent = run?.agents.find((a) => a.id === agentId);
+    if (!run || !agent) throw new Error("not found");
+    let first = true;
+    return this.launchPreview(agentId, agent.worktree, () => agent.preview, (preview) => {
+      this.emit(run, agent, { preview }, first ? { ts: Date.now(), kind: "status", text: `미리보기 시작 · :${preview.port}` } : undefined);
+      first = false;
+    }, (code) => {
+      if (code) this.note(run, agent, "error", `미리보기 종료 (exit ${code})`);
+    });
   }
 
   stopPreview(runId: string, agentId: string) {
@@ -426,6 +460,35 @@ export class RunManager {
     if (!run || !agent) throw new Error("not found");
     const child = this.previews.get(agentId);
     if (agent.preview) this.emit(run, agent, { preview: { ...agent.preview, status: "stopped" } });
+    if (child) killTree(child);
+  }
+
+  /** Where the base worktree for a run's "before" preview lives. */
+  private baseWorktree(run: Run) {
+    return join(HOME, "worktrees", `${basename(run.repo)}-${run.id}`, "_base");
+  }
+
+  /**
+   * The same dev server on a detached worktree of the run's base commit (main as it was when the run started), so the
+   * "before" screenshots come from the same kind of server as the "after" ones.
+   */
+  async startBasePreview(runId: string): Promise<Preview> {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("not found");
+    if (!this.opts.preview) throw new Error("미리보기 명령이 없어요");
+    const wt = this.baseWorktree(run);
+    if (!existsSync(wt)) {
+      mkdirSync(join(wt, ".."), { recursive: true });
+      await git(run.repo, "worktree", "add", "--detach", wt, run.baseRef);
+    }
+    return this.launchPreview(`base:${run.id}`, wt, () => run.basePreview, (basePreview) => this.emit(run, undefined, {}, undefined, { basePreview }));
+  }
+
+  stopBasePreview(runId: string) {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    const child = this.previews.get(`base:${runId}`);
+    if (run.basePreview) this.emit(run, undefined, {}, undefined, { basePreview: { ...run.basePreview, status: "stopped" } });
     if (child) killTree(child);
   }
 
@@ -484,6 +547,8 @@ export class RunManager {
       this.bus.emit("worktree-removed", a.id);
       await removeWorktree(run.repo, a.worktree, a.branch);
     }
+    if (this.previews.has(`base:${runId}`)) this.stopBasePreview(runId);
+    if (existsSync(this.baseWorktree(run))) await git(run.repo, "worktree", "remove", "--force", this.baseWorktree(run)).catch(() => undefined);
     this.runs.delete(runId);
     rmSync(join(RUNS_DIR, `${runId}.json`), { force: true });
   }

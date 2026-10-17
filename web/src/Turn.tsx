@@ -21,7 +21,12 @@ const doneAt = (r: Run) => r.review.at ?? r.createdAt;
 export function Turn({ api, user, agents, runs, requests, error, reload, go, onNew, me }: { api: Api; user: User; agents: AgentInfo[] | null; runs: Run[] | null; requests?: Request[] | null; error: string | null; reload: () => void; go: (p: string) => void; onNew: () => void; me?: ReactNode }) {
   const now = useNow(1000, !!runs?.some((r) => r.agents.some(isActive)));
   const [example, setExample] = useState("");
-  const rows = useMemo(() => (runs ?? []).map((r) => ({ run: r, ...runPhase(r, now) })), [runs, now]);
+  // 화면 수정 결과는 요청자가 먼저 본다(요청자 확인). 그동안은 내 차례가 아니라 차오르는 중
+  const checking = useMemo(() => new Set((requests ?? []).filter((r) => r.status === "preview").flatMap((r) => r.runIds)), [requests]);
+  const rows = useMemo(() => (runs ?? []).map((r) => {
+    const p = runPhase(r, now);
+    return checking.has(r.id) && p.phase === "turn" ? { run: r, ...p, phase: "check" as Phase, label: "요청자 확인 중" } : { run: r, ...p };
+  }), [runs, now, checking]);
   const turn = rows.filter((x) => x.phase === "turn").sort((a, b) => b.run.createdAt - a.run.createdAt);
   const rising = rows.filter((x) => !isDone(x.phase) && x.phase !== "turn");
   const done = rows.filter((x) => isDone(x.phase)).sort((a, b) => doneAt(b.run) - doneAt(a.run));

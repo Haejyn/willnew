@@ -57,12 +57,14 @@ Rules:
 - references: URLs from the request or attachments, nothing invented.
 - Do not invent numbers the requester did not give. If a value is still unknown, write the criterion as "[확인 필요: ...]".
 - summary.forRequester: one or two plain sentences of what will change for them. summary.forDeveloper: one technical line.
+- screens: the pages a person should look at to judge the result, as {"name": the requester's word for the page, "path": the URL path, starting with "/"}. Take them from the request, the Figma link or the answers; leave the list empty if you cannot tell. At most 4.
+- needsVisualCheck: true when the requester should look at the result on screen before a developer reviews the code (anything visible changes), even if the type is not a screen or copy change. Otherwise false.
 
 ${STYLE}
 
 Reply with ONLY one JSON object, no prose, no code fence:
 {"title":"...","problem":"...","expected":"...","acceptanceCriteria":["..."],"outOfScope":["..."],"references":["..."],
- "summary":{"forRequester":"...","forDeveloper":"..."}}`;
+ "summary":{"forRequester":"...","forDeveloper":"..."},"screens":[{"name":"결제 화면","path":"/checkout"}],"needsVisualCheck":false}`;
 }
 
 /** Step 4: read-only pass over the repository in a fresh worktree. */

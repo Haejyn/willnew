@@ -36,8 +36,8 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager }) {
-  const runs = opts.manager ?? new RunManager({ preview: opts.preview, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager }) {
+  const runs = opts.manager ?? new RunManager({ preview: opts.preview, previewBaseUrl: opts.previewBaseUrl, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const requests = opts.requests ?? new RequestManager(runs);
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
   const app = new Hono();
@@ -62,7 +62,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.onError((err, c) => c.json({ error: err.message }, 400));
 
   app.get("/api/agents", (c) => c.json(Object.values(ADAPTERS).map((a) => ({ id: a.id, name: a.name, installed: installed(a) }))));
-  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand, ship: runs.shipper.mode, deploy: runs.shipper.tracksDeploy, deployEnv: runs.shipper.opts.deployEnv ?? "production" }));
+  app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand, previewBaseUrl: runs.previewBaseUrl, previewLocalOnly: runs.previewLink(0).localOnly,
+    ship: runs.shipper.mode, deploy: runs.shipper.tracksDeploy, deployEnv: runs.shipper.opts.deployEnv ?? "production" }));
   app.get("/api/runs", (c) => c.json(runs.list().map(lite)));
   app.post("/api/runs", async (c) => {
     const body = (await c.req.json()) as CreateRunInput;
@@ -154,16 +155,25 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/teams", (c) => c.json(TEAMS));
   app.post("/api/runs/:id/review", async (c) => {
     const body = await c.req.json();
+    // a screen change waits for the requester first; the developer can skip that with a reason (요청자 확인 건너뛰기)
+    const linked = runs.get(c.req.param("id"))?.requestId;
+    if (linked && requests.get(linked)?.status === "preview") throw new Error("요청자 확인이 먼저예요. 건너뛰려면 요청 카드에서 이유를 적어 주세요");
     const message = await runs.review(c.req.param("id"), body);
     return c.json({ ok: true, message });
   });
   app.get("/api/channels", (c) => c.json(chat.channels));
+  // the channel stream leaves thread replies out; threads have their own list and stream. The channel SSE carries both
+  // (a reply updates the footer under its root).
   app.get("/api/channels/:id/messages", (c) => c.json(chat.list(c.req.param("id"))));
   app.post("/api/channels/:id/messages", async (c) => {
-    const { user, text, team, overrides, userTitle, userAvatar, direct } = await c.req.json();
-    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined, direct === true));
+    const { user, text, team, overrides, userTitle, userAvatar, direct, threadId, broadcast } = await c.req.json();
+    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined, direct === true,
+      threadId ? { id: String(threadId), broadcast: broadcast === true } : undefined));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
+  app.get("/api/channels/:id/threads", (c) => c.json(chat.threads(c.req.param("id"))));
+  app.get("/api/channels/:id/threads/:tid/messages", (c) => c.json(chat.thread(c.req.param("id"), c.req.param("tid"))));
+  app.get("/api/channels/:id/threads/:tid/stream", (c) => sse(c, chat.bus, `thread:${c.req.param("id")}:${c.req.param("tid")}`));
   app.post("/api/channels/:id/messages/:mid/react", async (c) => {
     const { emoji, user } = await c.req.json();
     return c.json(chat.react(c.req.param("id"), c.req.param("mid"), String(emoji ?? ""), String(user ?? "anonymous")));
@@ -183,6 +193,19 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.post("/api/requests/:id/decide", async (c) => {
     const { decision, by, text } = await c.req.json();
     return c.json(await requests.decide(c.req.param("id"), { decision, by: String(by ?? "anonymous"), text: text == null ? undefined : String(text) }));
+  });
+  // 요청자 확인: 의도대로예요 / 다시 봐 주세요 (boxes) / 건너뛰기 (developer, reason)
+  app.post("/api/requests/:id/requester-check", async (c) => {
+    const { verdict, by, feedback, note, reason } = await c.req.json();
+    return c.json(requests.requesterCheck(c.req.param("id"), { verdict, by: String(by ?? "anonymous"), feedback, note: note == null ? undefined : String(note), reason: reason == null ? undefined : String(reason) }));
+  });
+  app.put("/api/requests/:id/screens", async (c) => {
+    const { screens, by } = await c.req.json();
+    return c.json(requests.setScreens(c.req.param("id"), screens, String(by ?? "anonymous")));
+  });
+  app.get("/api/requests/:id/shots/:round/:file", (c) => {
+    const f = requests.shotFile(c.req.param("id"), c.req.param("round"), c.req.param("file"));
+    return f ? new Response(readFileSync(f), { headers: { "content-type": "image/png", "cache-control": "private, max-age=3600" } }) : c.json({ error: "not found" }, 404);
   });
   app.post("/api/requests/:id/cancel", async (c) => {
     const { by, reason } = await c.req.json();

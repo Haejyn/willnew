@@ -6,6 +6,9 @@
  *     proceed / proceed_with_changes → run (existing run → verify → approve → ship flow, linked by run.requestId)
  *     take_over → assigned to that developer, no AI run
  *     decline → planner writes the requester-facing explanation
+ *   passing result of a ui/copy request → preview (요청자 확인: preview link, before/after pairs)
+ *     의도대로예요 → code_review · 다시 봐 주세요 (boxes on the screenshot) → constraints + follow-up on the same branch
+ *     the developer can skip the check with a reason
  *
  * AI only translates and organises. Scope, priority and approval are decided by people through decide().
  */
@@ -14,11 +17,12 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPlanner, fallbackProposal, type Planner } from "./brief.js";
 import { defaultProposalAgent, propose, type ProposalAgent } from "./proposal.js";
-import { buildRunTask, isOpenRequest, moveTo, parseAttachments, statusFromRun, TEMPLATE_FOR_TYPE, transition, withConstraint } from "./request-state.js";
-import { HOME, type RunManager } from "./runs.js";
+import { buildRunTask, feedbackConstraints, followUpTask, isOpenRequest, isVisual, moveTo, parseAttachments, routeAfterVerify, screensFromFiles, statusFromRun, TEMPLATE_FOR_TYPE, transition, wantsMobile, withConstraint } from "./request-state.js";
+import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { flagUnverified } from "./spec-check.js";
 import { templateById } from "./templates.js";
-import type { AgentSpec, DecisionEntry, DecisionKind, Request, RequestUpdate, Run, RunUpdate } from "./types.js";
+import { defaultVisualCheck, type VisualCheck } from "./visual.js";
+import type { AgentSpec, DecisionEntry, DecisionKind, Feedback, Request, RequesterCheck, RequestUpdate, Run, RunUpdate, Screen } from "./types.js";
 
 const REQUESTS_DIR = join(HOME, "requests");
 const rid = () => `q${new Date().toISOString().slice(2, 10).replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6)}`;
@@ -44,7 +48,21 @@ export interface DecideInput {
   text?: string;
 }
 
-type Runs = Pick<RunManager, "bus" | "create" | "get">;
+export interface RequesterCheckInput {
+  verdict: "ok" | "changes" | "skip";
+  by: string;
+  /** changes: the boxes drawn on the screenshots */
+  feedback?: Feedback[];
+  /** changes: an optional line for the whole result */
+  note?: string;
+  /** skip: why the developer goes to code review without the requester */
+  reason?: string;
+}
+
+type Runs = Pick<RunManager, "bus" | "create" | "get"> & Partial<Pick<RunManager, "steer" | "previewCommand" | "previewLink" | "startPreview" | "startBasePreview">>;
+
+const NO_PREVIEW = "미리보기를 띄울 수 없는 환경이에요. 개발자가 serve --preview 로 띄우면 링크와 스크린샷이 붙어요";
+const clamp = (x: unknown) => Math.min(1, Math.max(0, Number(x) || 0));
 
 export class RequestManager {
   readonly bus = new EventEmitter();
@@ -53,16 +71,20 @@ export class RequestManager {
   private planner: Planner;
   private proposer: ProposalAgent | null;
   private agents?: AgentSpec[];
+  private visual: VisualCheck | null;
 
-  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[] } = {}) {
+  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[]; visual?: VisualCheck | null } = {}) {
     this.planner = deps.planner ?? createPlanner();
     this.proposer = deps.proposer !== undefined ? deps.proposer : defaultProposalAgent();
     this.agents = deps.agents;
+    this.visual = deps.visual !== undefined ? deps.visual : runs.startBasePreview ? defaultVisualCheck(runs as RunManager, HOME) : null;
     this.bus.setMaxListeners(200);
     mkdirSync(REQUESTS_DIR, { recursive: true });
     for (const f of readdirSync(REQUESTS_DIR).filter((f) => f.endsWith(".json"))) {
       try {
         const r: Request = JSON.parse(readFileSync(join(REQUESTS_DIR, f), "utf8"));
+        r.threadId ??= `req-${r.id}`;   // before threads existed, the card was already where every reply belonged
+        for (const c of r.checks ?? []) if (c.capture === "running") Object.assign(c, { capture: "skipped", note: "서버가 다시 시작돼서 스크린샷을 마치지 못했어요" });
         this.reqs.set(r.id, r);
         for (const id of r.runIds) this.byRun.set(id, r.id);
       } catch { /* skip corrupt file */ }
@@ -79,6 +101,11 @@ export class RequestManager {
     return this.reqs.get(id);
   }
 
+  /** Stored before/after shot for the API. */
+  shotFile(id: string, round: string, name: string): string | null {
+    return this.reqs.has(id) ? (this.visual?.file(id, round, name) ?? null) : null;
+  }
+
   private need(id: string): Request {
     const r = this.reqs.get(id);
     if (!r) throw new Error("요청을 찾을 수 없어요");
@@ -90,8 +117,9 @@ export class RequestManager {
     const text = input.text.trim();
     if (!text) throw new Error("요청 내용이 비어 있습니다");
     const now = Date.now();
+    const id = rid();
     const req: Request = {
-      id: rid(), channel: input.channel, repo: input.repo, check: input.check, team: input.team,
+      id, threadId: `req-${id}`, channel: input.channel, repo: input.repo, check: input.check, team: input.team,
       requester: input.requester, requesterTitle: input.requesterTitle, requesterAvatar: input.requesterAvatar,
       text, attachments: parseAttachments(text), status: "draft", title: text.replace(/@willnew\b/gi, "").trim().split("\n")[0].slice(0, 40),
       questions: [], decisions: [], reviewer: input.reviewer, runIds: [], createdAt: now, updatedAt: now,
@@ -160,6 +188,76 @@ export class RequestManager {
     return req;
   }
 
+  /**
+   * 요청자 확인. ok → code_review. changes → the boxes become spec constraints, a log entry and a thread message, and the
+   * same agent continues on the same branch (steer); its next passing result comes back to preview as the next round.
+   * skip (developer, with a reason) → code_review.
+   */
+  requesterCheck(id: string, input: RequesterCheckInput): Request {
+    const req = this.need(id);
+    if (req.status !== "preview") throw new Error("지금은 확인할 화면이 없어요");
+    const check = req.checks?.at(-1);
+    if (!check) throw new Error("확인할 결과가 없어요");
+    const by = input.by.trim() || "anonymous";
+    const now = Date.now();
+    if (input.verdict === "ok") {
+      Object.assign(check, { status: "approved", by, at: now });
+      this.log(req, by, "preview_ok", `${check.round}차 확인`);
+      transition(req, "code_review");
+      this.changed(req);
+      this.bus.emit("preview_ok", req, check, by);
+      return req;
+    }
+    if (input.verdict === "skip") {
+      const reason = input.reason?.trim();
+      if (!reason) throw new Error("건너뛰는 이유를 적어 주세요");
+      Object.assign(check, { status: "skipped", by, at: now, reason: reason.slice(0, 300) });
+      this.log(req, by, "preview_skip", reason.slice(0, 300));
+      transition(req, "code_review");
+      this.changed(req);
+      this.bus.emit("preview_skip", req, check, by);
+      return req;
+    }
+    if (input.verdict !== "changes") throw new Error("알 수 없는 확인이에요");
+    const feedback: Feedback[] = (Array.isArray(input.feedback) ? input.feedback : [])
+      .slice(0, 12)
+      .map((f): Feedback => ({
+        screen: String(f?.screen ?? "").slice(0, 60) || "화면",
+        viewport: f?.viewport === "mobile" ? "mobile" : "desktop",
+        rect: { x: clamp(f?.rect?.x), y: clamp(f?.rect?.y), w: clamp(f?.rect?.w), h: clamp(f?.rect?.h) },
+        note: String(f?.note ?? "").trim().slice(0, 120),
+      }))
+      .filter((f) => f.note);
+    const note = input.note?.trim().slice(0, 200) || undefined;
+    if (!feedback.length && !note) throw new Error("다시 볼 곳을 표시하고 한 줄 적어 주세요");
+    const run = this.runs.get(check.runId);
+    if (!run || !this.runs.steer) throw new Error("이어서 작업할 결과를 찾을 수 없어요");
+    if (run.review.status === "approved") throw new Error("이미 병합된 결과예요");
+    Object.assign(check, { status: "changes", by, at: now, feedback });
+    const cons = [...feedbackConstraints(check.round, feedback), ...(note ? [`요청자 확인 ${check.round}차: ${note}`] : [])];
+    if (req.spec) req.spec = cons.reduce(withConstraint, req.spec);
+    this.log(req, by, "preview_changes", [...feedback.map((f) => `${f.screen}${f.viewport === "mobile" ? " (모바일)" : ""}: ${f.note}`), ...(note ? [note] : [])].join(" / "));
+    this.changed(req);
+    this.bus.emit("preview_changes", req, check, by);
+    // same agent, same worktree and branch, same CLI session when it can be resumed
+    this.runs.steer(check.runId, check.agentId, followUpTask(check.round, feedback, note), by);
+    if (req.status === "preview") moveTo(req, "building");
+    this.changed(req);
+    return req;
+  }
+
+  /** The developer edits which pages are captured. */
+  setScreens(id: string, screens: Screen[], by: string): Request {
+    const req = this.need(id);
+    if (!req.spec) throw new Error("아직 명세가 없어요");
+    const list = (Array.isArray(screens) ? screens : []).slice(0, 8).map((s) => ({ name: String(s?.name ?? "").trim().slice(0, 40), path: String(s?.path ?? "").trim().slice(0, 200) }));
+    for (const s of list) if (!s.name || !s.path.startsWith("/")) throw new Error("화면마다 이름과 / 로 시작하는 경로가 있어야 해요");
+    req.spec = { ...req.spec, screens: list };
+    this.changed(req);
+    this.bus.emit("screens", req, by);
+    return req;
+  }
+
   cancel(id: string, by: string, why?: string): Request {
     const req = this.need(id);
     if (!isOpenRequest(req.status)) throw new Error("이미 끝난 요청이에요");
@@ -224,6 +322,11 @@ export class RequestManager {
     // names in the criteria that the requester never wrote and nobody can find in the repo → 확인 필요
     const flags = await flagUnverified(req.spec, req, p, req.repo).catch(() => []);
     req.spec = { ...req.spec, needsCheck: flags.length ? flags : undefined };
+    // pages for the before/after pairs: the planner's, else guessed from the proposal's files, else the first page
+    if (isVisual(req) && !req.spec.screens?.length) {
+      const guessed = screensFromFiles(p.files);
+      req.spec = { ...req.spec, screens: guessed.length ? guessed : [{ name: "첫 화면", path: "/" }] };
+    }
     transition(req, "proposed");
     this.changed(req);
     this.bus.emit("proposed", req);
@@ -264,8 +367,14 @@ export class RequestManager {
     const req = reqId ? this.reqs.get(reqId) : undefined;
     const run = this.runs.get(runId);
     if (!req || !run || (!isOpenRequest(req.status) && req.status !== "merged")) return;
-    const to = statusFromRun(run);
+    let to = statusFromRun(run);
+    // a passing result of a screen change goes to the requester first (요청자 확인)
+    if (to === "code_review" && ["approved", "building", "verifying", "preview"].includes(req.status)) to = routeAfterVerify(req);
     if (!to || to === req.status) return;
+    if (to === "preview") {
+      if (moveTo(req, "preview")) this.enterPreview(req, run);
+      return;
+    }
     if (to === "declined") {
       if (!req.decline) req.decline = { reason: run.review.comment ?? "", forRequester: `이번엔 반영하지 않았어요.${run.review.comment ? ` 사유: ${run.review.comment}` : ""}`, alternatives: [] };
       transition(req, "declined");
@@ -281,6 +390,39 @@ export class RequestManager {
     this.log(req, r.reviewer ?? "anonymous", r.status === "approved" ? "approve_result" : "reject_result", r.comment);
     this.onRun(run.id);
     this.changed(req);
+  }
+
+  /** A new round of 요청자 확인 for this result: open the previews, then capture the pairs in the background. */
+  private enterPreview(req: Request, run: Run) {
+    const agentId = run.review.agentId ?? suggestWinner(run)?.id ?? run.agents[0]?.id ?? "";
+    const check: RequesterCheck = { round: (req.checks?.length ?? 0) + 1, runId: run.id, agentId, status: "waiting", startedAt: Date.now(), capture: "running", shots: [] };
+    req.checks = [...(req.checks ?? []), check];
+    this.changed(req);
+    this.bus.emit("preview", req, check);
+    void this.capture(req, check, run);
+  }
+
+  private async capture(req: Request, check: RequesterCheck, run: Run) {
+    try {
+      if (!this.visual) {
+        Object.assign(check, { capture: "skipped", note: NO_PREVIEW });
+        return;
+      }
+      const pv = await this.visual.previews(run, check.agentId);
+      Object.assign(check, { previewUrl: pv.after?.url, baseUrl: pv.before?.url, localOnly: pv.localOnly, note: pv.note });
+      if (!pv.after && !pv.before) {
+        check.capture = "skipped";
+        return;
+      }
+      this.changed(req);
+      const r = await this.visual.capture({ requestId: req.id, round: check.round, screens: req.spec?.screens ?? [], mobile: wantsMobile(req.spec), before: pv.before?.local, after: pv.after?.local });
+      Object.assign(check, { shots: r.shots, capture: r.shots.length ? "done" : "skipped", note: [pv.note, r.note].filter(Boolean).join(". ") || undefined });
+    } catch (e) {
+      Object.assign(check, { capture: "skipped", note: `스크린샷을 찍지 못했어요: ${(e as Error).message.slice(0, 160)}` });
+    } finally {
+      this.changed(req);
+      this.bus.emit("captured", req, check);
+    }
   }
 
   private log(req: Request, who: string, what: DecisionKind, why?: string) {
