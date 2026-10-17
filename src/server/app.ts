@@ -7,11 +7,12 @@ import { streamSSE } from "hono/streaming";
 import { ADAPTERS, installed } from "./adapters.js";
 import { Chat } from "./chat.js";
 import { computeMetrics, computeTeamMetrics } from "./metrics.js";
+import { RequestManager } from "./requests.js";
 import { RunManager } from "./runs.js";
 import { Terminals } from "./terminal.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
 import { rulesTriage } from "./triage.js";
-import type { ChatMessage, CreateRunInput, Run, RunUpdate } from "./types.js";
+import type { ChatMessage, CreateRunInput, RequestUpdate, Run, RunUpdate } from "./types.js";
 
 const WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
@@ -21,9 +22,9 @@ const lite = (r: Run): Run => ({ ...r, agents: r.agents.map((a) => ({ ...a, even
 
 function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   return streamSSE(c, async (stream) => {
-    const queue: (RunUpdate | ChatMessage)[] = [];
+    const queue: (RunUpdate | ChatMessage | RequestUpdate)[] = [];
     let wake: (() => void) | null = null;
-    const on = (u: RunUpdate | ChatMessage) => { queue.push(u); wake?.(); };
+    const on = (u: RunUpdate | ChatMessage | RequestUpdate) => { queue.push(u); wake?.(); };
     bus.on(topic, on);
     stream.onAbort(() => { bus.off(topic, on); wake?.(); });
     while (!stream.aborted) {
@@ -35,9 +36,10 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager }) {
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager }) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
-  const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers);
+  const requests = opts.requests ?? new RequestManager(runs);
+  const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const terminals = new Terminals();
@@ -158,10 +160,30 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/channels", (c) => c.json(chat.channels));
   app.get("/api/channels/:id/messages", (c) => c.json(chat.list(c.req.param("id"))));
   app.post("/api/channels/:id/messages", async (c) => {
-    const { user, text, team, overrides, userTitle, userAvatar } = await c.req.json();
-    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined));
+    const { user, text, team, overrides, userTitle, userAvatar, direct } = await c.req.json();
+    return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined, direct === true));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
+
+  // requests (bridge): list, one, live updates, clarify answers, the developer's decision
+  app.get("/api/requests", (c) => c.json(requests.list()));
+  app.get("/api/requests/:id", (c) => {
+    const r = requests.get(c.req.param("id"));
+    return r ? c.json(r) : c.json({ error: "not found" }, 404);
+  });
+  app.get("/api/requests/:id/stream", (c) => sse(c, requests.bus, `request:${c.req.param("id")}`));
+  app.post("/api/requests/:id/answer", async (c) => {
+    const { questionId, answer, by } = await c.req.json();
+    return c.json(await requests.answer(c.req.param("id"), { questionId: String(questionId ?? ""), answer: String(answer ?? ""), by: String(by ?? "anonymous") }));
+  });
+  app.post("/api/requests/:id/decide", async (c) => {
+    const { decision, by, text } = await c.req.json();
+    return c.json(await requests.decide(c.req.param("id"), { decision, by: String(by ?? "anonymous"), text: text == null ? undefined : String(text) }));
+  });
+  app.post("/api/requests/:id/cancel", async (c) => {
+    const { by, reason } = await c.req.json();
+    return c.json(requests.cancel(c.req.param("id"), String(by ?? "anonymous"), reason ? String(reason) : undefined));
+  });
 
   // built web UI
   app.get("*", (c) => {
@@ -172,5 +194,5 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
   });
 
-  return { app, runs, chat, injectWebSocket, terminals };
+  return { app, runs, requests, chat, injectWebSocket, terminals };
 }
