@@ -104,7 +104,7 @@ export class RunManager {
       repo: root, baseRef, baseBranch, checkCmd: input.check?.trim() ?? "", createdAt: Date.now(),
       requester: input.requester ?? "anonymous", requesterTitle: input.requesterTitle, team: input.team ?? "platform", template: input.template ?? "bugfix",
       channel: input.channel, triage: input.triage, review: { status: "none" },
-      maxAttempts: input.maxAttempts ?? 2, agents,
+      maxAttempts: input.maxAttempts ?? 2, agents, requestId: input.requestId,
     };
     this.runs.set(runId, run);
     this.save(run, true);

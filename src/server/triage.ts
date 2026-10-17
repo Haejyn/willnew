@@ -75,13 +75,18 @@ export async function triage(text: string, repo: string, defaultCheck: string): 
   }
 }
 
-function runClaude(prompt: string, cwd: string): Promise<string> {
+/**
+ * One headless Claude Code call that returns the JSON envelope (`--output-format json`). Defaults: small model, one turn,
+ * no tools. The proposal pass passes its own read-only tool list and a bigger model.
+ */
+export function runClaude(prompt: string, cwd: string, opts: { model?: string; args?: string[]; timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json", "--model", process.env.WILLNEW_TRIAGE_MODEL ?? "haiku",
-      "--max-turns", "1", "--tools", ""], { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const args = opts.args ?? ["--max-turns", "1", "--tools", ""];
+    const child = spawn("claude", ["-p", "--output-format", "json", "--model", opts.model ?? process.env.WILLNEW_TRIAGE_MODEL ?? "haiku", ...args],
+      { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     child.stdout.on("data", (d: Buffer) => (out += d.toString("utf8")));
-    const timer = setTimeout(() => { child.kill(); reject(new Error("triage timeout")); }, TRIAGE_TIMEOUT_MS);
+    const timer = setTimeout(() => { child.kill(); reject(new Error("claude timeout")); }, opts.timeoutMs ?? TRIAGE_TIMEOUT_MS);
     child.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve(out) : reject(new Error(`claude exited ${code}`)); });
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
     child.stdin.end(prompt);
