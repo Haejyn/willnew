@@ -102,12 +102,13 @@ describe("chat in a channel (stub run manager)", () => {
   };
   const settle = () => new Promise((r) => setTimeout(r, 40));
 
+  // the direct path (developer ⌘K 바로 맡기기); chat messages go through a Request first (see bridge.test.ts)
   it("uses one agent unless the message says 겨뤄", async () => {
     const runs = stub();
     const chat = new Chat(runs as never, "/x", "npm test", ["이해준"]);
-    await chat.post("backend", "윤서아", "@willnew 버그 고쳐줘", "platform", undefined, "CS");
+    await chat.post("backend", "윤서아", "@willnew 버그 고쳐줘", "platform", undefined, "CS", undefined, true);
     await settle();
-    await chat.post("backend", "윤서아", "@willnew 버그 겨뤄서 고쳐줘", "platform");
+    await chat.post("backend", "윤서아", "@willnew 버그 겨뤄서 고쳐줘", "platform", undefined, undefined, undefined, true);
     await settle();
     const [one, two] = runs.created as { agents: { label: string }[]; requesterTitle?: string }[];
     expect(one.agents.map((a) => a.label)).toEqual(["claude-sonnet"]);
