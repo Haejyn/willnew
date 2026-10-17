@@ -37,7 +37,7 @@ export function Tag({ tone, mono, children, title }: { tone?: Tone; mono?: boole
 export function Avatar({ name, size = 28, bot, src }: { name: string; size?: number; bot?: boolean; src?: string }) {
   const [broken, setBroken] = useState(false);
   return (
-    <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 32 ? 12 : 11 }} aria-hidden>
+    <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 40 ? 14 : 12 }} aria-hidden>
       {src && !broken ? <img src={src} alt="" width={size} height={size} onError={() => setBroken(true)} /> : size < 24 ? name.slice(-1) : name.slice(-2)}
     </span>
   );

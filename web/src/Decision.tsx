@@ -60,7 +60,7 @@ export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: 
 function Gate({ ok, loading, children }: { ok: boolean | null; loading?: boolean; children: string }) {
   return (
     <span className={`gchip ${loading ? "" : ok === true ? "ok" : "warn"}`}>
-      {loading ? null : ok === true ? <IconCheck size={13} /> : <b aria-hidden>!</b>}
+      {loading || ok !== true ? null : <IconCheck size={12} />}
       {children}
     </span>
   );

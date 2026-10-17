@@ -101,6 +101,22 @@ export function loadUser(): User {
   }
   return DEFAULT_USER;
 }
+/** 목록 줄 높이: 기본 52px, 촘촘하게 44px. 이 브라우저에만 저장한다. */
+const DENSE_KEY = "willnew.dense";
+export function loadDense(): boolean {
+  try {
+    return localStorage.getItem(DENSE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function saveDense(on: boolean) {
+  try {
+    localStorage.setItem(DENSE_KEY, on ? "1" : "0");
+  } catch {
+    /* storage blocked */
+  }
+}
 export function saveUser(u: User) {
   try {
     localStorage.setItem(USER_KEY, JSON.stringify(u));

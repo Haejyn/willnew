@@ -10,8 +10,8 @@
 
   --text: #e6edf3;
   --text2: #c9d1d9;
-  --text3: #8b949e;
-  --text4: #7d8590;
+  --text3: #9ba3ad;
+  --text4: #8b949e;
 
   --accent: #58a6ff;
   --accent-rgb: 88, 166, 255;
@@ -19,7 +19,6 @@
   --glow: none;
 
   --rail: rgba(240, 246, 252, 0.03);
-  --card: rgba(240, 246, 252, 0.05);
   --ctl: rgba(240, 246, 252, 0.08);
   --sel: rgba(240, 246, 252, 0.13);
   --float: rgba(22, 27, 34, 0.98);
@@ -48,16 +47,55 @@
 
   --sans: system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   --code: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  --fs-meta: 0.75rem;
-  --fs-caption: 0.8125rem;
-  --fs-body: 0.875rem;
-  --fs-lead: 1rem;
-  --fs-title: 1.375rem;
-  --fs-display: 2.25rem;
+
+  /* 글자: 네 단계 + 코드. 한 카드 안에서는 세 단계까지, 위계는 크기보다 굵기와 색(text → text2 → text3)으로 먼저 */
+  --fs-page: 24px;
+  --lh-page: 32px;
+  --fw-page: 700;
+  --fs-title: 16px;
+  --lh-title: 22px;
+  --fw-title: 600;
+  --fs-body: 14px;
+  --lh-body: 22px;
+  --fs-read: 15px; /* 요청자가 읽는 본문 */
+  --lh-read: 24px;
+  --fs-meta: 12px;
+  --lh-meta: 16px;
+  --fw-meta: 500;
+  --fs-code: 12.5px;
+  --lh-code: 18px;
+
+  /* 간격: 4px 격자, 이 여덟 개만 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 48px;
+  --row: 52px; /* 목록 한 줄. 촘촘하게 켜면 --row-dense */
+  --row-dense: 44px;
+
+  /* 층: L0 하늘 → L1 면(테두리 없음) → L2 올라온 면(호버, 선택) → L3 떠 있는 면(--float + 흐림 + 그림자) */
+  --l1: rgba(255, 255, 255, 0.04);
+  --l2: rgba(255, 255, 255, 0.07);
+  --l2-rim: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+  /* 이름 색: 요청자(CS, 디자인, PM) 한 계열, 개발 한 계열, 봇은 액센트 */
+  --role-req-1: #f0a8bb;
+  --role-req-2: #f5c0cc;
+  --role-req-3: #e48fa8;
+  --role-dev-1: #8cc2ff;
+  --role-dev-2: #a9c9ff;
+  --role-dev-3: #79b0f2;
+  --role-bot: var(--accent);
+
   --r-ctrl: 6px;
   --r-card: 8px;
   --r-panel: 12px;
   --r-btn: 6px;
-  --rail-w: 64px;
+  --rail-w: 56px;
+  --dur: 160ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }

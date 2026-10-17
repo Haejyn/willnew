@@ -14,7 +14,7 @@ import { Review } from "./Review";
 import { RunList } from "./Runs";
 import { Turn } from "./Turn";
 import { Avatar, Empty, Kbd, ToastProvider, useOutside } from "./ui";
-import { ROLE_KO, TEAM_KO, adapterName, isActive, loadUser, saveUser, useMedia, type Role, type User } from "./util";
+import { ROLE_KO, TEAM_KO, adapterName, isActive, loadDense, loadUser, saveDense, saveUser, useMedia, type Role, type User } from "./util";
 import { Workspace } from "./Workspace";
 
 function readPath() {
@@ -85,6 +85,7 @@ export function App() {
   const [user, setUser] = useState<User>(() => (demo ? demoStartUser() : null) ?? loadUser());
   const [channels, setChannels] = useState<Channel[]>([]);
   const [compose, setCompose] = useState(false);
+  const [dense, setDense] = useState(loadDense);
   const [help, setHelp] = useState(false);
   const { runs, error: runsError, reload } = useRuns(api);
   const { requests } = useRequests(api);
@@ -135,7 +136,7 @@ export function App() {
     setUser(u);
     saveUser(u);
   };
-  const me = <Settings user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} />;
+  const me = <Settings user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} dense={dense} onDense={(on) => { setDense(on); saveDense(on); }} />;
 
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
@@ -185,13 +186,14 @@ export function App() {
 
   return (
     <ToastProvider>
-      <div className={`app p-${route.page}`}>
+      <div className={`app p-${route.page} ${dense ? "dense" : ""}`}>
         <div className="sky" aria-hidden />
         <aside className="side" aria-label="화면">
           <a className="side-logo" href="#/" aria-label="willnew">
-            <AppIcon size={28} />
+            <AppIcon size={32} />
           </a>
-          <nav className="side-nav">{nav.map((n) => item(n, 22))}</nav>
+          <span className="side-sep" aria-hidden />
+          <nav className="side-nav">{nav.map((n) => item(n, 20))}</nav>
           <div className="side-foot">
             <button className="side-add" data-tip="맡기기 ⌘K" aria-label="새로 맡기기" onClick={() => setCompose(true)}>
               <IconPlus size={20} />
@@ -248,7 +250,7 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
 }
 
 /** 아바타 팝오버 — 이름 · 팀, 저장소, 에이전트, 검증 명령. 위쪽 바에 있던 정보가 전부 여기로 왔다. */
-function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void }) {
+function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, onDense }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void; dense: boolean; onDense: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(user.name);
   const [title, setTitle] = useState(user.title);
@@ -307,6 +309,10 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
                 </label>
               ))}
             </fieldset>
+            <label className="toggle-row">
+              <input type="checkbox" checked={dense} onChange={(e) => onDense(e.target.checked)} />
+              촘촘하게 (목록 한 줄을 낮게)
+            </label>
             <button className="btn w sm" type="submit">
               저장
             </button>
