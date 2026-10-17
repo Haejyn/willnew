@@ -14,6 +14,7 @@ import { RequestManager } from "./requests.js";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { deployedReply, mergedReply, pickReviewer, rejectedReply, reviewMessage } from "./handoff.js";
 import { defaultChannels, templateById, wantsRace, withRace } from "./templates.js";
+import { inChannel, requestThreadId, threadSummaries } from "./threads.js";
 import { triage } from "./triage.js";
 import type { ShipEvent } from "./ship.js";
 import type { AgentSpec, Bodies, Channel, ChatMessage, ClarifyQuestion, Request, RequesterCheck, Run, ThreadSummary } from "./types.js";
@@ -31,19 +32,9 @@ export const REACTIONS = ["👍", "✅", "👀"];
 const id = () => Math.random().toString(36).slice(2, 10);
 const money = (x: number | null | undefined) => (x == null ? "비용 미보고" : `$${x.toFixed(2)}`);
 const secs = (ms?: number) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)}초`);
-const MENTION = /@([\p{L}\p{N}_]+)/gu;
-
 /** The thread a Request's messages live in: its card. */
-export const requestThread = (req: Pick<Request, "id" | "threadId">) => req.threadId ?? `req-${req.id}`;
-const runThread = (run: Pick<Run, "requestId">) => (run.requestId ? `req-${run.requestId}` : undefined);
-/** Shown in the channel stream: everything that is not a thread reply, plus replies also sent to the channel. */
-const inChannel = (m: ChatMessage) => !m.threadId || !!m.broadcast;
-
-/** Names mentioned with @ in any body of the message. */
-export function mentionsOf(m: Pick<ChatMessage, "text" | "bodies">): string[] {
-  const all = [m.text, m.bodies?.forRequester ?? "", m.bodies?.forDeveloper ?? ""].join("\n");
-  return [...new Set([...all.matchAll(MENTION)].map((x) => x[1]))];
-}
+export const requestThread = (req: Pick<Request, "id" | "threadId">) => req.threadId ?? requestThreadId(req.id);
+const runThread = (run: Pick<Run, "requestId">) => (run.requestId ? requestThreadId(run.requestId) : undefined);
 
 export class Chat {
   readonly bus = new EventEmitter();
@@ -105,17 +96,7 @@ export class Chat {
 
   /** One summary per thread in the channel, for the footer under each root. */
   threads(channel: string): ThreadSummary[] {
-    const by = new Map<string, ChatMessage[]>();
-    for (const m of this.messages.get(channel) ?? []) if (m.threadId) by.set(m.threadId, [...(by.get(m.threadId) ?? []), m]);
-    return [...by].map(([tid, list]) => {
-      const sorted = list.sort((a, b) => a.ts - b.ts);
-      const users: ThreadSummary["users"] = [];
-      for (const m of [...sorted].reverse()) {
-        const name = m.bot ? "willnew" : m.user;
-        if (users.length < 3 && !users.some((u) => u.name === name)) users.push({ name, avatar: m.bot ? undefined : m.userAvatar, bot: m.bot || undefined });
-      }
-      return { id: tid, count: sorted.length, lastTs: sorted.at(-1)!.ts, users, replies: sorted.map((m) => ({ ts: m.ts, user: m.bot ? "willnew" : m.user, mentions: mentionsOf(m) })) };
-    });
+    return threadSummaries(this.messages.get(channel) ?? []);
   }
 
   private all(channel: string): ChatMessage[] {
