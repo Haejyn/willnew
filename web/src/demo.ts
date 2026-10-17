@@ -2426,6 +2426,8 @@ const DESIGN_QUESTIONS: ClarifyQuestion[] = [
   { id: "q2", question: "모바일 화면도 같이 바꿀까요", choices: ["네", "아니요, 데스크톱만"], why: "적용 뷰포트" },
 ];
 
+const PAY_CRITERION = "결제 요약의 PayButton 도 같은 여백";
+
 function designSpec(qs: ClarifyQuestion[]): WorkSpec {
   const a1 = qs.find((q) => q.id === "q1")?.answer ?? "";
   const a2 = qs.find((q) => q.id === "q2")?.answer ?? "네";
@@ -2439,6 +2441,8 @@ function designSpec(qs: ClarifyQuestion[]): WorkSpec {
       `Button size=lg 의 padding-inline ${px}`,
       "결제 화면 4곳의 기본 버튼에 적용",
       mobile ? "모바일 375px 에서 버튼 줄바꿈 없음" : "모바일(767px 이하)은 지금 그대로",
+      // 정리 단계가 지어낸 이름. 제안 뒤 검사에서 저장소에 없다고 걸러져 개발자에게 확인 필요로 보인다
+      PAY_CRITERION,
     ],
     outOfScope: ["색", "글꼴"],
     references: [FIGMA],
@@ -2462,7 +2466,7 @@ const DESIGN_PROPOSAL: Proposal = {
     { path: "src/pages/Checkout.tsx", why: "결제 화면 기본 버튼 4개" },
     { path: "src/styles/tokens.css", why: "--button-lg-padding-x 값" },
   ],
-  risks: ["lg 버튼을 쓰는 다른 화면 6곳도 같이 넓어짐 (청구서 상세, 설정, 팀 초대 등)"],
+  risks: ["lg 버튼을 쓰는 다른 화면 6곳도 같이 넓어짐 (청구서 상세, 설정, 팀 초대 등)", "명세의 PayButton 을 저장소에서 찾지 못했어요. 결제 요약 버튼은 Checkout.tsx 안의 기본 버튼이에요"],
   testsToAdd: ["Button size=lg 의 padding-inline 이 16px", "Checkout 의 기본 버튼 4개가 모두 size=lg", "375px 폭에서 결제 버튼 글자가 한 줄"],
   estimate: { minutes: 6, costUsd: 0.12 },
   confidence: "medium",
@@ -2642,6 +2646,8 @@ function specThenPropose(r: Request) {
   }, 1500);
   setTimeout(() => {
     r.proposal = isDesign(r.channel, r.text) ? { ...DESIGN_PROPOSAL } : { ...RENEWAL_PROPOSAL };
+    // 서버의 spec-check 와 같은 결과: 요청자도 안 썼고 저장소에도 없는 이름
+    if (r.spec && r.spec.acceptanceCriteria.includes(PAY_CRITERION)) r.spec = { ...r.spec, needsCheck: [{ criterion: PAY_CRITERION, names: ["PayButton"] }] };
     r.planner = { by: "llm", costUsd: 0.006 };
     transition(r, "proposed");
     saveReq(r);
