@@ -1,10 +1,12 @@
 /**
  * Request state machine and the pure helpers around it. No node imports: the web app and the demo use this file too.
  *
- *   draft → clarifying → spec_ready → proposed → approved → building → verifying → code_review → merged → deployed → closed
+ *   draft → clarifying → spec_ready → proposed → approved → building → verifying → [preview] → code_review → merged → deployed → closed
  *   (any open state → declined | cancelled)
+ *
+ * preview (요청자 확인) only for requests the requester should look at: type ui or copy, or the planner set needsVisualCheck.
  */
-import type { Bodies, Request, RequestAttachment, RequestStatus, RequestType, Run, WorkSpec } from "./types.js";
+import type { Bodies, Feedback, Request, RequestAttachment, RequestStatus, RequestType, Run, Screen, WorkSpec } from "./types.js";
 
 /** Allowed moves. Run-driven moves (building ⇄ verifying, code_review → building on a follow-up) are listed too. */
 const NEXT: Record<RequestStatus, RequestStatus[]> = {
@@ -14,9 +16,10 @@ const NEXT: Record<RequestStatus, RequestStatus[]> = {
   proposed: ["approved"],
   // approved → closed: 직접 할게 (the developer finished it outside the AI flow)
   approved: ["building", "closed"],
-  building: ["verifying", "code_review"],
-  verifying: ["building", "code_review"],
-  // B2: verifying → preview (요청자 확인) → code_review. Until then verifying goes straight to code_review.
+  building: ["verifying", "preview", "code_review"],
+  verifying: ["building", "preview", "code_review"],
+  // preview → code_review: 의도대로예요 (or the developer skipped it with a reason) · preview → building: 다시 봐 주세요
+  preview: ["building", "code_review"],
   code_review: ["building", "merged"],
   merged: ["deployed", "closed"],
   deployed: ["closed"],
@@ -63,7 +66,7 @@ export function statusFromRun(run: Run): RequestStatus | null {
   return null;
 }
 
-const ORDER: RequestStatus[] = ["draft", "clarifying", "spec_ready", "proposed", "approved", "building", "verifying", "code_review", "merged", "deployed", "closed"];
+const ORDER: RequestStatus[] = ["draft", "clarifying", "spec_ready", "proposed", "approved", "building", "verifying", "preview", "code_review", "merged", "deployed", "closed"];
 
 /** Walk forward to `to` through allowed steps (code_review → merged → deployed in one go). */
 export function moveTo(req: Request, to: RequestStatus, now = Date.now()): boolean {
@@ -80,6 +83,72 @@ export function moveTo(req: Request, to: RequestStatus, now = Date.now()): boole
     moved = true;
   }
   return moved;
+}
+
+// ---------------------------------------------------------------------------------------------- 요청자 확인 (B2)
+
+/** The requester looks at the result before the developer reviews the code: screen and copy changes, or the planner said so. */
+export const isVisual = (req: Pick<Request, "type" | "spec">) => req.type === "ui" || req.type === "copy" || !!req.spec?.needsVisualCheck;
+
+/**
+ * Where a passing result goes. preview while the latest round has not been accepted (or skipped); code_review once it has.
+ * A round marked "changes" means the follow-up attempt must be shown again.
+ */
+export function routeAfterVerify(req: Pick<Request, "type" | "spec" | "checks">): "preview" | "code_review" {
+  if (!isVisual(req)) return "code_review";
+  const last = req.checks?.at(-1);
+  return last && (last.status === "approved" || last.status === "skipped") ? "code_review" : "preview";
+}
+
+/** The spec mentions phones: capture a 390x844 shot next to the 1440x900 one. */
+export function wantsMobile(spec: Pick<WorkSpec, "acceptanceCriteria" | "expected" | "problem" | "constraints"> | undefined): boolean {
+  if (!spec) return false;
+  const text = [spec.problem, spec.expected, ...spec.acceptanceCriteria, ...spec.constraints].join(" ");
+  return /모바일|휴대폰|폰에서|스마트폰|mobile|iphone|android|\b3[2-9]\dpx\b|\b4[0-2]\dpx\b/i.test(text);
+}
+
+const kebab = (s: string) => s.replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+
+/**
+ * Pages to capture, guessed from the proposal's files: `src/pages/Checkout.tsx` → { name: "Checkout", path: "/checkout" },
+ * `app/settings/page.tsx` → "/settings". Index and home pages map to "/". At most 4.
+ */
+export function screensFromFiles(files: { path: string }[]): Screen[] {
+  const out: Screen[] = [];
+  for (const f of files) {
+    const p = f.path.split("\\").join("/");
+    let m = /(?:^|\/)(?:pages|routes|views|screens)\/(.+?)\.(?:[jt]sx?|vue|svelte|astro)$/.exec(p);
+    let route = m?.[1];
+    if (!route && (m = /(?:^|\/)app\/(?:(.+)\/)?page\.[jt]sx?$/.exec(p))) route = m[1] ?? "index";
+    if (!route || /(^|\/)(_|\[)|\.test$|\.spec$/.test(route)) continue;
+    const parts = route.split("/").filter((x) => x && !/^(index|home|page)$/i.test(x));
+    const path = `/${parts.map(kebab).join("/")}`;
+    const name = parts.length ? parts.at(-1)! : "첫 화면";
+    if (!out.some((s) => s.path === path)) out.push({ name, path });
+  }
+  return out.slice(0, 4);
+}
+
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+/** What each box the requester drew becomes on the spec: a constraint the next attempt has to meet. */
+export function feedbackConstraints(round: number, feedback: Feedback[]): string[] {
+  return feedback
+    .filter((f) => f.note.trim())
+    .map((f) => `요청자 확인 ${round}차, ${f.screen}${f.viewport === "mobile" ? " (모바일)" : ""}: ${f.note.trim()} (표시한 곳: 왼쪽 ${pct(f.rect.x)}, 위 ${pct(f.rect.y)}, 폭 ${pct(f.rect.w)}, 높이 ${pct(f.rect.h)})`);
+}
+
+/** The follow-up instruction for the same agent, on the same branch. */
+export function followUpTask(round: number, feedback: Feedback[], note?: string): string {
+  const lines = feedback
+    .filter((f) => f.note.trim())
+    .map((f) => `- ${f.screen}, ${f.viewport === "mobile" ? "mobile 390x844" : "desktop 1440x900"}, marked area left ${pct(f.rect.x)} top ${pct(f.rect.y)} width ${pct(f.rect.w)} height ${pct(f.rect.h)} of the screenshot: "${f.note.trim()}"`);
+  return [
+    `The requester looked at the preview of your result (check ${round}) and asked for changes. These are now constraints on the spec:`,
+    ...lines,
+    ...(note?.trim() ? [`Requester's note: "${note.trim()}"`] : []),
+    "Fix them in this working tree. Keep every acceptance criterion and test passing.",
+  ].join("\n");
 }
 
 /** Which work template a request type starts from. */
@@ -149,6 +218,8 @@ export function cardBodies(req: Request): Bodies {
       return { forRequester: "만드는 중", forDeveloper: `작업 중 · ${t}` };
     case "verifying":
       return { forRequester: "테스트로 확인하는 중", forDeveloper: "검증 중" };
+    case "preview":
+      return { forRequester: "화면을 확인해 주세요", forDeveloper: `요청자 확인 차례 (${req.requester})` };
     case "code_review":
       return { forRequester: `개발자가 결과를 보고 있어요 (${dev})`, forDeveloper: "검토 차례" };
     case "merged":

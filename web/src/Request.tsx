@@ -18,17 +18,17 @@ import { fmtCost, relTime, type User } from "./util";
 // ---------------------------------------------------------------------------------------------- stages
 
 /** 열 칸의 하위 단계. 화면에는 네 단계(이해 → 합의 → 작업 → 반영)로 묶어 보이고, 지금 칸은 낱말 하나로 옆에 쓴다. */
-export const REQ_STEPS = ["정리", "되묻기", "명세", "제안", "확인", "작업", "검증", "검토", "병합", "배포"];
+export const REQ_STEPS = ["정리", "되묻기", "명세", "제안", "확인", "작업", "검증", "화면 확인", "검토", "병합", "배포"];
 export const PHASES: { name: string; steps: number[] }[] = [
   { name: "이해", steps: [0, 1, 2] },
   { name: "합의", steps: [3, 4] },
-  { name: "작업", steps: [5, 6, 7] },
-  { name: "반영", steps: [8, 9] },
+  { name: "작업", steps: [5, 6, 7, 8] },
+  { name: "반영", steps: [9, 10] },
 ];
 const AT: Record<Request["status"], number> = {
-  draft: 0, clarifying: 1, spec_ready: 3, proposed: 4, approved: 5, building: 5, verifying: 6, code_review: 7, merged: 9, deployed: 10, closed: 10, declined: -1, cancelled: -1,
+  draft: 0, clarifying: 1, spec_ready: 3, proposed: 4, approved: 5, building: 5, verifying: 6, preview: 7, code_review: 8, merged: 10, deployed: 11, closed: 11, declined: -1, cancelled: -1,
 };
-const STEP_PHASE: Phase[] = ["new", "plan", "plan", "plan", "turn", "run", "check", "turn", "check", "check"];
+const STEP_PHASE: Phase[] = ["new", "plan", "plan", "plan", "turn", "run", "check", "turn", "turn", "check", "check"];
 
 /** 지금 몇 번째 칸인지. at = REQ_STEPS.length 이면 모두 끝. 병합만 추적하면(배포 확인 없음) 병합에서 끝난다. */
 export function reqStage(req: Request, deployTracked = true): { at: number; stopped?: "declined" | "cancelled"; complete: boolean; phase: Phase } {
@@ -58,6 +58,8 @@ const isDev = (u: User) => u.role !== "requester";
 /** 이 요청에서 지금 보는 사람이 할 일이 있는가 (되묻기 답, 제안 확인, 결과 검토) */
 export function myTurn(req: Request, user: User): boolean {
   if (req.status === "clarifying") return user.name === req.requester && req.questions.some((q) => !q.answer);
+  // 요청자 확인: the requester's move
+  if (req.status === "preview") return user.name === req.requester;
   if (!isDev(user)) return false;
   if (req.status === "proposed" || req.status === "code_review") return !req.reviewer || req.reviewer === user.name;
   return false;
@@ -70,7 +72,7 @@ export function reqProgress(req: Request, user: User, deployTracked = true): Pro
   const steps = PHASES[phase].steps;
   const fill = (steps.indexOf(at) + 1) / (steps.length + 1);
   if (stopped) return { phase, fill, word: stopped === "declined" ? "거절됨" : "취소됨", state: "stop" };
-  const word = at === 5 && req.assignee ? "직접 작업" : at === 9 && !deployTracked ? "병합" : REQ_STEPS[at];
+  const word = at === 5 && req.assignee ? "직접 작업" : at === 10 && !deployTracked ? "병합" : REQ_STEPS[at];
   return { phase, fill, word, mine: myTurn(req, user) };
 }
 
@@ -152,6 +154,7 @@ export function reqHeadline(req: Request, user: User): string {
       case "approved": return req.assignee ? `${req.assignee}님이 직접 맡았어요` : "작업 시작해요";
       case "building": return "만드는 중";
       case "verifying": return "테스트로 확인하는 중";
+      case "preview": return user.name === req.requester ? "확인해 주세요" : `${req.requester}님이 화면을 확인하는 중`;
       case "code_review": return `개발자가 결과를 보고 있어요 (${dev})`;
       case "merged": return "반영했어요";
       case "deployed": return "배포까지 끝났어요";
@@ -168,6 +171,7 @@ export function reqHeadline(req: Request, user: User): string {
     case "approved": return req.assignee ? `직접 작업 (${req.assignee})` : "작업 시작";
     case "building": return "작업 중";
     case "verifying": return "검증 중";
+    case "preview": return `요청자 확인 대기 (${req.requester})`;
     case "code_review": return "결과 검토 차례";
     case "merged": return "병합됨";
     case "deployed": return "배포됨";
@@ -180,6 +184,7 @@ export function reqHeadline(req: Request, user: User): string {
 const WHAT_KO: Record<DecisionEntry["what"], string> = {
   answer: "답했어요", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡았어요", decline: "거절", cancel: "취소", close: "닫았어요",
   approve_result: "결과 승인", reject_result: "결과 반려",
+  preview_ok: "화면 확인: 의도대로예요", preview_changes: "화면 확인: 다시 봐 주세요", preview_skip: "요청자 확인 건너뜀",
 };
 const working = (req: Request) => req.status === "draft" || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
 
