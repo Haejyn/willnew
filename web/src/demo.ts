@@ -10,6 +10,7 @@
  *   박서윤 data · 숫자와 로그를 붙인다     최민재 platform 프론트 · 반말 섞임
  *   김도윤 content-ops PM · 공손, 결과 위주
  *   윤서아 cs 요청자 · 고객 문의를 옮겨 온다 (개발자는 아니다)
+ *   한지우 design 요청자 · 디자이너, 시안은 피그마에 올린다
  *
  * 에이전트는 기본 하나(claude-sonnet). 겨루기(둘)는 고르면 되고, 지난 기록 몇 개와 살아 있는 요약 건이 겨루기다.
  * `?demo&as=윤서아` 처럼 열면 그 사람으로 본다. 설정의 "보는 사람" 으로도 바꿀 수 있다(데모 상태는 새로고침하면 사라진다).
@@ -21,7 +22,13 @@ import type {
   Api,
   Channel,
   ChatMessage,
+  ClarifyQuestion,
+  DecideInput,
+  DecisionEntry,
   Metrics,
+  Proposal,
+  Request,
+  WorkSpec,
   Preflight,
   ReviewComment,
   Run,
@@ -33,6 +40,7 @@ import type {
 } from "./api";
 import { applyUpdate } from "./api";
 import { deployedReply, pickReviewer, rejectedReply, reviewMessage } from "../../src/server/handoff";
+import { buildRunTask, cardBodies, isOpenRequest, moveTo, parseAttachments, statusFromRun, transition, withConstraint } from "../../src/server/request-state";
 import { saveUser, suggestWinner as pickWinner, type User } from "./util";
 
 const SEC = 1000;
@@ -49,6 +57,7 @@ const CHANNELS: Channel[] = [
   { id: "web", name: "web", team: "platform", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "청구 웹 프론트" },
   { id: "data", name: "data", team: "data", repo: "~/work/settlement-batch", reviewers: ["이해준", "박서윤"], topic: "정산 배치 · 데이터 파이프라인" },
   { id: "content-ops", name: "content-ops", team: "content-ops", repo: "~/work/content-tools", reviewers: ["이해준"], topic: "콘텐츠 운영 도구" },
+  { id: "design", name: "디자인-개발", team: "design", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "화면 수정 요청. @willnew 로 남기면 정리해서 개발자에게 넘겨요" },
 ];
 
 const TEAMS: Team[] = [
@@ -56,6 +65,7 @@ const TEAMS: Team[] = [
   { id: "data", name: "데이터", budgetUsd: 30 },
   { id: "content-ops", name: "콘텐츠 운영", budgetUsd: 20 },
   { id: "cs", name: "CS", budgetUsd: 10 },
+  { id: "design", name: "디자인", budgetUsd: 10 },
 ];
 
 const SONNET_SPEC: AgentSpec = { adapter: "claude-code", model: "sonnet", label: "claude-sonnet" };
@@ -77,9 +87,11 @@ const PEOPLE: Record<string, User> = {
   최민재: { name: "최민재", team: "platform", role: "dev", title: "프론트" },
   김도윤: { name: "김도윤", team: "content-ops", role: "requester", title: "PM" },
   윤서아: { name: "윤서아", team: "cs", role: "requester", title: "CS", avatar: "/demo/avatars/cs.png" },
+  // 사진 없음: 이름 두 글자로 보인다
+  한지우: { name: "한지우", team: "design", role: "requester", title: "디자인" },
 };
-/** 설정에서 바꿔 볼 수 있는 두 사람 */
-export const DEMO_CAST: Record<string, User> = { 윤서아: PEOPLE.윤서아, 이해준: PEOPLE.이해준 };
+/** 설정에서 바꿔 볼 수 있는 사람들 */
+export const DEMO_CAST: Record<string, User> = { 윤서아: PEOPLE.윤서아, 한지우: PEOPLE.한지우, 이해준: PEOPLE.이해준 };
 const titleOf = (name: string) => PEOPLE[name]?.title;
 const avatarOf = (name: string) => PEOPLE[name]?.avatar;
 
@@ -939,6 +951,8 @@ interface Scenario {
   steps: (id: string, requester: string) => Step[];
   /** a run that already has history (agents, comments) when the demo opens */
   prebuilt?: (id: string, createdAt: number) => Run;
+  /** started for a Request: the request card reports progress, so most bot lines stay out of the thread */
+  requestId?: string;
 }
 
 /** The scripted race: two agents on the duration bug, one self-corrects, both pass. ~31 s end to end. */
@@ -1360,6 +1374,8 @@ interface Live {
   cursor: number;
   triage: Triage;
   agentSpecs: AgentRun[];
+  /** a Request's run: no ack / plan / summary lines in the thread (server chat.ts does the same) */
+  quiet?: boolean;
 }
 
 const lives = new Map<string, Live>();
@@ -1380,10 +1396,13 @@ function pushChat(m: ChatMessage) {
   for (const fn of chatListeners.get(m.channel) ?? []) fn(m);
 }
 
+const QUIET_KINDS = new Set(["ack", "triage", "progress", "review", "result"]);
+
 function emit(live: Live, u: RunUpdate) {
   const next = applyUpdate(live.run, u);
   if (next) live.run = next;
   for (const fn of runListeners.get(live.run.id) ?? []) fn(u);
+  if (live.run.requestId) syncReq(live.run);
 }
 
 const RATES: Record<string, [number, number] | null> = { "claude-code": [3, 15], codex: null };
@@ -1449,7 +1468,8 @@ function tickOne(live: Live, now: number) {
         agent: Object.keys(patch).length ? patch : undefined,
       });
     }
-    if (s.chat) pushChat({ ...s.chat, text: s.late ? s.late(live) : s.chat.text, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id });
+    const hush = live.quiet && !s.late && !!s.chat && QUIET_KINDS.has(s.chat.kind ?? "");
+    if (s.chat && !hush) pushChat({ ...s.chat, text: s.late ? s.late(live) : s.chat.text, id: `m${++msgSeq}`, channel: live.channel, ts, runId: live.run.id });
   }
 }
 
@@ -1512,7 +1532,7 @@ function withMentions(steps: Step[], channel: string, requester: string): Step[]
   return out;
 }
 
-const BASE_REFS: Record<string, string> = { backend: "4d9d4a5", cs: "4d9d4a5", web: "e71b0c8", data: "9f23a6d", "content-ops": "30c8b1e" };
+const BASE_REFS: Record<string, string> = { backend: "4d9d4a5", cs: "4d9d4a5", web: "e71b0c8", data: "9f23a6d", "content-ops": "30c8b1e", design: "e71b0c8" };
 let runSeq = 0;
 function launch(sc: Scenario): Run {
   const createdAt = Date.now() - sc.ago;
@@ -1554,12 +1574,14 @@ function launch(sc: Scenario): Run {
       review: { status: "none" },
       maxAttempts: 2,
       agents: [],
+      requestId: sc.requestId,
     };
   const agentSpecs = agents.map((a, i) => blank(id, i, a.adapter, a.label ?? a.adapter, a.model, createdAt));
   const steps = withMentions(race ? sc.steps(id, sc.requester) : soloSteps(sc.steps(id, sc.requester)), sc.channel, sc.requester);
-  const live: Live = { run, channel: sc.channel, steps, cursor: 0, triage, agentSpecs };
+  const live: Live = { run, channel: sc.channel, steps, cursor: 0, triage, agentSpecs, quiet: !!sc.requestId };
   lives.set(id, live);
-  pushChat({ id: `m${++msgSeq}`, channel: sc.channel, ts: createdAt, user: sc.requester, userTitle: sc.requesterTitle ?? titleOf(sc.requester), bot: false, text: sc.text });
+  // a Request's message is already in the thread
+  if (!sc.requestId) pushChat({ id: `m${++msgSeq}`, channel: sc.channel, ts: createdAt, user: sc.requester, userTitle: sc.requesterTitle ?? titleOf(sc.requester), bot: false, text: sc.text });
   tickOne(live, Date.now()); // fast-forward steps that are already in the past
   ensureTicker();
   return run;
@@ -2181,6 +2203,7 @@ function ensureSeed() {
   if (seeded) return;
   seeded = true;
   seedChat();
+  seedDesign();
   const now = Date.now();
   // oldest first, so the chat reads in order. The long-lived ones are still mid-flight a minute after opening.
   launch({
@@ -2341,7 +2364,8 @@ function demoSteer(runId: string, agentId: string, text: string, by: string) {
 // ---------------------------------------------------------------------------------------------- ship (pr mode, simulated)
 
 let prSeq = 511;
-const botSay = (run: Run, text: string) => run.channel && pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, kind: "result" });
+/** pipeline lines; a Request's run shows them on its card instead (server chat.ts does the same) */
+const botSay = (run: Run, text: string) => run.channel && !lives.get(run.id)?.quiet && pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now(), user: "willnew", bot: true, text, kind: "result" });
 
 /** 승인 뒤: PR 번호가 붙고, CI 세 개가 6초쯤에 걸쳐 초록이 되고, 병합, 배포 4초. 실제 gh 는 부르지 않는다. */
 function simulateShip(runId: string, agentId: string | undefined, reviewer: string) {
@@ -2382,6 +2406,389 @@ function simulateShip(runId: string, agentId: string | undefined, reviewer: stri
     const note = run.agents.find((a) => a.id === agentId)?.userNote;
     if (run.channel) pushChat({ id: `m${++msgSeq}`, channel: run.channel, ts: Date.now() + 1, user: reviewer, bot: false, via: "willnew", text: deployedReply(run, note), runId, kind: "result" });
   });
+}
+
+// ---------------------------------------------------------------------------------------------- requests (bridge)
+//
+// 요청자 메시지 → 정리 → 되묻기 → 명세 → 제안 → 개발자 확인 → run. 서버 requests.ts 와 같은 상태표(request-state.ts)를 쓴다.
+// 한지우(디자인)의 결제 화면 버튼 요청은 되묻기 2개, 윤서아(CS)의 결제일 문의는 되묻기 없이 바로 명세로 간다.
+
+/** 한지우가 #디자인-개발 에 남기는 요청. 피그마 링크는 가짜 주소다. */
+export const DEMO_DESIGN_REQUEST = "@willnew 결제 화면 버튼들 좀 답답해 보여요 ㅠ 여백 좀 넉넉하게 해주실 수 있나요? 시안은 피그마에 올려뒀어요 https://figma.com/file/demo/checkout";
+const FIGMA = "https://figma.com/file/demo/checkout";
+
+const DESIGN_QUESTIONS: ClarifyQuestion[] = [
+  { id: "q1", question: "버튼 안쪽 여백", choices: ["지금보다 조금 (12px)", "넉넉하게 (16px)", "피그마 시안대로"], why: "padding-inline 값 (지금 md 8px, lg 12px 가 섞여 있음)" },
+  { id: "q2", question: "모바일 화면도 같이 바꿀까요", choices: ["네", "아니요, 데스크톱만"], why: "적용 뷰포트" },
+];
+
+function designSpec(qs: ClarifyQuestion[]): WorkSpec {
+  const a1 = qs.find((q) => q.id === "q1")?.answer ?? "";
+  const a2 = qs.find((q) => q.id === "q2")?.answer ?? "네";
+  const px = /12px/.test(a1) ? "12px (space-3)" : /16px/.test(a1) ? "16px (space-4)" : /피그마/.test(a1) ? "피그마 시안 값 (16px, space-4)" : `${a1} [확인 필요: 토큰 이름]`;
+  const mobile = !/데스크톱만/.test(a2);
+  return {
+    title: `결제 화면 버튼 여백 ${px.split(" ")[0]}`,
+    problem: "결제 화면 기본 버튼 4곳 중 2곳은 md (8px), 2곳은 lg (12px) 라 좁고 들쭉날쭉해 보인다",
+    expected: `결제 화면 기본 버튼의 좌우 안쪽 여백이 ${px}`,
+    acceptanceCriteria: [
+      `Button size=lg 의 padding-inline ${px}`,
+      "결제 화면 4곳의 기본 버튼에 적용",
+      mobile ? "모바일 375px 에서 버튼 줄바꿈 없음" : "모바일(767px 이하)은 지금 그대로",
+    ],
+    outOfScope: ["색", "글꼴"],
+    references: [FIGMA],
+    constraints: [],
+    summary: {
+      forRequester: `결제 화면 버튼 4곳의 안쪽 여백을 ${px.split(" ")[0]}로 넓혀요. ${mobile ? "모바일 화면도 같이 바꾸고, " : ""}색과 글꼴은 그대로예요.`,
+      forDeveloper: `Checkout 기본 버튼 4개 padding-inline ${px}${mobile ? ", 375px 줄바꿈 없음" : ", 데스크톱만"}`,
+    },
+  };
+}
+
+const DESIGN_PROPOSAL: Proposal = {
+  summary: "Button 의 lg 패딩 토큰을 space-3 → space-4 로 바꾸고 결제 화면 버튼을 lg 로 맞출까요?",
+  approach: [
+    "Button 테스트에 lg 패딩 16px, 375px 줄바꿈 없음 검사를 먼저 추가한다",
+    "tokens.css 의 --button-lg-padding-x 를 space-3 에서 space-4 로 바꾼다",
+    "Checkout.tsx 의 기본 버튼 4개를 size=\"lg\" 로 맞춘다 (지금 2개는 md)",
+  ],
+  files: [
+    { path: "src/components/Button.tsx", why: "size 별 클래스와 패딩 토큰" },
+    { path: "src/pages/Checkout.tsx", why: "결제 화면 기본 버튼 4개" },
+    { path: "src/styles/tokens.css", why: "--button-lg-padding-x 값" },
+  ],
+  risks: ["lg 버튼을 쓰는 다른 화면 6곳도 같이 넓어짐 (청구서 상세, 설정, 팀 초대 등)"],
+  testsToAdd: ["Button size=lg 의 padding-inline 이 16px", "Checkout 의 기본 버튼 4개가 모두 size=lg", "375px 폭에서 결제 버튼 글자가 한 줄"],
+  estimate: { minutes: 6, costUsd: 0.12 },
+  confidence: "medium",
+  by: "agent",
+  costUsd: 0.04,
+  durationMs: 38_000,
+};
+
+const RENEWAL_SPEC: WorkSpec = {
+  title: "1/31 가입자 다음 결제일이 3/3 으로 잡힘",
+  problem: "1/31 가입자의 다음 결제일이 3/3 으로 계산된다 (#431). 직전 결제일에 setMonth(+1) 을 해서 2/31 이 3/3 으로 넘어간다",
+  expected: "짧은 달은 말일에 결제되고, 그다음 달은 가입일로 돌아온다",
+  acceptanceCriteria: ["1/31 가입 → 다음 결제일 2/28 (윤년 2/29)", "2/28 결제 다음은 3/31", "12/31 가입 → 1/31", "날짜 계산은 서울 시간 기준 (KST 자정 직후 가입도 같은 날)"],
+  outOfScope: ["이미 3/3 으로 잡힌 구독 정정 (따로 처리)", "결제 금액 계산"],
+  references: [],
+  constraints: [],
+  summary: {
+    forRequester: "1/31에 가입한 분은 2월엔 말일(2/28)에, 3월부터는 다시 31일에 결제되게 고쳐요. 이미 3/3으로 잡힌 구독은 따로 바로잡아야 해요.",
+    forDeveloper: "nextBillingDate: 직전 결제일 기준 → anchorAt 기준 n개월, KST, 말일 clamp",
+  },
+};
+const RENEWAL_PROPOSAL: Proposal = {
+  summary: "nextBillingDate 를 직전 결제일 대신 가입 시점(anchorAt) 에서 n개월 뒤로 계산할까요?",
+  approach: ["수용 기준 4개를 renewal 테스트로 먼저 쓴다", "nextBillingDate 가 anchorAt 과 결제 횟수로 n개월 뒤를 구하게 바꾼다", "짧은 달은 말일로 맞추고 서울 시간으로 계산한다"],
+  files: [
+    { path: "src/billing/renewal.js", why: "nextBillingDate 가 currentPeriodEnd 에 setMonth(+1)" },
+    { path: "lib/time.js", why: "toKst / fromKst 가 이미 있음" },
+  ],
+  risks: ["이미 3/3 으로 잡힌 구독은 바뀌지 않아요. 따로 정정 스크립트가 필요해요"],
+  testsToAdd: ["1/31 → 2/28, 윤년 2/29", "2/28 다음 3/31", "12/31 → 1/31", "KST 자정 직후 가입"],
+  estimate: { minutes: 4, costUsd: 0.09 },
+  confidence: "high",
+  by: "agent",
+  costUsd: 0.03,
+  durationMs: 31_000,
+};
+
+const PATCH_XL = `diff --git a/src/styles/tokens.css b/src/styles/tokens.css
+index 7c21e0a..b81f4d2 100644
+--- a/src/styles/tokens.css
++++ b/src/styles/tokens.css
+@@ -18,6 +18,7 @@
+   --button-md-padding-x: var(--space-2);
+   --button-lg-padding-x: var(--space-3);
++  --button-xl-padding-x: var(--space-4);
+   --button-radius: var(--radius-2);
+diff --git a/src/components/Button.tsx b/src/components/Button.tsx
+index 2d6f1c8..5e0a3c7 100644
+--- a/src/components/Button.tsx
++++ b/src/components/Button.tsx
+@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes } from "react";
+ export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+-export type ButtonSize = "sm" | "md" | "lg";
++export type ButtonSize = "sm" | "md" | "lg" | "xl";
+
+ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
+diff --git a/src/pages/Checkout.tsx b/src/pages/Checkout.tsx
+index 91aa0c4..e3b7d12 100644
+--- a/src/pages/Checkout.tsx
++++ b/src/pages/Checkout.tsx
+@@ -52,10 +52,10 @@ export function Checkout({ order }: Props) {
+-        <Button size="md" onClick={applyCoupon}>쿠폰 적용</Button>
++        <Button size="xl" onClick={applyCoupon}>쿠폰 적용</Button>
+-        <Button size="md" variant="secondary" onClick={changeCard}>카드 변경</Button>
++        <Button size="xl" variant="secondary" onClick={changeCard}>카드 변경</Button>
+-        <Button size="lg" variant="secondary" onClick={back}>이전</Button>
++        <Button size="xl" variant="secondary" onClick={back}>이전</Button>
+-        <Button size="lg" onClick={pay}>결제하기</Button>
++        <Button size="xl" onClick={pay}>결제하기</Button>
+diff --git a/src/components/Button.test.tsx b/src/components/Button.test.tsx
+index 3fe1b20..c49d8a1 100644
+--- a/src/components/Button.test.tsx
++++ b/src/components/Button.test.tsx
+@@ -40,3 +40,21 @@ describe("Button", () => {
++  it("xl uses space-4 (16px) inline padding", () => {
++    render(<Button size="xl">결제하기</Button>);
++    expect(getComputedStyle(screen.getByRole("button")).paddingInline).toBe("16px");
++  });
++  it("lg keeps space-3 (12px)", () => {
++    render(<Button size="lg">저장</Button>);
++    expect(getComputedStyle(screen.getByRole("button")).paddingInline).toBe("12px");
++  });
++});
++
++describe("Checkout buttons", () => {
++  it("all four primary actions are xl", () => {
++    render(<Checkout order={order} />);
++    expect(screen.getAllByRole("button").filter((b) => b.dataset.size === "xl")).toHaveLength(4);
++  });
++  it("labels stay on one line at 375px", () => {
++    setViewport(375);
++    render(<Checkout order={order} />);
++    for (const b of screen.getAllByRole("button")) expect(b.getClientRects()).toHaveLength(1);
++  });
+`;
+const CHECK_XL = vitest(
+  "billing-web@0.9.4",
+  [...WEB_FILES, ["src/components/Button.test.tsx", 10, "34"], ["src/pages/InvoiceDetail.test.tsx", 7, "55"]],
+  [],
+  "30 passed (30)",
+  "4 passed (4)",
+  "1.71s (transform 121ms, setup 0ms, collect 1.08s, tests 131ms, environment 1.59s, prepare 280ms)",
+);
+const XL_NOTE = "결제 화면 버튼 4곳의 안쪽 여백이 16px로 넓어졌어요. 다른 화면 버튼은 그대로이고, 모바일(375px)에서도 버튼 글자가 한 줄로 보여요.";
+const XL_SUMMARY = "결제 화면 전용으로 size=xl 을 새로 만들고 --button-xl-padding-x 를 space-4 (16px) 로 뒀어요. lg 는 그대로라 다른 화면 6곳은 안 바뀌어요. 수용 기준 테스트 4개를 먼저 쓰고 통과시켰어요. 30개 통과.";
+const LG_NOTE = "결제 화면 버튼 안쪽 여백이 16px로 넓어졌어요. 같은 크기 버튼을 쓰는 다른 화면 6곳도 같이 넓어졌어요.";
+const LG_SUMMARY = "--button-lg-padding-x 를 space-4 로 바꾸고 결제 화면 버튼 4개를 lg 로 맞췄어요. 수용 기준 테스트를 먼저 썼고 30개 통과.";
+
+/** 결제 화면 버튼 작업. 에이전트 하나, 테스트를 먼저 쓰고 한 번에 통과. ~20초. */
+function designSteps(id: string, xl: boolean): Step[] {
+  const sum = xl ? XL_SUMMARY : LG_SUMMARY;
+  const note = xl ? XL_NOTE : LG_NOTE;
+  return [
+    { ...bot(1.0, "triage", "계획: 기능 구현 · 에이전트 1개 (sonnet) · npm test"), run: {} },
+    begin(1.6, SONNET, id),
+    ev(2.8, SONNET, "text", xl ? "개발자 조건대로 lg 는 두고 결제 화면 전용 size=xl 을 만들게요. 수용 기준 테스트부터 씁니다." : "수용 기준 테스트부터 쓰고 lg 패딩 토큰을 바꿀게요.", [3200, 140, 9000]),
+    ev(3.6, SONNET, "tool", 'Read {"file_path":"./src/components/Button.tsx"}', [1700, 60, 12000]),
+    ev(4.1, SONNET, "tool_result", cat(['import type { ButtonHTMLAttributes } from "react";', "", 'export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";', 'export type ButtonSize = "sm" | "md" | "lg";'])),
+    ev(5.0, SONNET, "tool", 'Grep {"pattern":"size=\\"lg\\"","path":"./src"}', [1500, 50, 13000]),
+    ev(5.5, SONNET, "tool_result", "src/pages/Checkout.tsx:57\nsrc/pages/Checkout.tsx:58\nsrc/pages/InvoiceDetail.tsx:44\nsrc/pages/Settings.tsx:31\nsrc/pages/TeamInvite.tsx:19\n(+3 more)"),
+    ev(7.0, SONNET, "tool", 'Edit {"file_path":"./src/components/Button.test.tsx"}', [2100, 520, 14000]),
+    ev(7.4, SONNET, "tool_result", "The file ./src/components/Button.test.tsx has been updated."),
+    ev(8.6, SONNET, "tool", 'Bash {"command":"npx vitest run src/components/Button.test.tsx"}', [1400, 40, 15000]),
+    ev(10.0, SONNET, "tool_result", " ❯ src/components/Button.test.tsx (10 tests | 4 failed) 41ms\n   × Button > xl uses space-4 (16px) inline padding\n   × Checkout buttons > all four primary actions are xl"),
+    ev(10.8, SONNET, "text", "테스트 4개가 예상대로 실패해요. 이제 토큰과 버튼을 고칠게요.", [1900, 120, 15500]),
+    ev(12.0, SONNET, "tool", `Edit {"file_path":"./src/styles/tokens.css","new_string":"${xl ? "--button-xl-padding-x: var(--space-4);" : "--button-lg-padding-x: var(--space-4);"}"}`, [1800, 240, 16000]),
+    ev(12.4, SONNET, "tool_result", "The file ./src/styles/tokens.css has been updated."),
+    ev(13.2, SONNET, "tool", 'Edit {"file_path":"./src/pages/Checkout.tsx"}', [1700, 300, 16500]),
+    ev(13.6, SONNET, "tool_result", "The file ./src/pages/Checkout.tsx has been updated."),
+    ev(15.0, SONNET, "text", `${sum}\n\n요청자에게: ${note}`, [2200, 420, 17000], { patch: { summary: sum, userNote: note, turns: 8 } }),
+    checkStart(15.4, SONNET, "npm test", PATCH_XL),
+    { ...checkPass(17.6, SONNET, "1.7", CHECK_XL), run: { review: { status: "pending" as const } } },
+    bot(17.8, "review", "sonnet 통과. 테스트 30개 모두 통과했어요"),
+  ];
+}
+
+function designRunScenario(req: Request, xl: boolean): Scenario {
+  return {
+    channel: req.channel, requester: req.requester, team: req.team, text: req.text, ago: 0, title: req.spec?.title ?? req.title,
+    template: "feature", check: "npm test", triageMs: 900,
+    plan: req.proposal?.approach,
+    task: buildRunTask(req, "Implement the change described below with minimal, idiomatic code. Keep existing tests passing and add tests for the new behaviour."),
+    reason: "개발자가 제안을 확인했어요",
+    steps: (id) => designSteps(id, xl),
+    requestId: req.id,
+  };
+}
+
+const reqs = new Map<string, Request>();
+const reqListeners = new Map<string, Set<(r: Request) => void>>();
+let reqSeq = 0;
+
+/** 바뀐 요청을 듣는 화면에 보내고, 채널의 요청 카드 한 장을 같은 id 로 바꿔 끼운다. */
+function saveReq(r: Request) {
+  r.updatedAt = Date.now();
+  reqs.set(r.id, r);
+  const b = cardBodies(r);
+  pushChat({ id: `req-${r.id}`, channel: r.channel, ts: r.createdAt + 1, user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: r.id, kind: "request" });
+  for (const fn of reqListeners.get(r.id) ?? []) fn(JSON.parse(JSON.stringify(r)));
+}
+const logReq = (r: Request, who: string, what: DecisionEntry["what"], why?: string, when = Date.now()) => r.decisions.push(why ? { who, when, what, why } : { who, when, what });
+const isDesign = (channel: string, text: string) => channel === "design" || /버튼|여백|피그마|figma|시안/i.test(text);
+
+function mention(r: Request) {
+  if (!r.reviewer || !r.proposal) return;
+  const text = `@${r.reviewer} 확인할 제안이 있어요. ${r.proposal.summary}`;
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind: "mention", requestId: r.id, text, bodies: { forRequester: `${r.reviewer}님께 확인을 부탁했어요`, forDeveloper: text } });
+}
+
+/** 명세 → (제안 에이전트가 저장소를 읽는 시간) → 제안 + 개발자 멘션 */
+function specThenPropose(r: Request) {
+  setTimeout(() => {
+    r.spec = isDesign(r.channel, r.text) ? designSpec(r.questions) : { ...RENEWAL_SPEC };
+    r.title = r.spec.title;
+    transition(r, "spec_ready");
+    saveReq(r);
+  }, 1500);
+  setTimeout(() => {
+    r.proposal = isDesign(r.channel, r.text) ? { ...DESIGN_PROPOSAL } : { ...RENEWAL_PROPOSAL };
+    r.planner = { by: "llm", costUsd: 0.006 };
+    transition(r, "proposed");
+    saveReq(r);
+    mention(r);
+  }, 4200);
+}
+
+function demoCreateRequest(channel: string, user: string, text: string, userTitle?: string): { message: ChatMessage; requestId: string } {
+  const ch = CHANNELS.find((c) => c.id === channel)!;
+  const now = Date.now();
+  const message: ChatMessage = { id: `m${++msgSeq}`, channel, ts: now, user, userTitle, bot: false, text };
+  pushChat(message);
+  const design = isDesign(channel, text);
+  const r: Request = {
+    id: `q-${(now % 1e6).toString(36)}${++reqSeq}`, channel, repo: ch.repo, check: "npm test", team: ch.team, requester: user,
+    requesterTitle: userTitle ?? titleOf(user), requesterAvatar: avatarOf(user), text, attachments: parseAttachments(text), status: "draft",
+    title: text.replace(/@willnew\s*/g, "").split(/[.?!\n]/)[0].slice(0, 40), questions: [], decisions: [], reviewer: pickReviewer(ch, user), runIds: [],
+    createdAt: now, updatedAt: now,
+  };
+  saveReq(r);
+  setTimeout(() => {
+    r.type = design ? "ui" : "bug";
+    r.planner = { by: "llm", costUsd: 0.002 };
+    if (design) {
+      r.title = "결제 화면 버튼 여백 넓히기";
+      r.understood = { forRequester: "이렇게 이해했어요: 결제 화면 버튼 안쪽 여백을 늘리고 싶으신 거죠.", forDeveloper: "Checkout 기본 버튼 padding-inline 확대 요청. 피그마 링크 있음, 값과 적용 범위가 비어 있어 되물음" };
+      r.questions = DESIGN_QUESTIONS.map((q) => ({ ...q, choices: [...q.choices] }));
+      transition(r, "clarifying");
+      saveReq(r);
+      return;
+    }
+    // 빠진 정보가 없으면 되묻지 않고 바로 명세로
+    r.title = RENEWAL_SPEC.title;
+    r.understood = { forRequester: "이렇게 이해했어요: 1/31에 가입한 고객의 다음 결제일이 3/3으로 잡히는 걸 고쳐 달라는 거죠. 2월은 말일, 3월은 다시 31일이 맞아요.", forDeveloper: "결제일 계산 버그 (#431). 재현 조건과 기대값이 다 있어 되묻지 않음" };
+    saveReq(r);
+    specThenPropose(r);
+  }, 1400);
+  return { message, requestId: r.id };
+}
+
+function demoAnswer(id: string, questionId: string, answer: string, by: string): Request {
+  const r = reqs.get(id);
+  if (!r) throw new Error("요청을 찾을 수 없어요");
+  if (r.status !== "clarifying") throw new Error("지금은 답할 질문이 없어요");
+  const q = r.questions.find((x) => x.id === questionId);
+  if (!q) throw new Error("질문을 찾을 수 없어요");
+  Object.assign(q, { answer, answeredBy: by, answeredAt: Date.now() });
+  logReq(r, by, "answer", `${q.question}: ${answer}`);
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: by, bot: false, text: `${q.question}: ${answer}`, requestId: r.id });
+  saveReq(r);
+  if (r.questions.every((x) => x.answer)) specThenPropose(r);
+  return r;
+}
+
+function demoDecide(id: string, input: DecideInput): Request {
+  const r = reqs.get(id);
+  if (!r) throw new Error("요청을 찾을 수 없어요");
+  if (r.status !== "proposed") throw new Error("확인할 제안이 없어요");
+  const text = input.text?.trim() ?? "";
+  if (input.decision === "proceed" || input.decision === "proceed_with_changes") {
+    if (input.decision === "proceed_with_changes") {
+      if (!text) throw new Error("무엇을 고칠지 적어 주세요");
+      r.spec = r.spec ? withConstraint(r.spec, text) : r.spec;
+      logReq(r, input.by, "proceed_with_changes", text);
+    } else logReq(r, input.by, "proceed");
+    transition(r, "approved");
+    const sc = isDesign(r.channel, r.text)
+      ? designRunScenario(r, /xl|결제 화면.*에만|다른 화면 영향/.test(r.spec?.constraints.join(" ") ?? ""))
+      : { ...renewalScenario(r.channel, r.requester, r.team, r.text, 0, false), requestId: r.id };
+    const run = launch(sc);
+    r.runIds.push(run.id);
+    moveTo(r, "building");
+    saveReq(r);
+    return r;
+  }
+  if (input.decision === "take_over") {
+    logReq(r, input.by, "take_over", text || undefined);
+    r.assignee = input.by;
+    transition(r, "approved");
+    saveReq(r);
+    pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: "willnew", bot: true, kind: "result", requestId: r.id, text: `${input.by} 직접 작업 · AI 흐름에서 빠짐`, bodies: { forRequester: `${input.by}님이 직접 맡았어요`, forDeveloper: `${input.by} 직접 작업 · AI 흐름에서 빠짐` } });
+    return r;
+  }
+  if (!text) throw new Error("거절 사유를 적어 주세요");
+  logReq(r, input.by, "decline", text);
+  // 데모에는 작은 모델이 없어 사유를 그대로 옮겨 적는다. 실제 서버는 계획 에이전트가 쉬운 말로 다시 쓴다
+  r.decline = { reason: text, forRequester: `이번엔 진행하지 않기로 했어요. ${input.by}님이 남긴 이유: ${text}`, alternatives: [{ title: "범위를 줄여서 다시 요청하기", effort: "반나절" }] };
+  transition(r, "declined");
+  saveReq(r);
+  pushChat({ id: `m${++msgSeq}`, channel: r.channel, ts: Date.now(), user: input.by, bot: false, via: "willnew", requestId: r.id,
+    text: `@${r.requester} ${r.decline.forRequester}\n이렇게는 할 수 있어요\n${r.decline.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}` });
+  return r;
+}
+
+/** 요청에 딸린 run 이 움직이면 요청 상태도 따라간다 (서버 requests.ts onRun 과 같다). */
+function syncReq(run: Run) {
+  const r = run.requestId ? reqs.get(run.requestId) : undefined;
+  if (!r || (!isOpenRequest(r.status) && r.status !== "merged")) return;
+  const to = statusFromRun(run);
+  if (!to || to === r.status) return;
+  if (to === "declined") {
+    if (!r.decline) r.decline = { reason: run.review.comment ?? "", forRequester: `이번엔 반영하지 않았어요.${run.review.comment ? ` 사유: ${run.review.comment}` : ""}`, alternatives: [] };
+    transition(r, "declined");
+  } else if (!moveTo(r, to)) return;
+  saveReq(r);
+}
+
+/** 지난 기록: 한지우가 이틀 전에 낸 요청, 이해준이 거절했고 요청자용 설명과 대안이 남아 있다. */
+function seedDesign() {
+  const add = (ts: number, user: string, text: string, extra: Partial<ChatMessage> = {}) =>
+    pushChat({ id: `m${++msgSeq}`, channel: "design", ts, user, bot: user === "willnew", text, ...extra });
+  const at = T0 - 2 * DAY - 3 * HOUR;
+  const decidedAt = at + 2 * HOUR + 10 * MIN;
+  const text = "@willnew 결제 완료 화면에 축하 애니메이션 같은 거 넣어주실 수 있을까요? 결제 끝났다는 느낌이 좀 약해서요 ㅎㅎ";
+  add(at - 3 * MIN, "한지우", "결제 완료 화면 피드백 정리해봤는데 '끝난 건지 모르겠다'는 말이 제일 많았어요");
+  add(at, "한지우", text);
+  const reason = "결제 완료 화면은 지금 전환율 A/B 테스트 중이라 11월 말까지 못 건드려요";
+  const r: Request = {
+    id: "q-past1", channel: "design", repo: "~/work/billing-web", check: "npm test", team: "design", requester: "한지우", requesterTitle: "디자인",
+    text, attachments: [], status: "declined", stoppedFrom: "proposed", type: "ui", title: "결제 완료 화면 축하 애니메이션",
+    understood: { forRequester: "이렇게 이해했어요: 결제가 끝났다는 게 더 잘 느껴지게, 결제 완료 화면에 짧은 축하 효과를 넣고 싶으신 거죠.", forDeveloper: "CheckoutDone 화면에 완료 애니메이션 추가 요청" },
+    questions: [],
+    spec: {
+      title: "결제 완료 화면 축하 애니메이션", problem: "결제 완료 화면에서 완료됐다는 느낌이 약하다", expected: "완료 화면 진입 시 1초 이내의 축하 효과가 한 번 나온다",
+      acceptanceCriteria: ["CheckoutDone 진입 시 애니메이션 1회, 1초 이내", "prefers-reduced-motion 이면 효과 없음", "완료 문구와 영수증 버튼 위치는 그대로"],
+      outOfScope: ["완료 문구 변경", "메일 템플릿"], references: [], constraints: [],
+      summary: { forRequester: "결제 완료 화면에 짧은 축하 효과를 한 번 보여 줘요.", forDeveloper: "CheckoutDone 진입 애니메이션 1회, reduced-motion 대응" },
+    },
+    proposal: {
+      summary: "CheckoutDone 에 CSS 애니메이션 하나를 붙이고 reduced-motion 에서는 끌까요?", approach: ["CheckoutDone.tsx 에 완료 표시 컴포넌트 추가", "keyframes 1개, 0.8초", "reduced-motion 이면 정적 아이콘"],
+      files: [{ path: "src/pages/CheckoutDone.tsx", why: "완료 화면" }, { path: "src/styles/motion.css", why: "keyframes" }],
+      risks: ["결제 완료 화면은 실험 플래그 checkout_done_v2 로 A/B 테스트 중이에요"], testsToAdd: ["진입 시 애니메이션 클래스가 붙음", "reduced-motion 이면 클래스 없음"],
+      estimate: { minutes: 5, costUsd: 0.1 }, confidence: "medium", by: "agent",
+    },
+    decline: {
+      reason,
+      forRequester: "결제 완료 화면은 지금 두 가지 화면을 나눠 보여 주면서 결제 완료율을 재고 있어요. 지금 화면을 바꾸면 그 비교가 흐려져서, 측정이 끝나는 11월 말까지는 손대기 어려워요.",
+      alternatives: [{ title: "측정이 끝나면 12월 첫 작업으로 넣기", effort: "반나절" }, { title: "결제 완료 메일에 같은 느낌의 그림 넣기", effort: "1~2시간" }],
+    },
+    decisions: [], reviewer: "이해준", runIds: [], planner: { by: "llm", costUsd: 0.005 }, createdAt: at, updatedAt: decidedAt,
+  };
+  logReq(r, "이해준", "decline", reason, decidedAt);
+  reqs.set(r.id, r);
+  const b = cardBodies(r);
+  pushChat({ id: `req-${r.id}`, channel: "design", ts: at + 1, user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: r.id, kind: "request" });
+  const m = `@이해준 확인할 제안이 있어요. ${r.proposal!.summary}`;
+  add(at + 40 * SEC, "willnew", m, { kind: "mention", requestId: r.id, bodies: { forRequester: "이해준님께 확인을 부탁했어요", forDeveloper: m } });
+  add(decidedAt, "이해준", `@한지우 ${r.decline!.forRequester}\n이렇게는 할 수 있어요\n${r.decline!.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}`, { via: "willnew", requestId: r.id });
+  add(decidedAt + 6 * MIN, "한지우", "아 그렇군요 ㅎㅎ 메일 쪽 먼저 시안 만들어볼게요");
+  add(T0 - 25 * MIN, "이해준", "결제 화면 시안 나오면 여기 올려주세요. 버튼 쪽 손볼 때 같이 볼게요");
+  add(T0 - 18 * MIN, "한지우", "넵 오늘 오후에 올릴게요!");
 }
 
 // ---------------------------------------------------------------------------------------------- api
@@ -2472,9 +2879,14 @@ export const demoApi: Api = {
     ensureSeed();
     return later(clone((chat.get(ch) ?? []).slice().sort((a, b) => a.ts - b.ts)));
   },
-  async postMessage(ch, user, text, _team, overrides, userTitle) {
+  async postMessage(ch, user, text, _team, overrides, userTitle, _avatar, direct) {
     ensureSeed();
     const team = CHANNELS.find((c) => c.id === ch)?.team ?? "platform";
+    // 채팅 메시지는 요청이 된다. 개발자의 ⌘K 바로 맡기기(direct)만 예전처럼 바로 run
+    if (/@willnew/i.test(text) && !direct) {
+      const { message, requestId } = demoCreateRequest(ch, user, text, userTitle);
+      return { message: clone(message), requestId };
+    }
     if (/@willnew/i.test(text)) {
       // 겨루기: 토글을 켰거나 "겨뤄" / "둘 다" 라고 쓴 경우
       const race = (overrides?.agents?.length ?? 0) > 1 || (!overrides?.agents && /겨뤄|둘 다/.test(text));
@@ -2492,6 +2904,30 @@ export const demoApi: Api = {
     set.add(on);
     chatListeners.set(ch, set);
     return () => set.delete(on);
+  },
+  requests: () => {
+    ensureSeed();
+    return later(clone([...reqs.values()].sort((a, b) => b.createdAt - a.createdAt)));
+  },
+  request: (id) => {
+    ensureSeed();
+    const r = reqs.get(id);
+    return r ? later(clone(r)) : Promise.reject(new Error(`요청 ${id} 을 찾을 수 없어요`));
+  },
+  subscribeRequest(id, on) {
+    ensureSeed();
+    const set = reqListeners.get(id) ?? new Set();
+    set.add(on);
+    reqListeners.set(id, set);
+    return () => set.delete(on);
+  },
+  async answer(id, questionId, answer, by) {
+    await later(null, 150);
+    return clone(demoAnswer(id, questionId, answer, by));
+  },
+  async decide(id, input) {
+    await later(null, 250);
+    return clone(demoDecide(id, input));
   },
   templates: () => later(clone(TEMPLATES)),
   teams: () => later(clone(TEAMS)),
@@ -2512,6 +2948,11 @@ export const demoApi: Api = {
     // pr 모드: 승인은 바로 기록하고, 병합은 CI 가 끝난 뒤
     if (approve) emitAny(runId, { runId, run: { ship: { mode: "pr", stage: "pr", env: "production", at: Date.now() } } });
     emitAny(runId, { runId, run: { review } });
+    const linked = run.requestId ? reqs.get(run.requestId) : undefined;
+    if (linked) {
+      logReq(linked, input.reviewer, approve ? "approve_result" : "reject_result", input.comment);
+      saveReq(linked);
+    }
     const why = input.comment ? ` · “${input.comment}”` : "";
     botSay(run, approve ? `${input.reviewer}님이 승인해서 PR을 올려요${why}` : `반려 · ${input.reviewer}${why}`);
     if (approve) simulateShip(runId, input.agentId, input.reviewer);
