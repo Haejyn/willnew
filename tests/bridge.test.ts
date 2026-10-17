@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { askJson, checkBrief, checkDecline, checkProposal, checkSpec, createPlanner, extractJson, type LlmCall } from "../src/server/brief.js";
+import { codeNames, flagUnverified } from "../src/server/spec-check.js";
+import { specPrompt, proposalPrompt } from "../src/server/prompts.js";
 import { buildRunTask, canTransition, cardBodies, moveTo, parseAttachments, statusFromRun, transition, withConstraint } from "../src/server/request-state.js";
 import type { AgentRun, ChatMessage, Request, Run } from "../src/server/types.js";
 
@@ -243,10 +245,10 @@ const fakeProposer = (reply = J(PROPOSAL)) => {
   return { fn, seen };
 };
 
-function manager(opts: { brief?: unknown; decline?: string[] } = {}) {
+function manager(opts: { brief?: unknown; decline?: string[]; spec?: unknown; repo?: string } = {}) {
   const runs = stubRuns();
-  const { llm, prompts } = fakeLlm({ brief: [J(opts.brief ?? BRIEF)], spec: [J(SPEC)], decline: opts.decline ?? [J(DECLINE)] });
-  const repo = makeRepo();
+  const { llm, prompts } = fakeLlm({ brief: [J(opts.brief ?? BRIEF)], spec: [J(opts.spec ?? SPEC)], decline: opts.decline ?? [J(DECLINE)] });
+  const repo = opts.repo ?? makeRepo();
   const m = new RequestManager(runs as never, { planner: createPlanner(() => llm), proposer: fakeProposer().fn });
   const input = { channel: "backend", repo, check: "npm test", team: "platform", requester: "한지우", requesterTitle: "디자인", reviewer: "이해준",
     text: "@willnew 결제 화면 버튼들 좀 답답해 보여요 ㅠ 여백 좀 넉넉하게 해주실 수 있나요? 시안은 피그마에 올려뒀어요 https://figma.com/file/demo/checkout" };
@@ -400,6 +402,72 @@ describe("proposal pass", () => {
     expect(p).toMatchObject({ by: "fallback", confidence: "low" });
     expect(p.note).toMatch(/두 번 다 형식에 맞지 않아/);
     expect(p.testsToAdd).toEqual(SPEC.acceptanceCriteria);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------- spec check
+
+/** A small web repo: a Button with a padding token, a checkout page and a tokens file. */
+function makeUiRepo() {
+  const r = mkdtempSync(join(tmpdir(), "willnew-ui-"));
+  git(r, "init", "-q", "-b", "main");
+  const w = (f: string, body: string) => {
+    mkdirSync(dirname(join(r, f)), { recursive: true });
+    writeFileSync(join(r, f), body);
+  };
+  w("src/components/Button.tsx", "export function Button({ size = 'md' }) { return null }\n");
+  w("src/pages/Checkout.tsx", "import { Button } from '../components/Button';\nexport const Checkout = () => null;\n");
+  w("src/styles/tokens.css", ":root { --space-3: 12px; --space-4: 16px; --button-lg-padding-x: var(--space-3); }\n");
+  git(r, "add", "-A");
+  git(r, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+  return r;
+}
+
+describe("spec check: code names nobody wrote or found", () => {
+  it("finds CSS variables, paths and camel, Pascal and snake case names, not plain words", () => {
+    expect(codeNames("Button size=lg 의 padding-inline 16px (--button-lg-padding-x)")).toEqual(["--button-lg-padding-x", "Button"]);
+    expect(codeNames("src/pages/Checkout.tsx 의 PayButton 과 nextBillingDate, settle_daily")).toEqual(["src/pages/Checkout.tsx", "nextBillingDate", "PayButton", "settle_daily"]);
+    expect(codeNames("모바일 375px 에서 버튼 줄바꿈 없음, Figma 시안과 같은 여백")).toEqual([]);
+  });
+
+  it("flags names that are not in the request, the proposal's files or the repo", async () => {
+    const repo = makeUiRepo();
+    const spec = { acceptanceCriteria: [
+      "Button size=lg 의 padding-inline 16px",
+      "--button-lg-padding-x 를 --space-4 로",
+      "PayButton 도 같은 여백",
+      "--button-xl-padding-x 를 새로 둔다",
+      "CheckoutHero 문구는 그대로",
+      "[확인 필요: 모바일 적용 범위]",
+    ] };
+    const flags = await flagUnverified(spec, { text: "@willnew 결제 화면 버튼 여백. CheckoutHero 는 건드리지 마세요", questions: [] }, { files: [{ path: "src/pages/Checkout.tsx", why: "" }] }, repo);
+    expect(flags).toEqual([
+      { criterion: "PayButton 도 같은 여백", names: ["PayButton"] },
+      { criterion: "--button-xl-padding-x 를 새로 둔다", names: ["--button-xl-padding-x"] },
+    ]);
+  });
+
+  it("the request keeps the flags on the spec and hands them to the run", async () => {
+    const repo = makeUiRepo();
+    const spec = { ...SPEC, acceptanceCriteria: [...SPEC.acceptanceCriteria, "PayButton 의 padding-inline 도 16px"] };
+    const { m, id, runs } = await proposed({ spec, repo });
+    expect(m.get(id)!.spec?.needsCheck).toEqual([{ criterion: "PayButton 의 padding-inline 도 16px", names: ["PayButton"] }]);
+    await m.decide(id, { decision: "proceed", by: "이해준" });
+    expect(String(runs.created[0].input.task)).toMatch(/not found in the repository[^]*PayButton/);
+  });
+
+  it("leaves a clean spec unflagged", async () => {
+    const { m, id } = await proposed({ repo: makeUiRepo() });
+    expect(m.get(id)!.spec?.needsCheck).toBeUndefined();
+  });
+
+  it("the spec and proposal prompts forbid invented code names", () => {
+    const sp = specPrompt("@willnew 버튼 여백", [], [], "src");
+    expect(sp).toContain("Do not invent code facts");
+    expect(sp).toContain("only if the requester wrote that exact name");
+    const pp = proposalPrompt({ text: "x", spec: { ...SPEC, constraints: [] } });
+    expect(pp).toContain("Do not invent code facts");
+    expect(pp).toContain("Every path is checked afterwards");
   });
 });
 

@@ -251,6 +251,14 @@ export interface WorkSpec {
   /** added by the developer on 고쳐서 진행 */
   constraints: string[];
   summary: Bodies;
+  /** after the proposal pass: criteria that name code nobody could find (shown to the developer as 확인 필요) */
+  needsCheck?: SpecFlag[];
+}
+
+/** One acceptance criterion with the code-like names that are not in the request, the proposal's files or the repo. */
+export interface SpecFlag {
+  criterion: string;
+  names: string[];
 }
 
 export interface Proposal {

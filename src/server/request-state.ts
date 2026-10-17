@@ -116,6 +116,8 @@ export function buildRunTask(req: Pick<Request, "spec" | "text" | "proposal">, i
     parts.push(`Acceptance criteria:\n${list(s.acceptanceCriteria)}`);
     if (s.outOfScope.length) parts.push(`Out of scope (do not change):\n${list(s.outOfScope)}`);
     if (s.constraints.length) parts.push(`Developer constraints (these override the proposal):\n${list(s.constraints)}`);
+    if (s.needsCheck?.length)
+      parts.push(`Names in the criteria that were not found in the repository (do not create them; meet the criterion by its observable behaviour unless a developer constraint says otherwise):\n${list(s.needsCheck.map((f) => `${f.names.join(", ")} (in: ${f.criterion})`))}`);
     if (s.references.length) parts.push(`References:\n${list(s.references)}`);
   }
   if (req.proposal?.approach.length) parts.push(`Proposed approach:\n${list(req.proposal.approach)}`);

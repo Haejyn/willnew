@@ -16,6 +16,7 @@ import { createPlanner, fallbackProposal, type Planner } from "./brief.js";
 import { defaultProposalAgent, propose, type ProposalAgent } from "./proposal.js";
 import { buildRunTask, isOpenRequest, moveTo, parseAttachments, statusFromRun, TEMPLATE_FOR_TYPE, transition, withConstraint } from "./request-state.js";
 import { HOME, type RunManager } from "./runs.js";
+import { flagUnverified } from "./spec-check.js";
 import { templateById } from "./templates.js";
 import type { AgentSpec, DecisionEntry, DecisionKind, Request, RequestUpdate, Run, RunUpdate } from "./types.js";
 
@@ -220,6 +221,9 @@ export class RequestManager {
       p = fallbackProposal(req.spec, `제안을 만들지 못했어요: ${(e as Error).message.slice(0, 160)}`);
     }
     req.proposal = p;
+    // names in the criteria that the requester never wrote and nobody can find in the repo → 확인 필요
+    const flags = await flagUnverified(req.spec, req, p, req.repo).catch(() => []);
+    req.spec = { ...req.spec, needsCheck: flags.length ? flags : undefined };
     transition(req, "proposed");
     this.changed(req);
     this.bus.emit("proposed", req);

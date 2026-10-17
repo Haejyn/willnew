@@ -50,7 +50,9 @@ ${qa}
 Repository top level: ${files || "(unknown)"}
 
 Rules:
-- acceptanceCriteria are measurable and testable: px values, design token names, exact copy text, behaviour, viewport widths. One check per item, Korean, short.
+- acceptanceCriteria are measurable and testable: px values, exact copy text, behaviour, viewport widths. One check per item, Korean, short.
+- You have NOT read the code. Do not invent code facts. A criterion may name a file, function, component, CSS variable or design token only if the requester wrote that exact name above (in the request or an answer). Everything else is written as behaviour a person or a test can observe (예: "결제 화면 기본 버튼의 좌우 안쪽 여백이 16px", not "PayButton 의 padding 16px").
+  Every name you write is checked against the repository afterwards; names nobody can find are shown to the developer as "확인 필요".
 - outOfScope lists what this request must not change (keep it short; empty list is fine).
 - references: URLs from the request or attachments, nothing invented.
 - Do not invent numbers the requester did not give. If a value is still unknown, write the criterion as "[확인 필요: ...]".
@@ -83,8 +85,10 @@ ${list(s.constraints)}
 Original request: """${req.text}"""
 
 Rules:
+- Do not invent code facts. Name only files, functions, components, CSS variables and tokens you actually opened or found with Grep/Glob in this repository. If you could not find something, say so in risks instead of guessing a name.
+- If an acceptance criterion names a file, component or token you could not find, add a risk "명세의 <name> 을 저장소에서 찾지 못했어요" and plan by the observable behaviour instead.
 - summary: one Korean line that ends with "까요?" (예: "Button 의 lg 패딩 토큰을 바꾸고 결제 화면 버튼을 lg 로 맞출까요?").
-- files: only paths you actually found in the repository, each with a short Korean reason.
+- files: only paths you actually found in the repository, each with a short Korean reason. Every path is checked afterwards.
 - risks: concrete side effects you saw in the code (for example other places that use the same component). Empty list if none.
 - testsToAdd: one test per acceptance criterion, in Korean.
 - estimate: rough minutes and USD for an agent to do it. It is an estimate; keep it rough.
