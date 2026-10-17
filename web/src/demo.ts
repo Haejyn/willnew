@@ -42,6 +42,7 @@ import { applyUpdate } from "./api";
 import { deployedReply, pickReviewer, rejectedReply, reviewMessage } from "../../src/server/handoff";
 import { buildRunTask, cardBodies, isOpenRequest, moveTo, parseAttachments, statusFromRun, transition, withConstraint } from "../../src/server/request-state";
 import { saveUser, suggestWinner as pickWinner, type User } from "./util";
+import { membersFrom } from "./people";
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -52,12 +53,12 @@ const sec = (x: number) => Math.round(x * SEC);
 const REPO = "~/work/billing-api";
 
 const CHANNELS: Channel[] = [
-  { id: "backend", name: "backend", team: "platform", repo: REPO, reviewers: ["이해준", "정하늘"], topic: "결제·청구 서버 · 버그와 리팩터링은 @willnew 에게" },
-  { id: "cs", name: "cs-문의", team: "cs", repo: REPO, reviewers: ["이해준"], topic: "고객 문의 중 개발 확인이 필요한 것. @willnew 로 맡기면 백엔드가 검토" },
-  { id: "web", name: "web", team: "platform", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "청구 웹 프론트" },
-  { id: "data", name: "data", team: "data", repo: "~/work/settlement-batch", reviewers: ["이해준", "박서윤"], topic: "정산 배치 · 데이터 파이프라인" },
-  { id: "content-ops", name: "content-ops", team: "content-ops", repo: "~/work/content-tools", reviewers: ["이해준"], topic: "콘텐츠 운영 도구" },
-  { id: "design", name: "디자인-개발", team: "design", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "화면 수정 요청. @willnew 로 남기면 정리해서 개발자에게 넘겨요" },
+  { id: "backend", name: "backend", team: "platform", repo: REPO, reviewers: ["이해준", "정하늘"], topic: "결제·청구 서버 · 버그와 리팩터링은 @willnew 에게", category: "개발" },
+  { id: "cs", name: "cs-문의", team: "cs", repo: REPO, reviewers: ["이해준"], topic: "고객 문의 중 개발 확인이 필요한 것. @willnew 로 맡기면 백엔드가 검토", category: "요청" },
+  { id: "web", name: "web", team: "platform", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "청구 웹 프론트", category: "개발" },
+  { id: "data", name: "data", team: "data", repo: "~/work/settlement-batch", reviewers: ["이해준", "박서윤"], topic: "정산 배치 · 데이터 파이프라인", category: "개발" },
+  { id: "content-ops", name: "content-ops", team: "content-ops", repo: "~/work/content-tools", reviewers: ["이해준"], topic: "콘텐츠 운영 도구", category: "운영" },
+  { id: "design", name: "디자인-개발", team: "design", repo: "~/work/billing-web", reviewers: ["이해준"], topic: "화면 수정 요청. @willnew 로 남기면 정리해서 개발자에게 넘겨요", category: "요청" },
 ];
 
 const TEAMS: Team[] = [
@@ -92,6 +93,8 @@ const PEOPLE: Record<string, User> = {
 };
 /** 설정에서 바꿔 볼 수 있는 사람들 */
 export const DEMO_CAST: Record<string, User> = { 윤서아: PEOPLE.윤서아, 한지우: PEOPLE.한지우, 이해준: PEOPLE.이해준 };
+/** 데모의 접속 상태. 서버에는 없다 */
+const PRESENCE: Record<string, "online" | "away"> = { 이해준: "online", 정하늘: "online", 박서윤: "away", 최민재: "online", 김도윤: "away", 윤서아: "online", 한지우: "online" };
 const titleOf = (name: string) => PEOPLE[name]?.title;
 const avatarOf = (name: string) => PEOPLE[name]?.avatar;
 
@@ -2140,7 +2143,8 @@ function seedChat() {
   add("backend", orders.createdAt + 57 * SEC, "willnew", reviewMessage("이해준", orders.agents[0], "main", false), { runId: orders.id, kind: "review" });
   approve("backend", orders);
   add("backend", T0 - 9 * MIN, "이해준", "어제 배포 후로 duration 테스트가 전부 빨간불이네요");
-  add("backend", T0 - 8 * MIN, "정하늘", "저도 봤어요. parseDuration 이 h 말고 m 이 섞이면 NaN 이 나오는 것 같던데 원인까진 못 봤어요");
+  add("backend", T0 - 8 * MIN, "정하늘", "저도 봤어요. parseDuration 이 h 말고 m 이 섞이면 NaN 이 나오는 것 같던데 원인까진 못 봤어요", { reactions: { "👀": ["이해준", "박서윤"] } });
+  add("backend", T0 - 3 * MIN, "정하늘", "@이해준 웹훅 중복 처리 건 PR 올라오면 리뷰 부탁드려요. 급한 건 아니에요");
 
   // #web
   add("web", button.createdAt - 2 * MIN, "최민재", "Button 쓰는 데마다 variant 오타가 하나씩 있네 ㅋㅋ");
@@ -2178,7 +2182,7 @@ function seedChat() {
   add("cs", receipt.createdAt + 36 * SEC, "willnew", "sonnet 통과. 테스트 6개 모두 통과했어요", { runId: receipt.id, kind: "review" });
   add("cs", receipt.createdAt + 37 * SEC, "willnew", reviewMessage("이해준", receipt.agents[0], "main", false), { runId: receipt.id, kind: "review" });
   approve("cs", receipt);
-  add("cs", bySum(receipt) + 4 * MIN, "윤서아", "넵 고객님께 안내드릴게요 감사합니다");
+  add("cs", bySum(receipt) + 4 * MIN, "윤서아", "넵 고객님께 안내드릴게요 감사합니다", { reactions: { "👍": ["이해준"] } });
   add("cs", T0 - 52 * MIN, "윤서아", "오늘 환불 문의는 이걸로 끝인 듯해요");
   add("cs", T0 - 7 * MIN, "윤서아", "구독 갱신일 문의가 오늘만 3건째네요. 1/31에 가입한 분들이 많아요");
   add("cs", T0 - 6 * MIN, "이해준", "월말 가입자면 날짜 계산 쪽일 수 있어요. 케이스 하나 정확히 적어서 willnew한테 넘겨봐요");
@@ -2787,8 +2791,8 @@ function seedDesign() {
   add(at + 40 * SEC, "willnew", m, { kind: "mention", requestId: r.id, bodies: { forRequester: "이해준님께 확인을 부탁했어요", forDeveloper: m } });
   add(decidedAt, "이해준", `@한지우 ${r.decline!.forRequester}\n이렇게는 할 수 있어요\n${r.decline!.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n")}`, { via: "willnew", requestId: r.id });
   add(decidedAt + 6 * MIN, "한지우", "아 그렇군요 ㅎㅎ 메일 쪽 먼저 시안 만들어볼게요");
-  add(T0 - 25 * MIN, "이해준", "결제 화면 시안 나오면 여기 올려주세요. 버튼 쪽 손볼 때 같이 볼게요");
-  add(T0 - 18 * MIN, "한지우", "넵 오늘 오후에 올릴게요!");
+  add(T0 - 25 * MIN, "이해준", "결제 화면 시안 나오면 여기 올려주세요. 버튼 쪽 손볼 때 같이 볼게요", { reactions: { "👀": ["한지우"] } });
+  add(T0 - 18 * MIN, "한지우", "넵 오늘 오후에 올릴게요!", { reactions: { "👍": ["이해준"] } });
 }
 
 // ---------------------------------------------------------------------------------------------- api
@@ -2904,6 +2908,24 @@ export const demoApi: Api = {
     set.add(on);
     chatListeners.set(ch, set);
     return () => set.delete(on);
+  },
+  async react(ch, mid, emoji, user) {
+    ensureSeed();
+    const m = (chat.get(ch) ?? []).find((x) => x.id === mid);
+    if (!m) throw new Error("메시지를 찾을 수 없어요");
+    const cur = new Set(m.reactions?.[emoji] ?? []);
+    if (cur.has(user)) cur.delete(user);
+    else cur.add(user);
+    const reactions = { ...(m.reactions ?? {}), [emoji]: [...cur] };
+    if (!cur.size) delete reactions[emoji];
+    const next = { ...m, reactions: Object.keys(reactions).length ? reactions : undefined };
+    pushChat(next);
+    return clone(next);
+  },
+  members: (ch) => {
+    ensureSeed();
+    const list = membersFrom(chat.get(ch) ?? [], CHANNELS.find((c) => c.id === ch)).map((m) => ({ ...m, presence: m.bot ? ("online" as const) : PRESENCE[m.name] }));
+    return later(list);
   },
   requests: () => {
     ensureSeed();

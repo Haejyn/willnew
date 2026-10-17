@@ -29,6 +29,8 @@ import type {
 
 export type { Ship, AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
 export type { Bodies, ClarifyQuestion, DecisionEntry, Proposal, Request, RequestStatus, RequestUpdate, WorkSpec };
+export type { Member } from "./people";
+import { membersFrom, type Member } from "./people";
 
 /** The developer's call on a proposal. text: 고쳐서 진행 → constraint, 거절 → reason, 직접 할게 → note */
 export interface DecideInput {
@@ -143,6 +145,10 @@ export interface Api {
   plan(text: string): Promise<Triage>;
   /** New or replaced chat messages for one channel (same id = replace). */
   subscribeChannel(channel: string, onMessage: (m: ChatMessage) => void): () => void;
+  /** toggle one reaction (👍 ✅ 👀) on a message; the changed message also arrives through subscribeChannel */
+  react(channel: string, messageId: string, emoji: string, user: string): Promise<ChatMessage>;
+  /** who is in a channel: message authors, reviewers and the bot (presence only in the demo) */
+  members(channel: string): Promise<Member[]>;
   templates(): Promise<Template[]>;
   teams(): Promise<Team[]>;
   runs(): Promise<Run[]>;
@@ -234,6 +240,11 @@ export const httpApi: Api = {
   decide: (id, input) => post(`/api/requests/${enc(id)}/decide`, input).then((r) => json<Request>(r)),
   plan: (text) => post("/api/plan", { text }).then((r) => json<Triage>(r)),
   subscribeChannel: (ch, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/stream`, on),
+  react: (ch, mid, emoji, user) => post(`/api/channels/${enc(ch)}/messages/${enc(mid)}/react`, { emoji, user }).then((r) => json<ChatMessage>(r)),
+  members: async (ch) => {
+    const [list, channels] = await Promise.all([httpApi.messages(ch), httpApi.channels()]);
+    return membersFrom(list, channels.find((c) => c.id === ch));
+  },
   templates: () => get("/api/templates").then((r) => json<Template[]>(r)),
   teams: () => get("/api/teams").then((r) => json<Team[]>(r)),
   runs: () => get("/api/runs").then((r) => json<Run[]>(r)),

@@ -46,7 +46,7 @@ type Route =
   | { page: "runs" }
   | { page: "run"; id: string; agent?: string; tab?: PaneTab }
   | { page: "review"; id: string; agent?: string }
-  | { page: "chat"; channel: string }
+  | { page: "chat"; channel: string; focus?: string }
   | { page: "request"; id: string }
   | { page: "metrics" };
 
@@ -57,7 +57,7 @@ function parse(path: string): Route {
     return { page: "run", id: decodeURIComponent(m[1]), agent: m[2], tab: m[3] as PaneTab | undefined };
   if (path.startsWith("/runs")) return { page: "runs" };
   if ((m = /^\/requests\/([^/]+)/.exec(path))) return { page: "request", id: decodeURIComponent(m[1]) };
-  if ((m = /^\/chat\/([^/]+)/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]) };
+  if ((m = /^\/chat\/([^/]+)(?:\/m\/([^/]+))?/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]), focus: m[2] ? decodeURIComponent(m[2]) : undefined };
   if (path.startsWith("/chat")) return { page: "chat", channel: DEMO_CHANNEL };
   if (path.startsWith("/metrics")) return { page: "metrics" };
   if (path.startsWith("/mine")) return { page: "mine" };
@@ -84,7 +84,8 @@ export function App() {
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [user, setUser] = useState<User>(() => (demo ? demoStartUser() : null) ?? loadUser());
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [compose, setCompose] = useState(false);
+  // 맡기기 창: true 는 역할대로, "request" 와 "direct" 는 채팅의 /요청, /바로맡기기
+  const [compose, setCompose] = useState<boolean | "request" | "direct">(false);
   const [dense, setDense] = useState(loadDense);
   const [help, setHelp] = useState(false);
   const { runs, error: runsError, reload } = useRuns(api);
@@ -141,7 +142,7 @@ export function App() {
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
   else if (route.page === "request") page = <RequestPage key={route.id} api={api} id={route.id} user={user} deployTracked={config?.deploy !== false} />;
-  else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} deployTracked={config?.deploy !== false} />;
+  else if (route.page === "chat") page = <Chat key={route.channel} api={api} user={user} channelId={route.channel} focus={route.focus} runs={runs} requests={requests} go={go} deployTracked={config?.deploy !== false} onCompose={(m) => setCompose(m)} me={me} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
   else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} requests={requests} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
   else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} requests={requests} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
@@ -217,7 +218,7 @@ export function App() {
             서버에 연결할 수 없어요 · 다시 연결 중
           </div>
         ) : null}
-        {compose ? <Compose api={api} user={user} agents={agents} runs={runs} onClose={() => setCompose(false)} go={go} initialChannel={route.page === "chat" ? route.channel : undefined} /> : null}
+        {compose ? <Compose api={api} user={user} agents={agents} runs={runs} onClose={() => setCompose(false)} go={go} initialChannel={route.page === "chat" ? route.channel : undefined} mode={compose === true ? undefined : compose} /> : null}
         {help ? <Shortcuts onClose={() => setHelp(false)} /> : null}
       </div>
     </ToastProvider>

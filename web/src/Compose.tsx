@@ -13,7 +13,7 @@ import { TEAM_KO, type User } from "./util";
 
 const RACER: AgentSpec = { adapter: "codex", label: "codex" };
 
-export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText }: {
+export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText, mode }: {
   api: Api;
   user: User;
   agents: AgentInfo[] | null;
@@ -24,7 +24,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
   /** 시트 대신 화면 안에 그대로 놓는다(첫 실행) */
   inline?: boolean;
   initialText?: string;
+  /** 채팅의 /요청 은 "request"(개발자도 요청으로), /바로맡기기 는 "direct". 없으면 역할대로 */
+  mode?: "request" | "direct";
 }) {
+  const directMode = mode ? mode === "direct" : user.role !== "requester";
   const toast = useToast();
   const [text, setText] = useState(initialText ?? "");
   const [plan, setPlan] = useState<Triage | null>(null);
@@ -113,7 +116,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
   const send = async (alsoGo = true) => {
     const body = text.trim();
     if (!body || busy || !channel) return;
-    const direct = user.role !== "requester";
+    const direct = directMode;
     if (direct && !chosen.length) return toast("에이전트를 하나 이상 골라 주세요", "err");
     setBusy(true);
     const t0 = Date.now();
@@ -189,7 +192,7 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
         ) : null}
 
         {/* 요청자는 계획을 고르지 않는다. AI가 정리하고 개발자가 정한다 */}
-        {text.trim() && user.role !== "requester" ? (
+        {text.trim() && directMode ? (
           <button className="compose-plan" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
             <IconSpark size={14} />
             <span className="plan-text">
@@ -261,18 +264,18 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
               </div>
             ) : null}
           </div>
-          {user.role !== "requester" ? (
+          {directMode ? (
             <button className={`chip race ${race ? "on" : ""}`} aria-pressed={race} disabled={!racerHere || noAgent} onClick={() => setRace(!race)} title={racerHere ? "같은 일을 에이전트 둘이 따로 풀고, 통과한 쪽을 골라요" : "Codex 가 이 PC 에 없어요"}>
               겨루기
             </button>
           ) : null}
-          {race && user.role !== "requester" ? <span className="dim small race-note">에이전트 2개, 비용도 약 2배</span> : null}
+          {race && directMode ? <span className="dim small race-note">에이전트 2개, 비용도 약 2배</span> : null}
           <span className="hints">
             <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 채널로 {found.length ? <><Kbd>↑↓</Kbd> 이동</> : null} {inline ? null : <><Kbd>esc</Kbd> 닫기</>}
           </span>
           <span className="grow" />
-          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || (user.role !== "requester" && (!chosen.length || noAgent))} title={user.role !== "requester" ? "명세와 제안 없이 바로 에이전트에게 맡겨요" : "AI가 정리하고 되물은 뒤 개발자가 확인해요"}>
-            {busy ? <Spinner size={12} /> : <IconSend size={15} />} {user.role !== "requester" ? "바로 맡기기" : "맡기기"}
+          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || (directMode && (!chosen.length || noAgent))} title={directMode ? "명세와 제안 없이 바로 에이전트에게 맡겨요" : "AI가 정리하고 되물은 뒤 개발자가 확인해요"}>
+            {busy ? <Spinner size={12} /> : <IconSend size={15} />} {directMode ? "바로 맡기기" : user.role === "requester" ? "맡기기" : "요청으로 남기기"}
           </button>
         </div>
       </div>

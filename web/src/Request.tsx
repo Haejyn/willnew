@@ -5,7 +5,7 @@
  *
  * 채널 본문에는 짧은 embed(RequestEmbed), 스레드와 요청 화면에는 전체(RequestView). 결정 기록은 요청 화면 오른쪽 맥락 칸에.
  */
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, WorkSpec } from "./api";
 import { TYPE_KO } from "../../src/server/request-state";
 import { ReviewActions } from "./Decision";
@@ -124,7 +124,7 @@ export function PhaseTrack({ p, who }: { p: Progress; who?: string }) {
           );
         })}
       </ol>
-      <span className={`ptrack-word st ${p.state === "done" ? "ok" : p.state === "stop" ? "warn" : p.mine ? "now" : ""}`}>
+      <span className={`ptrack-word st ${p.state === "done" ? "ok" : p.state === "stop" ? "warn" : ""}`}>
         {p.word}
         {who ? <span className="dim"> {who}</span> : null}
       </span>
@@ -132,9 +132,9 @@ export function PhaseTrack({ p, who }: { p: Progress; who?: string }) {
   );
 }
 
-/** 단계별 왼쪽 띠 색. 내 차례면 액센트. */
+/** 단계별 왼쪽 띠 색. 액센트는 쓰지 않는다(주 버튼과 지금 단계 달이 맡는다). */
 export function phaseBar(p: Progress): CSSProperties {
-  const c = p.state === "stop" ? "var(--text4)" : p.mine ? "var(--accent)" : p.state === "done" ? "var(--phase-4)" : `var(--phase-${Math.min(p.phase, 3) + 1})`;
+  const c = p.state === "stop" ? "var(--text4)" : p.state === "done" ? "var(--phase-4)" : `var(--phase-${Math.min(p.phase, 3) + 1})`;
   return { "--bar": c } as CSSProperties;
 }
 
@@ -545,11 +545,13 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
       {req.planner?.by === "fallback" && req.planner.note && dev ? <p className="warn-chip rq-warn">{req.planner.note}</p> : null}
       {req.status === "declined" ? <Declined req={req} dev={dev} /> : null}
       {req.status === "code_review" && req.runIds.length ? <RunReview api={api} runId={req.runIds.at(-1)!} user={user} /> : null}
-      {req.attachments.length ? (
+      {req.attachments.some((a) => !(dev && req.spec?.references.includes(a.url))) ? (
         <div className="rq-row">
-          {req.attachments.map((a) => (
-            <LinkChip key={a.url} url={a.url} />
-          ))}
+          {req.attachments
+            .filter((a) => !(dev && req.spec?.references.includes(a.url)))
+            .map((a) => (
+              <LinkChip key={a.url} url={a.url} />
+            ))}
         </div>
       ) : null}
       {timeline ? (
@@ -573,8 +575,13 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
  * 채널 본문의 요청 embed: 왼쪽 3px 띠(단계 색, 내 차례면 액센트) + 제목 + 진행 줄 + 필드 두세 개 + 지금 할 일.
  * 요청자의 되묻기와 개발자의 진행, 결과 검토는 여기서 바로 한다. 나머지는 스레드에서.
  */
-export function RequestEmbed({ api, id, user, deployTracked, onThread }: { api: Api; id: string; user: User; deployTracked?: boolean; onThread?: () => void }) {
+export function RequestEmbed({ api, id, user, deployTracked, onThread, onWorking }: { api: Api; id: string; user: User; deployTracked?: boolean; onThread?: () => void; onWorking?: (id: string, on: boolean) => void }) {
   const { req, error, reload } = useLiveRequest(api, id);
+  const busy = !!req && working(req);
+  useEffect(() => {
+    onWorking?.(id, busy);
+    return () => onWorking?.(id, false);
+  }, [id, busy, onWorking]);
   if (error && !req) return <ErrorBox error={error} onRetry={reload} />;
   if (!req) return <div className="embed skel" aria-busy style={{ height: 120 }} />;
   return <EmbedBody api={api} req={req} user={user} deployTracked={deployTracked} onThread={onThread} />;
@@ -687,7 +694,7 @@ export function RequestPage({ api, id, user, deployTracked }: { api: Api; id: st
           ) : null}
         </div>
         {req ? (
-          <aside className="ctx" aria-label="맥락">
+          <aside className="rq-ctx" aria-label="맥락">
             <section>
               <h3 className="sec-t">요청</h3>
               <dl className="ctx-dl">
