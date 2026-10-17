@@ -1,6 +1,6 @@
 /** Live data hooks shared by every screen. */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, Run } from "./api";
+import type { Api, Request, Run } from "./api";
 import { applyUpdate } from "./api";
 
 export function useLiveRun(api: Api, id: string | undefined) {
@@ -43,6 +43,38 @@ export function useLiveRun(api: Api, id: string | undefined) {
   }, [api, id, load]);
 
   return { run, setRun, error, live, reload: load };
+}
+
+/** One Request, kept live (each update carries the whole request). */
+export function useLiveRequest(api: Api, id: string | undefined) {
+  const [req, setReq] = useState<Request | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    if (!id) return;
+    setError(null);
+    api.request(id).then(setReq).catch((e: Error) => setError(e.message));
+  }, [api, id]);
+  useEffect(() => {
+    setReq(null);
+    if (!id) return;
+    load();
+    return api.subscribeRequest(id, (r) => setReq((cur) => (!cur || r.updatedAt >= cur.updatedAt ? r : cur)));
+  }, [api, id, load]);
+  return { req, setReq, error, reload: load };
+}
+
+/** The request list, refreshed every few seconds. */
+export function useRequests(api: Api, ms = 3000) {
+  const [requests, setRequests] = useState<Request[] | null>(null);
+  const reload = useCallback(() => {
+    api.requests().then(setRequests).catch(() => undefined);
+  }, [api]);
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, ms);
+    return () => clearInterval(t);
+  }, [reload, ms]);
+  return { requests, reload };
 }
 
 /** The run list, refreshed every few seconds (light: no events, no patches). */

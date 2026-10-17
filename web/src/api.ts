@@ -17,9 +17,25 @@ import type {
   RunUpdate,
   Template,
   Triage,
+  Bodies,
+  ClarifyQuestion,
+  DecisionEntry,
+  Proposal,
+  Request,
+  RequestStatus,
+  RequestUpdate,
+  WorkSpec,
 } from "../../src/server/types";
 
 export type { Ship, AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
+export type { Bodies, ClarifyQuestion, DecisionEntry, Proposal, Request, RequestStatus, RequestUpdate, WorkSpec };
+
+/** The developer's call on a proposal. text: 고쳐서 진행 → constraint, 거절 → reason, 직접 할게 → note */
+export interface DecideInput {
+  decision: "proceed" | "proceed_with_changes" | "take_over" | "decline";
+  by: string;
+  text?: string;
+}
 
 export interface AgentInfo {
   id: string;
@@ -116,7 +132,13 @@ export interface Api {
   agents(): Promise<AgentInfo[]>;
   channels(): Promise<Channel[]>;
   messages(channel: string): Promise<ChatMessage[]>;
-  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string): Promise<{ message: ChatMessage; reply?: ChatMessage }>;
+  /** direct: a developer's ⌘K 바로 맡기기 (skips the Request). Everything else with @willnew becomes a Request. */
+  postMessage(channel: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string, direct?: boolean): Promise<{ message: ChatMessage; requestId?: string }>;
+  requests(): Promise<Request[]>;
+  request(id: string): Promise<Request>;
+  subscribeRequest(id: string, on: (r: Request) => void): () => void;
+  answer(id: string, questionId: string, answer: string, by: string): Promise<Request>;
+  decide(id: string, input: DecideInput): Promise<Request>;
   /** instant keyword plan for the compose box */
   plan(text: string): Promise<Triage>;
   /** New or replaced chat messages for one channel (same id = replace). */
@@ -204,7 +226,12 @@ export const httpApi: Api = {
   agents: () => get("/api/agents").then((r) => json<AgentInfo[]>(r)),
   channels: () => get("/api/channels").then((r) => json<Channel[]>(r)),
   messages: (ch) => get(`/api/channels/${enc(ch)}/messages`).then((r) => json<ChatMessage[]>(r)),
-  postMessage: (ch, user, text, team, overrides, userTitle, userAvatar) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides, userTitle, userAvatar }).then((r) => json(r)),
+  postMessage: (ch, user, text, team, overrides, userTitle, userAvatar, direct) => post(`/api/channels/${enc(ch)}/messages`, { user, text, team, overrides, userTitle, userAvatar, direct }).then((r) => json(r)),
+  requests: () => get("/api/requests").then((r) => json<Request[]>(r)),
+  request: (id) => get(`/api/requests/${enc(id)}`).then((r) => json<Request>(r)),
+  subscribeRequest: (id, on) => sse<RequestUpdate>(`/api/requests/${enc(id)}/stream`, (u) => on(u.request)),
+  answer: (id, questionId, answer, by) => post(`/api/requests/${enc(id)}/answer`, { questionId, answer, by }).then((r) => json<Request>(r)),
+  decide: (id, input) => post(`/api/requests/${enc(id)}/decide`, input).then((r) => json<Request>(r)),
   plan: (text) => post("/api/plan", { text }).then((r) => json<Triage>(r)),
   subscribeChannel: (ch, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/stream`, on),
   templates: () => get("/api/templates").then((r) => json<Template[]>(r)),
