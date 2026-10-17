@@ -44,6 +44,45 @@ export function RejectModal({ title = "반려할까요?", confirm = "반려", in
   );
 }
 
+/**
+ * 채팅 카드의 결과 검토 버튼. 테스트 파일을 고치지 않은 결과는 바로 승인, 고쳤으면 검토 화면을 거친다.
+ * 요청자에게는 버튼 대신 "개발자 검토 대기" 한 줄. 검토 차례가 아니면 아무것도 그리지 않는다.
+ */
+export function ReviewActions({ api, run, user }: { api: Api; run: Run; user: User }) {
+  const [rejecting, setRejecting] = useState(false);
+  const { busy, approve, reject } = useDecide(api, run, user);
+  if (run.review.status !== "pending") return null;
+  if (user.role === "requester") return <span className="st now">개발자 검토 대기</span>;
+  const winner = suggestWinner(run);
+  const w = run.agents.find((a) => a.id === winner);
+  // 새 테스트를 추가한 것은 막지 않는다. 기존 테스트를 고친 결과만 검토 화면을 거친다
+  const tested = !!w?.diff.testsTouched?.length;
+  const review = `#/runs/${run.id}/review`;
+  return (
+    <div className="row-btns">
+      {w ? <TestChips diff={w.diff} /> : null}
+      {winner && !tested ? (
+        <button className="btn m" disabled={busy} onClick={() => approve(winner)}>
+          {busy ? <Spinner size={12} /> : null}승인
+        </button>
+      ) : (
+        <a className="btn m" href={review}>
+          검토하고 승인
+        </a>
+      )}
+      {winner && !tested ? (
+        <a className="btn q" href={review}>
+          검토
+        </a>
+      ) : null}
+      <button className="btn q" onClick={() => setRejecting(true)}>
+        반려
+      </button>
+      {rejecting ? <RejectModal busy={busy} onClose={() => setRejecting(false)} onSubmit={async (r) => (await reject(r)) && setRejecting(false)} /> : null}
+    </div>
+  );
+}
+
 /** 도는 에이전트를 모두 멈춘다 */
 export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: () => void }) {
   const live = run.agents.filter(isActive);
@@ -57,10 +96,22 @@ export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: 
   );
 }
 
+/**
+ * 테스트 파일 칩. 기존 테스트를 고치거나 지우거나 옮겼으면 경고 칩(바로 승인 막힘), 새로 추가만 했으면 중립 칩.
+ */
+export function TestChips({ diff }: { diff: Run["agents"][number]["diff"] }) {
+  return (
+    <>
+      {diff.testsTouched?.length ? <span className="warn-chip">테스트 파일 고침</span> : null}
+      {diff.testsAdded?.length ? <span className="tag">테스트 추가 {diff.testsAdded.length}</span> : null}
+    </>
+  );
+}
+
 function Gate({ ok, loading, children }: { ok: boolean | null; loading?: boolean; children: string }) {
   return (
     <span className={`gchip ${loading ? "" : ok === true ? "ok" : "warn"}`}>
-      {loading ? null : ok === true ? <IconCheck size={13} /> : <b aria-hidden>!</b>}
+      {loading || ok !== true ? null : <IconCheck size={12} />}
       {children}
     </span>
   );
@@ -134,7 +185,8 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
         <span className="dbar-text" title={reason}>{reason}</span>
         {winner ? (
           <span className="gates">
-            <Gate ok={!touched.length}>{touched.length ? "테스트 파일 고침" : "테스트 파일 그대로"}</Gate>
+            <Gate ok={!touched.length}>{touched.length ? "테스트 파일 고침" : "기존 테스트 그대로"}</Gate>
+            {winner.diff.testsAdded?.length ? <span className="tag">테스트 추가 {winner.diff.testsAdded.length}</span> : null}
             <Gate ok={pf ? (pf.conflicts === null ? null : !pf.conflicts) : null} loading={!pf}>
               {!pf ? "충돌 확인 중" : pf.conflicts ? `${run.baseBranch}과 충돌` : pf.conflicts === null ? "충돌 여부를 알 수 없어요" : `${run.baseBranch}과 충돌 없음`}
             </Gate>

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { AgentRun } from "./api";
-import { IconCheck, IconX } from "./icons";
+import { IconCheck, IconExternal, IconX } from "./icons";
 
 export function Spinner({ size = 12 }: { size?: number }) {
   return <span className="spin" style={{ width: size, height: size }} aria-label="진행 중" />;
@@ -37,7 +37,7 @@ export function Tag({ tone, mono, children, title }: { tone?: Tone; mono?: boole
 export function Avatar({ name, size = 28, bot, src }: { name: string; size?: number; bot?: boolean; src?: string }) {
   const [broken, setBroken] = useState(false);
   return (
-    <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 32 ? 12 : 11 }} aria-hidden>
+    <span className={`avatar ${bot ? "bot" : ""}`} style={{ width: size, height: size, fontSize: size >= 40 ? 14 : 12 }} aria-hidden>
       {src && !broken ? <img src={src} alt="" width={size} height={size} onError={() => setBroken(true)} /> : size < 24 ? name.slice(-1) : name.slice(-2)}
     </span>
   );
@@ -197,6 +197,66 @@ export function ErrorBox({ error, onRetry }: { error: string; onRetry?: () => vo
         <button className="btn q sm" onClick={onRetry}>
           다시 시도
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------- small shared pieces
+
+/** AI가 일하는 동안: 글자 한 줄과 반짝이는 줄 두세 개. 스피너는 쓰지 않는다. */
+export function Working({ text = "정리하는 중", lines = 2 }: { text?: string; lines?: number }) {
+  return (
+    <div className="working" role="status" aria-live="polite">
+      <span className="working-text">
+        {text}
+        <span className="typing-dots" aria-hidden>
+          <i />
+          <i />
+          <i />
+        </span>
+      </span>
+      {Array.from({ length: lines }, (_, i) => (
+        <span key={i} className="shimmer" aria-hidden />
+      ))}
+    </div>
+  );
+}
+
+/** 링크 미리보기 칩: Figma 는 "Figma · 파일 이름", 그 밖에는 주소의 호스트. */
+export function linkLabel(url: string): { kind: "figma" | "image" | "link"; label: string } {
+  const clean = url.replace(/^https?:\/\//, "");
+  if (/(^|\.)figma\.com\//i.test(clean)) {
+    const name = clean.split(/[?#]/)[0].split("/").filter(Boolean).pop() ?? "";
+    return { kind: "figma", label: `Figma · ${decodeURIComponent(name).replace(/[-_]+/g, " ").slice(0, 40)}` };
+  }
+  if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(clean)) return { kind: "image", label: `이미지 · ${clean.split("/").pop()?.slice(0, 32)}` };
+  return { kind: "link", label: clean.split("/")[0] };
+}
+
+export function LinkChip({ url }: { url: string }) {
+  const { kind, label } = linkLabel(url);
+  return (
+    <a className={`link-chip lk-${kind}`} href={url} target="_blank" rel="noreferrer">
+      {label}
+      <IconExternal size={12} />
+    </a>
+  );
+}
+
+/** AI가 다시 쓴 글: 왼쪽 2px 선, 그리고 원문을 인용으로 펼치는 "원문 보기". */
+export function AiText({ children, original, read, label = "원문 보기" }: { children: ReactNode; original?: string; read?: boolean; label?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="ai-text">
+      <p className={read ? "t-read" : undefined}>{children}</p>
+      {original ? (
+        <>
+          <button type="button" className="ai-orig" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {open ? "원문 접기" : label}
+          </button>
+          {open ? <blockquote className="quote">{original}</blockquote> : null}
+        </>
       ) : null}
     </div>
   );

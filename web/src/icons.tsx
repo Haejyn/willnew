@@ -108,3 +108,25 @@ export const IconBranch = (p: P) => (
     <path d="M6 8.2v7.6M18 8.2v.8q0 4.5-4.5 4.5H10q-4 0-4 2.3" />
   </svg>
 );
+
+// 채팅 — 24 격자, 1.8 선 (테마에 없는 모양)
+export const IconSmile = (p: P) => (
+  <svg {...gitBase(p)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M8.5 14.5q3.5 3 7 0" />
+    <path d="M9 9.5v.5M15 9.5v.5" />
+  </svg>
+);
+export const IconUsers = (p: P) => (
+  <svg {...gitBase(p)}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20q0-6 6.5-6t6.5 6" />
+    <path d="M15.5 4.8a3.4 3.4 0 0 1 0 6.4M18 14.4q3.5 1.2 3.5 5.6" />
+  </svg>
+);
+export const IconThread = (p: P) => (
+  <svg {...gitBase(p)}>
+    <path d="M4 5h16v10H9l-5 4Z" />
+    <path d="M8 9h8M8 12h5" />
+  </svg>
+);

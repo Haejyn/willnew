@@ -1,4 +1,7 @@
-/** 새로 맡기기 (⌘K · ⌘N) — 한 줄을 쓰면 계획이 한 줄로 뜨고(눌러서 고친다), 이미 맡긴 일도 같이 찾아 준다. 보내면 팀 채널에 남는다. */
+/**
+ * 새로 맡기기 (⌘K · ⌘N). 한 줄을 쓰면 계획이 한 줄로 뜨고(눌러서 고친다), 이미 맡긴 일도 같이 찾아 준다. 보내면 팀 채널에 남는다.
+ * 개발자는 바로 맡기기(명세와 제안 없이 바로 run). 요청자가 보내면 요청이 되어 AI가 정리하고 개발자가 확인한다.
+ */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { AgentInfo, AgentSpec, Api, Channel, Run, Template, Triage } from "./api";
 import { isDemo } from "./api";
@@ -10,7 +13,7 @@ import { TEAM_KO, type User } from "./util";
 
 const RACER: AgentSpec = { adapter: "codex", label: "codex" };
 
-export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText }: {
+export function Compose({ api, user, agents, runs, onClose, go, initialChannel, inline, initialText, mode }: {
   api: Api;
   user: User;
   agents: AgentInfo[] | null;
@@ -21,7 +24,10 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
   /** 시트 대신 화면 안에 그대로 놓는다(첫 실행) */
   inline?: boolean;
   initialText?: string;
+  /** 채팅의 /요청 은 "request"(개발자도 요청으로), /바로맡기기 는 "direct". 없으면 역할대로 */
+  mode?: "request" | "direct";
 }) {
+  const directMode = mode ? mode === "direct" : user.role !== "requester";
   const toast = useToast();
   const [text, setText] = useState(initialText ?? "");
   const [plan, setPlan] = useState<Triage | null>(null);
@@ -110,7 +116,8 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
   const send = async (alsoGo = true) => {
     const body = text.trim();
     if (!body || busy || !channel) return;
-    if (!chosen.length) return toast("에이전트를 하나 이상 골라 주세요", "err");
+    const direct = directMode;
+    if (direct && !chosen.length) return toast("에이전트를 하나 이상 골라 주세요", "err");
     setBusy(true);
     const t0 = Date.now();
     try {
@@ -118,11 +125,11 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
         template: tplId,
         agents: chosen,
         check: checkCmd,
-      }, user.title || undefined, user.avatar);
-      toast("맡겼어요 · 계획 에이전트가 읽고 바로 시작해요", "ok");
+      }, user.title || undefined, user.avatar, direct);
+      toast(direct ? "맡겼어요 · 계획 에이전트가 읽고 바로 시작해요" : "받았어요. AI가 정리해서 개발자에게 넘겨요", "ok");
       onClose();
       if (!alsoGo) return go(`/chat/${channel}`);
-      if (user.role === "requester") return go("/mine"); // 요청자는 작업 공간 대신 내 요청으로
+      if (!direct) return go("/mine"); // 요청자는 작업 공간 대신 내 요청으로
       // the run is created after planning; follow it as soon as it exists
       for (let i = 0; i < 40; i++) {
         await new Promise((r) => setTimeout(r, 500));
@@ -184,7 +191,8 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
           </p>
         ) : null}
 
-        {text.trim() ? (
+        {/* 요청자는 계획을 고르지 않는다. AI가 정리하고 개발자가 정한다 */}
+        {text.trim() && directMode ? (
           <button className="compose-plan" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
             <IconSpark size={14} />
             <span className="plan-text">
@@ -256,16 +264,18 @@ export function Compose({ api, user, agents, runs, onClose, go, initialChannel, 
               </div>
             ) : null}
           </div>
-          <button className={`chip race ${race ? "on" : ""}`} aria-pressed={race} disabled={!racerHere || noAgent} onClick={() => setRace(!race)} title={racerHere ? "같은 일을 에이전트 둘이 따로 풀고, 통과한 쪽을 골라요" : "Codex 가 이 PC 에 없어요"}>
-            겨루기
-          </button>
-          {race ? <span className="dim small race-note">에이전트 2개, 비용도 약 2배</span> : null}
+          {directMode ? (
+            <button className={`chip race ${race ? "on" : ""}`} aria-pressed={race} disabled={!racerHere || noAgent} onClick={() => setRace(!race)} title={racerHere ? "같은 일을 에이전트 둘이 따로 풀고, 통과한 쪽을 골라요" : "Codex 가 이 PC 에 없어요"}>
+              겨루기
+            </button>
+          ) : null}
+          {race && directMode ? <span className="dim small race-note">에이전트 2개, 비용도 약 2배</span> : null}
           <span className="hints">
             <Kbd>↵</Kbd> 맡기고 따라가기 <Kbd>⌘↵</Kbd> 채널로 {found.length ? <><Kbd>↑↓</Kbd> 이동</> : null} {inline ? null : <><Kbd>esc</Kbd> 닫기</>}
           </span>
           <span className="grow" />
-          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || !chosen.length || noAgent}>
-            {busy ? <Spinner size={12} /> : <IconSend size={15} />} 맡기기
+          <button className="btn w" onClick={() => send()} disabled={!text.trim() || busy || (directMode && (!chosen.length || noAgent))} title={directMode ? "명세와 제안 없이 바로 에이전트에게 맡겨요" : "AI가 정리하고 되물은 뒤 개발자가 확인해요"}>
+            {busy ? <Spinner size={12} /> : <IconSend size={15} />} {directMode ? "바로 맡기기" : user.role === "requester" ? "맡기기" : "요청으로 남기기"}
           </button>
         </div>
       </div>

@@ -5,15 +5,16 @@ import type { PaneTab } from "./AgentPane";
 import { Chat } from "./Chat";
 import { Compose } from "./Compose";
 import { DEMO_CAST, DEMO_CHANNEL, demoApi, demoStartUser } from "./demo";
-import { useRuns, useWatch } from "./flow";
+import { useRequests, useRuns, useWatch } from "./flow";
 import { AgentMark, AppIcon, IconChart, IconChat, IconHelp, IconInbox, IconList, IconMoon, IconPlus } from "./icons";
 import { Metrics } from "./Metrics";
 import { Mine } from "./Mine";
+import { RequestPage } from "./Request";
 import { Review } from "./Review";
 import { RunList } from "./Runs";
 import { Turn } from "./Turn";
 import { Avatar, Empty, Kbd, ToastProvider, useOutside } from "./ui";
-import { ROLE_KO, TEAM_KO, adapterName, isActive, loadUser, saveUser, useMedia, type Role, type User } from "./util";
+import { ROLE_KO, TEAM_KO, adapterName, isActive, loadDense, loadUser, saveDense, saveUser, useMedia, type Role, type User } from "./util";
 import { Workspace } from "./Workspace";
 
 function readPath() {
@@ -45,7 +46,8 @@ type Route =
   | { page: "runs" }
   | { page: "run"; id: string; agent?: string; tab?: PaneTab }
   | { page: "review"; id: string; agent?: string }
-  | { page: "chat"; channel: string }
+  | { page: "chat"; channel: string; focus?: string }
+  | { page: "request"; id: string }
   | { page: "metrics" };
 
 function parse(path: string): Route {
@@ -54,7 +56,8 @@ function parse(path: string): Route {
   if ((m = /^\/runs\/([^/]+)(?:\/agent\/([^/]+)(?:\/(log|term|diff|preview))?)?/.exec(path)))
     return { page: "run", id: decodeURIComponent(m[1]), agent: m[2], tab: m[3] as PaneTab | undefined };
   if (path.startsWith("/runs")) return { page: "runs" };
-  if ((m = /^\/chat\/([^/]+)/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]) };
+  if ((m = /^\/requests\/([^/]+)/.exec(path))) return { page: "request", id: decodeURIComponent(m[1]) };
+  if ((m = /^\/chat\/([^/]+)(?:\/m\/([^/]+))?/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]), focus: m[2] ? decodeURIComponent(m[2]) : undefined };
   if (path.startsWith("/chat")) return { page: "chat", channel: DEMO_CHANNEL };
   if (path.startsWith("/metrics")) return { page: "metrics" };
   if (path.startsWith("/mine")) return { page: "mine" };
@@ -81,9 +84,12 @@ export function App() {
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [user, setUser] = useState<User>(() => (demo ? demoStartUser() : null) ?? loadUser());
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [compose, setCompose] = useState(false);
+  // 맡기기 창: true 는 역할대로, "request" 와 "direct" 는 채팅의 /요청, /바로맡기기
+  const [compose, setCompose] = useState<boolean | "request" | "direct">(false);
+  const [dense, setDense] = useState(loadDense);
   const [help, setHelp] = useState(false);
   const { runs, error: runsError, reload } = useRuns(api);
+  const { requests } = useRequests(api);
   const { watched, toggle } = useWatch(runs);
   const offline = !!runsError || agentsDown;
 
@@ -102,11 +108,13 @@ export function App() {
   const home = useMemo(() => runs?.find((r) => r.review.status === "pending") ?? runs?.find((r) => r.agents.some(isActive)) ?? runs?.[0], [runs]);
   const openId = route.page === "run" || route.page === "review" ? route.id : route.page === "runs" && !phone ? home?.id : undefined;
   const requester = user.role === "requester";
-  const pendingN = requester ? 0 : runs?.filter((r) => r.review.status === "pending").length ?? 0;
+  // 내 차례: 확인할 제안 + 승인할 결과
+  const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
+  const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending").length ?? 0) + proposalsN;
 
   useEffect(() => {
     const run = runs?.find((r) => r.id === openId);
-    const t = route.page === "metrics" ? "지표" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
+    const t = route.page === "metrics" ? "지표" : route.page === "request" ? "요청" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
     document.title = `${pendingN ? `(${pendingN}) ` : ""}${t} · willnew`;
   }, [route.page, openId, runs, route, pendingN, user.role]);
 
@@ -129,14 +137,15 @@ export function App() {
     setUser(u);
     saveUser(u);
   };
-  const me = <Settings user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} />;
+  const me = <Settings user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} dense={dense} onDense={(on) => { setDense(on); saveDense(on); }} />;
 
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
-  else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} />;
+  else if (route.page === "request") page = <RequestPage key={route.id} api={api} id={route.id} user={user} deployTracked={config?.deploy !== false} />;
+  else if (route.page === "chat") page = <Chat key={route.channel} api={api} user={user} channelId={route.channel} focus={route.focus} runs={runs} requests={requests} go={go} deployTracked={config?.deploy !== false} onCompose={(m) => setCompose(m)} me={me} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
-  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
-  else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} requests={requests} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} requests={requests} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
       <div className="runs-view">
@@ -162,7 +171,7 @@ export function App() {
 
   const nav: { id: string; href: string; name: string; Icon: ComponentType<{ size?: number; filled?: boolean }>; on: boolean; badge?: number }[] = [
     ...(requester ? [] : [{ id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN }]),
-    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || (requester && route.page === "home") },
+    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request" || (requester && route.page === "home") },
     { id: "runs", href: "#/runs", name: "작업", Icon: IconList, on: route.page === "runs" || route.page === "run" || route.page === "review" },
     { id: "chat", href: `#/chat/${channels.find((c) => c.team === user.team)?.id ?? DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
     { id: "metrics", href: "#/metrics", name: "지표", Icon: IconChart, on: route.page === "metrics" },
@@ -178,13 +187,14 @@ export function App() {
 
   return (
     <ToastProvider>
-      <div className={`app p-${route.page}`}>
+      <div className={`app p-${route.page} ${dense ? "dense" : ""}`}>
         <div className="sky" aria-hidden />
         <aside className="side" aria-label="화면">
           <a className="side-logo" href="#/" aria-label="willnew">
-            <AppIcon size={28} />
+            <AppIcon size={32} />
           </a>
-          <nav className="side-nav">{nav.map((n) => item(n, 22))}</nav>
+          <span className="side-sep" aria-hidden />
+          <nav className="side-nav">{nav.map((n) => item(n, 20))}</nav>
           <div className="side-foot">
             <button className="side-add" data-tip="맡기기 ⌘K" aria-label="새로 맡기기" onClick={() => setCompose(true)}>
               <IconPlus size={20} />
@@ -208,7 +218,7 @@ export function App() {
             서버에 연결할 수 없어요 · 다시 연결 중
           </div>
         ) : null}
-        {compose ? <Compose api={api} user={user} agents={agents} runs={runs} onClose={() => setCompose(false)} go={go} initialChannel={route.page === "chat" ? route.channel : undefined} /> : null}
+        {compose ? <Compose api={api} user={user} agents={agents} runs={runs} onClose={() => setCompose(false)} go={go} initialChannel={route.page === "chat" ? route.channel : undefined} mode={compose === true ? undefined : compose} /> : null}
         {help ? <Shortcuts onClose={() => setHelp(false)} /> : null}
       </div>
     </ToastProvider>
@@ -241,7 +251,7 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
 }
 
 /** 아바타 팝오버 — 이름 · 팀, 저장소, 에이전트, 검증 명령. 위쪽 바에 있던 정보가 전부 여기로 왔다. */
-function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void }) {
+function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, onDense }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void; dense: boolean; onDense: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(user.name);
   const [title, setTitle] = useState(user.title);
@@ -300,6 +310,10 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp }: { use
                 </label>
               ))}
             </fieldset>
+            <label className="toggle-row">
+              <input type="checkbox" checked={dense} onChange={(e) => onDense(e.target.checked)} />
+              촘촘하게 (목록 한 줄을 낮게)
+            </label>
             <button className="btn w sm" type="submit">
               저장
             </button>

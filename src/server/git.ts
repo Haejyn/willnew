@@ -39,6 +39,24 @@ const MAX_PATCH = 200_000;
 const TEST_FILE = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.(java|kt|cs)$/;
 export const isTestFile = (path: string) => TEST_FILE.test(path);
 
+/**
+ * Test files in a `git diff --name-status -M` listing, split by what happened to them. Adding a test is what the
+ * test-first rule asks for, so only edited, deleted or renamed existing tests count as touched (the merge gate).
+ */
+export function splitTestChanges(nameStatus: string): { added: string[]; touched: string[] } {
+  const added: string[] = [];
+  const touched: string[] = [];
+  for (const line of nameStatus.split("\n")) {
+    const [status, ...paths] = line.split("\t");
+    if (!status || !paths.length) continue;
+    const tests = paths.filter(isTestFile);
+    if (!tests.length) continue;
+    if (status[0] === "A") added.push(...tests);
+    else touched.push(tests.at(-1)!); // M, D, and R/C (renamed counts as edited; the new path when it is a test)
+  }
+  return { added, touched };
+}
+
 export async function diffSummary(wt: string, baseRef: string): Promise<DiffSummary> {
   const numstat = await git(wt, "diff", "--numstat", baseRef, "HEAD");
   let files = 0, insertions = 0, deletions = 0;
@@ -53,7 +71,8 @@ export async function diffSummary(wt: string, baseRef: string): Promise<DiffSumm
   }
   let patch = await git(wt, "diff", baseRef, "HEAD");
   if (patch.length > MAX_PATCH) patch = patch.slice(0, MAX_PATCH) + "\n… (patch truncated)";
-  return { files, insertions, deletions, patch, fileStats, testsTouched: fileStats.map((f) => f.path).filter(isTestFile) };
+  const { added, touched } = splitTestChanges(await git(wt, "diff", "--name-status", "-M", baseRef, "HEAD"));
+  return { files, insertions, deletions, patch, fileStats, testsTouched: touched, testsAdded: added };
 }
 
 /** Would merging `branch` into the current HEAD of `root` conflict? null when git cannot tell (needs git ≥ 2.38). */

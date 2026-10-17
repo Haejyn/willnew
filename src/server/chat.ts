@@ -1,16 +1,20 @@
 /**
- * Team chat front door (Slack-like, inside the web app). A message that mentions @willnew becomes a request:
- * ack → triage (planner agent) → run (worker agents) → result + review request → review outcome, all as bot replies.
+ * Team chat front door (Slack-like, inside the web app). A message that mentions @willnew becomes a Request: one live
+ * request card in the thread (clarify → spec → proposal → developer decision → run → review → ship), with a body for
+ * the requester and one for the developer. A developer's ⌘K "바로 맡기기" (direct) skips the Request and starts a run
+ * the old way: ack → triage → run → result + review request → review outcome.
  */
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cardBodies } from "./request-state.js";
+import { RequestManager } from "./requests.js";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { deployedReply, mergedReply, pickReviewer, rejectedReply, reviewMessage } from "./handoff.js";
 import { defaultChannels, templateById, wantsRace, withRace } from "./templates.js";
 import { triage } from "./triage.js";
 import type { ShipEvent } from "./ship.js";
-import type { AgentSpec, Channel, ChatMessage, Run } from "./types.js";
+import type { AgentSpec, Channel, ChatMessage, ClarifyQuestion, Request, Run } from "./types.js";
 
 /** What the person changed in the compose box before sending — wins over the planner's choice. */
 export interface PlanOverrides {
@@ -20,6 +24,8 @@ export interface PlanOverrides {
 }
 
 const CHAT_DIR = join(HOME, "chat");
+/** the reactions the UI offers */
+export const REACTIONS = ["👍", "✅", "👀"];
 const id = () => Math.random().toString(36).slice(2, 10);
 const money = (x: number | null | undefined) => (x == null ? "비용 미보고" : `$${x.toFixed(2)}`);
 const secs = (ms?: number) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)}초`);
@@ -28,8 +34,10 @@ export class Chat {
   readonly bus = new EventEmitter();
   readonly channels: Channel[];
   private messages = new Map<string, ChatMessage[]>();
+  readonly requests: RequestManager;
 
-  constructor(private runs: RunManager, repo: string, private defaultCheck: string, reviewers: string[] = []) {
+  constructor(private runs: RunManager, repo: string, private defaultCheck: string, reviewers: string[] = [], requests?: RequestManager) {
+    this.requests = requests ?? new RequestManager(runs);
     mkdirSync(CHAT_DIR, { recursive: true });
     this.channels = defaultChannels(repo, reviewers);
     for (const c of this.channels) {
@@ -40,10 +48,30 @@ export class Chat {
     runs.bus.on("finished", (run: Run) => void this.onFinished(run));
     runs.bus.on("reviewed", (run: Run) => this.onReviewed(run));
     runs.bus.on("ship", (run: Run, e: ShipEvent) => this.onShip(run, e));
+    const rq = this.requests.bus;
+    rq.on("changed", (req: Request) => this.requestCard(req));
+    rq.on("answered", (req: Request, q: ClarifyQuestion) => this.onAnswered(req, q));
+    rq.on("proposed", (req: Request) => this.onProposed(req));
+    rq.on("declined", (req: Request, by: string) => this.onDeclined(req, by));
+    rq.on("taken_over", (req: Request, by: string) => this.say(req, { forRequester: `${by}님이 직접 맡았어요`, forDeveloper: `${by} 직접 작업 · AI 흐름에서 빠짐` }));
   }
 
   list(channel: string): ChatMessage[] {
     return this.messages.get(channel) ?? [];
+  }
+
+  /** Toggle one reaction. The emoji is user content; a short allow-list keeps it to the few the UI offers. */
+  react(channel: string, messageId: string, emoji: string, user: string): ChatMessage {
+    const msg = this.list(channel).find((m) => m.id === messageId);
+    if (!msg) throw new Error("메시지를 찾을 수 없어요");
+    if (!REACTIONS.includes(emoji)) throw new Error("쓸 수 없는 반응이에요");
+    const who = user.trim() || "anonymous";
+    const cur = new Set(msg.reactions?.[emoji] ?? []);
+    if (cur.has(who)) cur.delete(who);
+    else cur.add(who);
+    const reactions = { ...(msg.reactions ?? {}), [emoji]: [...cur] };
+    if (!cur.size) delete reactions[emoji];
+    return this.push({ ...msg, reactions: Object.keys(reactions).length ? reactions : undefined });
   }
 
   private push(msg: ChatMessage) {
@@ -61,11 +89,20 @@ export class Chat {
     return this.push({ id: msgId, channel, ts: Date.now(), user: "willnew", bot: true, text, kind, runId });
   }
 
-  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string) {
+  /**
+   * `direct`: a developer's ⌘K 바로 맡기기, which starts a run right away. Everything else that mentions @willnew
+   * becomes a Request and waits for a developer to confirm the proposal.
+   */
+  async post(channelId: string, user: string, text: string, team?: string, overrides?: PlanOverrides, userTitle?: string, userAvatar?: string, direct = false): Promise<{ message: ChatMessage; requestId?: string }> {
     const channel = this.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error("unknown channel");
     const message = this.push({ id: id(), channel: channelId, ts: Date.now(), user, userTitle: userTitle || undefined, userAvatar: userAvatar || undefined, bot: false, text });
     if (!/@willnew\b/i.test(text)) return { message };
+    if (!direct) {
+      const req = this.requests.create({ channel: channelId, repo: channel.repo, check: this.defaultCheck, team: team ?? channel.team, requester: user,
+        requesterTitle: userTitle || undefined, requesterAvatar: userAvatar || undefined, text, reviewer: pickReviewer(channel, user) });
+      return { message, requestId: req.id };
+    }
 
     const ackId = id();
     this.bot(channelId, "접수 · 분류 중", "ack", undefined, ackId);
@@ -105,7 +142,8 @@ export class Chat {
       return `• ${a.label} · ${verdict} · ${secs(a.durationMs)} · ${money(a.usage.costUsd)}${a.attempt > 1 ? ` · 재시도 ${a.attempt - 1}회` : ""} · +${a.diff.insertions} −${a.diff.deletions}`;
     });
     const w = suggestWinner(run);
-    this.bot(run.channel,
+    // a Request's run reports on its live card; only the reviewer mention goes into the thread
+    if (!run.requestId) this.bot(run.channel,
       `완료 · ${w ? `추천 **${w.label}** · 승인 시 \`${run.baseBranch}\` 반영` : "반영할 결과 없음"}\n` + lines.join("\n"),
       w ? "review" : "result", run.id);
     // hand the review to a person: the first channel reviewer who is not the requester
@@ -143,7 +181,8 @@ export class Chat {
     const failed = (s.checks ?? []).filter((c) => c.state === "fail").map((c) => c.name);
     const note = run.agents.find((a) => a.id === run.review.agentId)?.userNote;
     const env = s.env ?? "production";
-    const say = (t: string) => this.bot(run.channel!, t, "result");
+    // a Request's run shows the pipeline on its card; the stage lines stay out of the thread
+    const say = (t: string) => { if (!run.requestId) this.bot(run.channel!, t, "result"); };
     if (e === "pr") say(`PR #${s.prNumber} 올렸어요`);
     else if (e === "ci_passed") say(`CI ${s.checks?.length ?? 0}개 통과`);
     else if (e === "ci_failed") say(/^(git|gh) /.test(failed[0] ?? "") ? `PR을 올리지 못했어요: ${failed[0]}` : `CI 실패: ${failed.join(", ") || "시간 초과"}. 자동으로 다시 돌리지 않았어요`);
@@ -154,5 +193,42 @@ export class Chat {
       say(`${env} 배포 끝났어요`);
       this.answer(run, deployedReply(run, note));
     } else say(`${env} 배포가 확인되지 않았어요. 정해 둔 시간 안에 끝나지 않았어요`);
+  }
+
+  // ------------------------------------------------------------------------------------------ requests
+
+  /** One live card per Request, replaced in place (same message id) as the request moves. */
+  private requestCard(req: Request) {
+    if (!this.messages.has(req.channel)) return;
+    const b = cardBodies(req);
+    this.push({ id: `req-${req.id}`, channel: req.channel, ts: req.createdAt + 1, user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: req.id, kind: "request" });
+  }
+
+  private say(req: Request, b: { forRequester: string; forDeveloper: string }, kind: ChatMessage["kind"] = "result") {
+    if (!this.messages.has(req.channel)) return;
+    this.push({ id: id(), channel: req.channel, ts: Date.now(), user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: req.id, kind });
+  }
+
+  /** A tapped choice shows up as the requester's own message. */
+  private onAnswered(req: Request, q: ClarifyQuestion) {
+    if (!this.messages.has(req.channel)) return;
+    this.push({ id: id(), channel: req.channel, ts: Date.now(), user: q.answeredBy ?? req.requester, userTitle: req.requesterTitle, userAvatar: req.requesterAvatar,
+      bot: false, text: `${q.question}: ${q.answer}`, requestId: req.id });
+  }
+
+  /** `@이해준 확인할 제안이 있어요. <one line>` */
+  private onProposed(req: Request) {
+    const who = req.reviewer;
+    if (!who || !req.proposal) return;
+    this.say(req, { forRequester: `${who}님께 확인을 부탁했어요`, forDeveloper: `@${who} 확인할 제안이 있어요. ${req.proposal.summary}` }, "mention");
+  }
+
+  /** The developer's decline, explained by the planner, sent as that developer through willnew. */
+  private onDeclined(req: Request, by: string) {
+    const d = req.decline;
+    if (!d || !this.messages.has(req.channel)) return;
+    const alts = d.alternatives.map((a) => `- ${a.title} (${a.effort})`).join("\n");
+    this.push({ id: id(), channel: req.channel, ts: Date.now(), user: by, bot: false, via: "willnew", requestId: req.id,
+      text: `@${req.requester} ${d.forRequester}${alts ? `\n이렇게는 할 수 있어요\n${alts}` : ""}` });
   }
 }

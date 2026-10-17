@@ -1,10 +1,11 @@
-/** 내 차례 — 첫 화면. 보름달이 뜬 일만 카드로 올라오고, 나머지는 한 줄씩. */
+/** 내 차례. 첫 화면. 확인할 제안이 맨 위, 그 아래 보름달이 뜬 결과가 카드로, 나머지는 한 줄씩. */
 import { useMemo, useState, type ReactNode } from "react";
-import type { AgentInfo, Api, Run } from "./api";
+import type { AgentInfo, Api, Request, Run } from "./api";
 import { Compose } from "./Compose";
-import { useDecide } from "./Decision";
+import { TestChips, useDecide } from "./Decision";
 import { AgentMark, IconPlus } from "./icons";
 import { Moon, PHASE_FILL, isDone, runPhase, type Phase } from "./moon";
+import { ProposalTurnCard } from "./Request";
 import { Avatar, ErrorBox, Spinner } from "./ui";
 import { adapterName, fmtDuration, isActive, relTime, runElapsed, suggestWinner, testSummary, useNow, winnerReason, type User } from "./util";
 
@@ -17,13 +18,15 @@ const EXAMPLES = [
 const title = (r: Run) => r.triage?.title ?? r.title;
 const doneAt = (r: Run) => r.review.at ?? r.createdAt;
 
-export function Turn({ api, user, agents, runs, error, reload, go, onNew, me }: { api: Api; user: User; agents: AgentInfo[] | null; runs: Run[] | null; error: string | null; reload: () => void; go: (p: string) => void; onNew: () => void; me?: ReactNode }) {
+export function Turn({ api, user, agents, runs, requests, error, reload, go, onNew, me }: { api: Api; user: User; agents: AgentInfo[] | null; runs: Run[] | null; requests?: Request[] | null; error: string | null; reload: () => void; go: (p: string) => void; onNew: () => void; me?: ReactNode }) {
   const now = useNow(1000, !!runs?.some((r) => r.agents.some(isActive)));
   const [example, setExample] = useState("");
   const rows = useMemo(() => (runs ?? []).map((r) => ({ run: r, ...runPhase(r, now) })), [runs, now]);
   const turn = rows.filter((x) => x.phase === "turn").sort((a, b) => b.run.createdAt - a.run.createdAt);
   const rising = rows.filter((x) => !isDone(x.phase) && x.phase !== "turn");
   const done = rows.filter((x) => isDone(x.phase)).sort((a, b) => doneAt(b.run) - doneAt(a.run));
+  const proposals = (requests ?? []).filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).sort((a, b) => a.updatedAt - b.updatedAt);
+  const waiting = turn.length + proposals.length;
   const fullest: Phase = rising.reduce<Phase>((best, x) => (PHASE_FILL[x.phase] > PHASE_FILL[best] ? x.phase : best), "new");
 
   return (
@@ -31,7 +34,7 @@ export function Turn({ api, user, agents, runs, error, reload, go, onNew, me }: 
       <div className="turn-col">
         <div className="turn-head">
           <h1>
-            내 차례 {turn.length ? <span className="mono n">{turn.length}</span> : null}
+            내 차례 {waiting ? <span className="mono n">{waiting}</span> : null}
           </h1>
           <span className="only-phone">{me}</span>
         </div>
@@ -44,7 +47,7 @@ export function Turn({ api, user, agents, runs, error, reload, go, onNew, me }: 
           </div>
         ) : null}
 
-        {runs && !runs.length ? (
+        {runs && !runs.length && !proposals.length ? (
           <section className="turn-empty first">
             <Moon phase="new" size={64} />
             <p>한 줄로 맡겨 보세요</p>
@@ -59,7 +62,16 @@ export function Turn({ api, user, agents, runs, error, reload, go, onNew, me }: 
           </section>
         ) : null}
 
-        {runs?.length && !turn.length ? (
+        {proposals.length ? (
+          <section className="mcards" aria-label="확인할 제안">
+            <h2 className="sec-h">확인할 제안</h2>
+            {proposals.map((r) => (
+              <ProposalTurnCard key={r.id} api={api} req={r} user={user} now={now} go={go} />
+            ))}
+          </section>
+        ) : null}
+
+        {runs?.length && !waiting ? (
           <section className="turn-empty">
             <Moon phase={fullest} size={64} />
             <p>보름달이 뜨면 여기로 올라와요</p>
@@ -70,7 +82,8 @@ export function Turn({ api, user, agents, runs, error, reload, go, onNew, me }: 
         ) : null}
 
         {turn.length ? (
-          <div className="mcards">
+          <div className="mcards" aria-label="승인할 결과">
+            {proposals.length ? <h2 className="sec-h">승인할 결과</h2> : null}
             {turn.map((x) => (
               <MoonCard key={x.run.id} api={api} user={user} run={x.run} now={now} go={go} />
             ))}
@@ -140,7 +153,7 @@ function MoonCard({ api, user, run, now, go }: { api: Api; user: User; run: Run;
               {fmtDuration(winner.durationMs)} · +{winner.diff.insertions} −{winner.diff.deletions}
               {test ? ` · 테스트 ${test}` : ""}
             </span>
-            {winner.diff.testsTouched?.length ? <span className="warn-chip">테스트 파일 고침</span> : null}
+            <TestChips diff={winner.diff} />
           </div>
         ) : null}
       </div>

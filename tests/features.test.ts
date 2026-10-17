@@ -91,6 +91,55 @@ describe("follow-up instructions (steer)", () => {
   }, 30_000);
 });
 
+describe("merge gate: added tests vs edited tests", () => {
+  /** one commit on top of the base; returns the base ref for diffSummary */
+  async function change(edit: (r: string) => void) {
+    const r = makeRepo();
+    const base = git(r, "rev-parse", "HEAD").trim();
+    edit(r);
+    git(r, "add", "-A");
+    git(r, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "agent");
+    const { diffSummary } = await import("../src/server/git.js");
+    return diffSummary(r, base);
+  }
+  const NEW_TEST = 'import { test } from "node:test";\nimport assert from "node:assert";\nimport { add } from "./math.js";\ntest("zero", () => assert.equal(add(0, 0), 0));\n';
+
+  it("a new test file is counted as added and does not trip the gate", async () => {
+    const d = await change((r) => {
+      writeFileSync(join(r, "math.js"), "export const add = (a, b) => a + b;\n");
+      writeFileSync(join(r, "math.zero.test.js"), NEW_TEST);
+    });
+    expect(d.testsAdded).toEqual(["math.zero.test.js"]);
+    expect(d.testsTouched).toEqual([]);
+  });
+
+  it("an edited or deleted existing test still trips it", async () => {
+    const edited = await change((r) => writeFileSync(join(r, "math.test.js"), NEW_TEST));
+    expect(edited.testsTouched).toEqual(["math.test.js"]);
+    expect(edited.testsAdded).toEqual([]);
+    const deleted = await change((r) => git(r, "rm", "-q", "math.test.js"));
+    expect(deleted.testsTouched).toEqual(["math.test.js"]);
+  });
+
+  it("a renamed test counts as edited, not added", async () => {
+    const d = await change((r) => git(r, "mv", "math.test.js", "math.spec.test.js"));
+    expect(d.testsTouched).toEqual(["math.spec.test.js"]);
+    expect(d.testsAdded).toEqual([]);
+  });
+
+  it("the recommendation prefers added-only over edited, and added-only alone is clean", async () => {
+    const { suggestWinner } = await import("../src/server/runs.js");
+    const { splitTestChanges } = await import("../src/server/git.js");
+    expect(splitTestChanges("A\tsrc/Button.test.tsx\nM\tsrc/Button.tsx\nR087\ttests/a.test.js\ttests/b.test.js\nD\told.spec.ts")).toEqual({
+      added: ["src/Button.test.tsx"], touched: ["tests/b.test.js", "old.spec.ts"],
+    });
+    const agent = (id: string, diff: { testsTouched: string[]; testsAdded: string[] }, durationMs: number) =>
+      ({ id, status: "done", check: { status: "passed" }, diff: { files: 2, insertions: 1, deletions: 0, patch: "", ...diff }, durationMs, usage: { costUsd: 0.1 } }) as never;
+    const run = { agents: [agent("bender", { testsTouched: ["math.test.js"], testsAdded: [] }, 10), agent("adder", { testsTouched: [], testsAdded: ["math.zero.test.js"] }, 40)] } as never;
+    expect(suggestWinner(run)?.id).toBe("adder");
+  });
+});
+
 describe("merge gate", () => {
   it("flags results that edited tests and recommends the one that fixed the code", async () => {
     const m = new RunManager();
