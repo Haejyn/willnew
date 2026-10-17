@@ -5,10 +5,11 @@ import type { PaneTab } from "./AgentPane";
 import { Chat } from "./Chat";
 import { Compose } from "./Compose";
 import { DEMO_CAST, DEMO_CHANNEL, demoApi, demoStartUser } from "./demo";
-import { useRuns, useWatch } from "./flow";
+import { useRequests, useRuns, useWatch } from "./flow";
 import { AgentMark, AppIcon, IconChart, IconChat, IconHelp, IconInbox, IconList, IconMoon, IconPlus } from "./icons";
 import { Metrics } from "./Metrics";
 import { Mine } from "./Mine";
+import { RequestPage } from "./Request";
 import { Review } from "./Review";
 import { RunList } from "./Runs";
 import { Turn } from "./Turn";
@@ -46,6 +47,7 @@ type Route =
   | { page: "run"; id: string; agent?: string; tab?: PaneTab }
   | { page: "review"; id: string; agent?: string }
   | { page: "chat"; channel: string }
+  | { page: "request"; id: string }
   | { page: "metrics" };
 
 function parse(path: string): Route {
@@ -54,6 +56,7 @@ function parse(path: string): Route {
   if ((m = /^\/runs\/([^/]+)(?:\/agent\/([^/]+)(?:\/(log|term|diff|preview))?)?/.exec(path)))
     return { page: "run", id: decodeURIComponent(m[1]), agent: m[2], tab: m[3] as PaneTab | undefined };
   if (path.startsWith("/runs")) return { page: "runs" };
+  if ((m = /^\/requests\/([^/]+)/.exec(path))) return { page: "request", id: decodeURIComponent(m[1]) };
   if ((m = /^\/chat\/([^/]+)/.exec(path))) return { page: "chat", channel: decodeURIComponent(m[1]) };
   if (path.startsWith("/chat")) return { page: "chat", channel: DEMO_CHANNEL };
   if (path.startsWith("/metrics")) return { page: "metrics" };
@@ -84,6 +87,7 @@ export function App() {
   const [compose, setCompose] = useState(false);
   const [help, setHelp] = useState(false);
   const { runs, error: runsError, reload } = useRuns(api);
+  const { requests } = useRequests(api);
   const { watched, toggle } = useWatch(runs);
   const offline = !!runsError || agentsDown;
 
@@ -102,11 +106,13 @@ export function App() {
   const home = useMemo(() => runs?.find((r) => r.review.status === "pending") ?? runs?.find((r) => r.agents.some(isActive)) ?? runs?.[0], [runs]);
   const openId = route.page === "run" || route.page === "review" ? route.id : route.page === "runs" && !phone ? home?.id : undefined;
   const requester = user.role === "requester";
-  const pendingN = requester ? 0 : runs?.filter((r) => r.review.status === "pending").length ?? 0;
+  // 내 차례: 확인할 제안 + 승인할 결과
+  const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
+  const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending").length ?? 0) + proposalsN;
 
   useEffect(() => {
     const run = runs?.find((r) => r.id === openId);
-    const t = route.page === "metrics" ? "지표" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
+    const t = route.page === "metrics" ? "지표" : route.page === "request" ? "요청" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
     document.title = `${pendingN ? `(${pendingN}) ` : ""}${t} · willnew`;
   }, [route.page, openId, runs, route, pendingN, user.role]);
 
@@ -133,10 +139,11 @@ export function App() {
 
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
-  else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} />;
+  else if (route.page === "request") page = <RequestPage key={route.id} api={api} id={route.id} user={user} deployTracked={config?.deploy !== false} />;
+  else if (route.page === "chat") page = <Chat api={api} user={user} channelId={route.channel} runs={runs} go={go} deployTracked={config?.deploy !== false} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
-  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
-  else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} requests={requests} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} requests={requests} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
       <div className="runs-view">
@@ -162,7 +169,7 @@ export function App() {
 
   const nav: { id: string; href: string; name: string; Icon: ComponentType<{ size?: number; filled?: boolean }>; on: boolean; badge?: number }[] = [
     ...(requester ? [] : [{ id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN }]),
-    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || (requester && route.page === "home") },
+    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request" || (requester && route.page === "home") },
     { id: "runs", href: "#/runs", name: "작업", Icon: IconList, on: route.page === "runs" || route.page === "run" || route.page === "review" },
     { id: "chat", href: `#/chat/${channels.find((c) => c.team === user.team)?.id ?? DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
     { id: "metrics", href: "#/metrics", name: "지표", Icon: IconChart, on: route.page === "metrics" },

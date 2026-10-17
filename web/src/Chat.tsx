@@ -1,10 +1,11 @@
-/** 팀 채널 — @willnew 로 맡기면 진행 카드가 스레드에 붙고, 거기서 바로 승인한다. */
+/** 팀 채널. @willnew 로 맡기면 요청 카드 하나가 스레드에 붙어 되묻기 → 명세 → 제안 → 확인 → 작업 → 검토까지 따라간다. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Api, Channel, ChatMessage, Run } from "./api";
 import { RejectModal, useDecide } from "./Decision";
 import { useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconLink, IconSend, Logo } from "./icons";
-import { DEMO_REQUEST } from "./demo";
+import { DEMO_DESIGN_REQUEST, DEMO_REQUEST } from "./demo";
+import { RequestCard } from "./Request";
 import { Moon, runPhase } from "./moon";
 import { ShipRow } from "./Ship";
 import { Avatar, ErrorBox, Spinner, Tag, agentState, useToast } from "./ui";
@@ -12,7 +13,7 @@ import { clockTime, fmtCost, fmtDuration, isActive, suggestWinner, useNow, type 
 
 const EXAMPLES = ["@willnew 버그 수정: duration 테스트 실패", "@willnew 테스트 작성: 환불 API 경계값", "@willnew 리팩터링: 날짜 포맷 함수 통합"];
 
-export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User; channelId: string; runs: Run[] | null; go: (p: string) => void }) {
+export function Chat({ api, user, channelId, runs, go, deployTracked }: { api: Api; user: User; channelId: string; runs: Run[] | null; go: (p: string) => void; deployTracked?: boolean }) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const [text, setText] = useState("");
@@ -22,6 +23,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const lastTop = useRef(0);
   const channel = channels.find((c) => c.id === channelId);
 
   useEffect(() => {
@@ -56,7 +58,7 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
     const seen = new Set<string>();
     const out = new Set<string>();
     for (const m of sorted)
-      if (m.runId && m.bot && !seen.has(m.runId)) {
+      if (m.runId && m.bot && !m.requestId && !seen.has(m.runId)) {
         seen.add(m.runId);
         out.add(m.id);
       }
@@ -126,7 +128,11 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
           ref={scroller}
           onScroll={(e) => {
             const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            // 맨 아래 근처면 따라가고, 사람이 위로 올렸을 때만 멈춘다 (스크롤 앵커링이 내리는 건 무시)
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            if (near) stick.current = true;
+            else if (el.scrollTop < lastTop.current - 1) stick.current = false;
+            lastTop.current = el.scrollTop;
           }}
         >
           <div className="stream-inner" ref={inner}>
@@ -141,14 +147,15 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
             {sorted.map((m, i) => {
               const prev = sorted[i - 1];
               const grouped = !!prev && prev.user === m.user && m.ts - prev.ts < 5 * 60_000 && !cardFor.has(m.id);
-              return <Message key={m.id} m={m} grouped={grouped} withCard={cardFor.has(m.id)} api={api} user={user} go={go} />;
+              const card = m.kind === "request" && !!m.requestId;
+              return <Message key={m.id} m={m} grouped={grouped && !card} withCard={cardFor.has(m.id)} requestCard={card} api={api} user={user} go={go} deployTracked={deployTracked} />;
             })}
           </div>
         </div>
         <div className="composer-wrap">
           {!text ? (
             <div className="examples">
-              {(channelId === "cs" ? [DEMO_REQUEST] : EXAMPLES).map((e) => (
+              {(channelId === "cs" ? [DEMO_REQUEST] : channelId === "design" ? [DEMO_DESIGN_REQUEST] : EXAMPLES).map((e) => (
                 <button key={e} className="chip" onClick={() => setText(e)}>
                   {e}
                 </button>
@@ -225,7 +232,9 @@ export function Chat({ api, user, channelId, runs, go }: { api: Api; user: User;
   );
 }
 
-function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grouped: boolean; withCard: boolean; api: Api; user: User; go: (p: string) => void }) {
+function Message({ m, grouped, withCard, requestCard, api, user, go, deployTracked }: { m: ChatMessage; grouped: boolean; withCard: boolean; requestCard?: boolean; api: Api; user: User; go: (p: string) => void; deployTracked?: boolean }) {
+  // 봇 메시지는 보는 사람 역할에 맞는 본문으로
+  const text = m.bodies ? (user.role === "requester" ? m.bodies.forRequester : m.bodies.forDeveloper) : m.text;
   return (
     <div className={`msg ${grouped ? "grouped" : ""} ${m.bot ? "bot" : ""} ${!m.bot && m.user === user.name ? "mine" : ""}`}>
       <div className="msg-gutter">
@@ -246,9 +255,9 @@ function Message({ m, grouped, withCard, api, user, go }: { m: ChatMessage; grou
             <span className="dim small">{clockTime(m.ts)}</span>
           </div>
         ) : null}
-        <div className="msg-text">{highlight(m.text, user.name)}</div>
+        {requestCard && m.requestId ? <RequestCard api={api} id={m.requestId} user={user} deployTracked={deployTracked} /> : <div className="msg-text">{highlight(text, user.name)}</div>}
         {withCard && m.runId ? <RunCard api={api} id={m.runId} user={user} go={go} /> : null}
-        {!withCard && m.runId && m.bot ? (
+        {!withCard && m.runId && m.bot && !m.requestId ? (
           <a className="msg-link" href={`#/runs/${m.runId}`}>
             작업 공간에서 보기 <IconChevron size={12} />
           </a>

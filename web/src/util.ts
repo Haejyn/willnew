@@ -75,7 +75,7 @@ export const TEMPLATE_KO: Record<string, string> = {
   refactor: "리팩터링",
   docs: "문서화",
 };
-export const TEAM_KO: Record<string, string> = { platform: "플랫폼", data: "데이터", "content-ops": "콘텐츠 운영", cs: "CS" };
+export const TEAM_KO: Record<string, string> = { platform: "플랫폼", data: "데이터", "content-ops": "콘텐츠 운영", cs: "CS", design: "디자인" };
 
 /** 계정은 없다. 이 브라우저에 저장된 이름 · 팀 · 역할 · 직함이 전부다. */
 export type Role = "dev" | "requester";

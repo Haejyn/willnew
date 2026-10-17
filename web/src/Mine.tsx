@@ -1,9 +1,10 @@
-/** 내 요청 — 맡긴 일이 어디까지 갔는지 쉬운 말로. 코드, 터미널, 에이전트 로그는 여기 없다. */
+/** 내 요청. 맡긴 일이 어디까지 갔는지 쉬운 말로. 코드, 터미널, 에이전트 로그는 여기 없다. 요청 흐름으로 들어온 것은 요청 카드로, 바로 맡긴 일은 예전 카드로. */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { Api, Channel, Run, ServerConfig } from "./api";
+import type { Api, Channel, Request, Run, ServerConfig } from "./api";
 import { pickReviewer } from "../../src/server/handoff";
 import { IconCheck, IconPlus } from "./icons";
 import { Moon, runPhase, type Phase } from "./moon";
+import { RequestMineCard } from "./Request";
 import { Avatar, ErrorBox } from "./ui";
 import { fmtDuration, isActive, relTime, runElapsed, useNow, type User } from "./util";
 
@@ -40,20 +41,31 @@ export function mineStage(phase: Phase): { at: number; stopped?: "rejected" | "e
 
 const title = (r: Run) => r.triage?.title ?? r.title;
 
-export function Mine({ api, user, config, runs, error, reload, onNew, me }: { api: Api; user: User; config: ServerConfig | null; runs: Run[] | null; error: string | null; reload: () => void; onNew: () => void; me?: ReactNode }) {
+export function Mine({ api, user, config, runs, requests, error, reload, onNew, me }: { api: Api; user: User; config: ServerConfig | null; runs: Run[] | null; requests?: Request[] | null; error: string | null; reload: () => void; onNew: () => void; me?: ReactNode }) {
   const [channels, setChannels] = useState<Channel[]>([]);
   useEffect(() => {
     api.channels().then(setChannels).catch(() => undefined);
   }, [api]);
-  const mine = useMemo(() => (runs ?? []).filter((r) => r.requester === user.name).sort((a, b) => b.createdAt - a.createdAt), [runs, user.name]);
+  // 요청에 딸린 run 은 요청 카드 안에서 보인다
+  const mine = useMemo(() => (runs ?? []).filter((r) => r.requester === user.name && !r.requestId).sort((a, b) => b.createdAt - a.createdAt), [runs, user.name]);
+  const myReqs = useMemo(() => (requests ?? []).filter((r) => r.requester === user.name), [requests, user.name]);
+  const items = useMemo(
+    () => [...myReqs.map((r) => ({ at: r.createdAt, req: r as Request, run: undefined as Run | undefined })), ...mine.map((r) => ({ at: r.createdAt, req: undefined as Request | undefined, run: r as Run }))].sort((a, b) => b.at - a.at),
+    [myReqs, mine],
+  );
   const now = useNow(1000, mine.some((r) => r.agents.some(isActive)));
+  const noteOf = (req: Request) => {
+    const run = (runs ?? []).find((r) => r.id === req.runIds.at(-1));
+    if (!run || run.review.status !== "approved") return undefined;
+    return (run.agents.find((a) => a.id === run.review.agentId) ?? run.agents.find((a) => a.userNote))?.userNote;
+  };
 
   return (
     <div className="turn-page">
       <div className="turn-col mine">
         <div className="turn-head">
           <h1>
-            내 요청 {mine.length ? <span className="mono n">{mine.length}</span> : null}
+            내 요청 {items.length ? <span className="mono n">{items.length}</span> : null}
           </h1>
           <span className="only-phone">{me}</span>
         </div>
@@ -66,7 +78,7 @@ export function Mine({ api, user, config, runs, error, reload, onNew, me }: { ap
           </div>
         ) : null}
 
-        {runs && !mine.length ? (
+        {runs && !items.length ? (
           <section className="turn-empty">
             <Moon phase="new" size={64} />
             <p>맡긴 일이 아직 없어요</p>
@@ -76,11 +88,15 @@ export function Mine({ api, user, config, runs, error, reload, onNew, me }: { ap
           </section>
         ) : null}
 
-        {mine.length ? (
+        {items.length ? (
           <div className="mcards">
-            {mine.map((r) => (
-              <MineCard key={r.id} run={r} channel={channels.find((c) => c.id === r.channel)} config={config} now={now} />
-            ))}
+            {items.map((x) =>
+              x.req ? (
+                <RequestMineCard key={x.req.id} api={api} req={x.req} user={user} now={now} note={noteOf(x.req)} deployTracked={config?.deploy !== false} />
+              ) : x.run ? (
+                <MineCard key={x.run.id} run={x.run} channel={channels.find((c) => c.id === x.run!.channel)} config={config} now={now} />
+              ) : null,
+            )}
           </div>
         ) : null}
       </div>

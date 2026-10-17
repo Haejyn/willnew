@@ -88,6 +88,7 @@ export function RunHead({ run, now, lead, tools }: { run: Run; now: number; lead
         <h1>{run.triage?.title ?? run.title}</h1>
         <div className="ws-meta">
           {run.channel ? <a href={`#/chat/${run.channel}`}>#{run.channel}</a> : null}
+          {run.requestId ? <a href={`#/requests/${run.requestId}`}>요청 보기</a> : null}
           <span>{run.requester}</span>
           <span>{TEMPLATE_KO[run.template] ?? run.template}</span>
           <span className="mono">
