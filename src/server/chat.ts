@@ -24,6 +24,8 @@ export interface PlanOverrides {
 }
 
 const CHAT_DIR = join(HOME, "chat");
+/** the reactions the UI offers */
+export const REACTIONS = ["👍", "✅", "👀"];
 const id = () => Math.random().toString(36).slice(2, 10);
 const money = (x: number | null | undefined) => (x == null ? "비용 미보고" : `$${x.toFixed(2)}`);
 const secs = (ms?: number) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)}초`);
@@ -56,6 +58,20 @@ export class Chat {
 
   list(channel: string): ChatMessage[] {
     return this.messages.get(channel) ?? [];
+  }
+
+  /** Toggle one reaction. The emoji is user content; a short allow-list keeps it to the few the UI offers. */
+  react(channel: string, messageId: string, emoji: string, user: string): ChatMessage {
+    const msg = this.list(channel).find((m) => m.id === messageId);
+    if (!msg) throw new Error("메시지를 찾을 수 없어요");
+    if (!REACTIONS.includes(emoji)) throw new Error("쓸 수 없는 반응이에요");
+    const who = user.trim() || "anonymous";
+    const cur = new Set(msg.reactions?.[emoji] ?? []);
+    if (cur.has(who)) cur.delete(who);
+    else cur.add(who);
+    const reactions = { ...(msg.reactions ?? {}), [emoji]: [...cur] };
+    if (!cur.size) delete reactions[emoji];
+    return this.push({ ...msg, reactions: Object.keys(reactions).length ? reactions : undefined });
   }
 
   private push(msg: ChatMessage) {

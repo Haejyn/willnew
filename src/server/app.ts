@@ -164,6 +164,10 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(await chat.post(c.req.param("id"), String(user ?? "anonymous"), String(text ?? ""), team, overrides, userTitle ? String(userTitle) : undefined, userAvatar ? String(userAvatar) : undefined, direct === true));
   });
   app.get("/api/channels/:id/stream", (c) => sse(c, chat.bus, `chat:${c.req.param("id")}`));
+  app.post("/api/channels/:id/messages/:mid/react", async (c) => {
+    const { emoji, user } = await c.req.json();
+    return c.json(chat.react(c.req.param("id"), c.req.param("mid"), String(emoji ?? ""), String(user ?? "anonymous")));
+  });
 
   // requests (bridge): list, one, live updates, clarify answers, the developer's decision
   app.get("/api/requests", (c) => c.json(requests.list()));

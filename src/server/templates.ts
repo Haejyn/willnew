@@ -53,9 +53,9 @@ export const TEAMS = [
 
 export function defaultChannels(repo: string, reviewers: string[] = []): Channel[] {
   return [
-    { id: "backend", name: "backend", team: "platform", repo, reviewers, topic: "서비스 백엔드 · @willnew 에게 버그·테스트·리팩터링을 맡겨 보세요" },
-    { id: "data", name: "data", team: "data", repo, reviewers, topic: "데이터 파이프라인 · 지표" },
-    { id: "content-ops", name: "content-ops", team: "content-ops", repo, reviewers, topic: "콘텐츠 운영 도구" },
+    { id: "backend", name: "backend", team: "platform", repo, reviewers, topic: "서비스 백엔드 · @willnew 에게 버그·테스트·리팩터링을 맡겨 보세요", category: "개발" },
+    { id: "data", name: "data", team: "data", repo, reviewers, topic: "데이터 파이프라인 · 지표", category: "개발" },
+    { id: "content-ops", name: "content-ops", team: "content-ops", repo, reviewers, topic: "콘텐츠 운영 도구", category: "운영" },
   ];
 }
 

@@ -205,6 +205,8 @@ export interface ChatMessage {
   /** role-specific bodies; the web shows forRequester to requesters and forDeveloper to developers. `text` = forDeveloper */
   bodies?: Bodies;
   kind?: "ack" | "triage" | "progress" | "result" | "review" | "error" | "request" | "mention";
+  /** emoji → who reacted (user content; the UI itself never writes emoji) */
+  reactions?: Record<string, string[]>;
 }
 
 // ── bridge: Request (요청자 말 → 되묻기 → 명세 → 제안 → 개발자 확인 → run) ──
@@ -344,6 +346,8 @@ export interface Channel {
   topic: string;
   /** who is asked to review runs from this channel, in order (first one who is not the requester) */
   reviewers: string[];
+  /** sidebar group, e.g. "요청", "개발", "운영" */
+  category?: string;
 }
 
 export interface Template {

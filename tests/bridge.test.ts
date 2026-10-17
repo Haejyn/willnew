@@ -533,6 +533,18 @@ describe("chat routing and role bodies", () => {
     await chat.post("backend", "한지우", "점심 뭐 먹지", "platform");
     expect(requests.list()).toHaveLength(before);
   });
+
+  it("reactions toggle per person and only from the offered set", async () => {
+    const { chat } = chatWith();
+    const { message } = await chat.post("backend", "한지우", "배포 끝났대요", "platform");
+    chat.react("backend", message.id, "👍", "이해준");
+    chat.react("backend", message.id, "👍", "한지우");
+    expect(chat.list("backend").find((m) => m.id === message.id)!.reactions).toEqual({ "👍": ["이해준", "한지우"] });
+    chat.react("backend", message.id, "👍", "이해준");
+    chat.react("backend", message.id, "👍", "한지우");
+    expect(chat.list("backend").find((m) => m.id === message.id)!.reactions).toBeUndefined();
+    expect(() => chat.react("backend", message.id, "🔥", "이해준")).toThrow("쓸 수 없는 반응");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------- end to end with a real run
