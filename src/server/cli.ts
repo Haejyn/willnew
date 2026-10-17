@@ -12,13 +12,19 @@ const flag = (name: string, fallback?: string) => {
 
 const cmd = argv[0] ?? "serve";
 if (cmd !== "serve") {
-  console.log(`usage: willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1]`);
+  console.log(`usage: willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1]`);
   process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
 }
 
 const repo = resolve(flag("repo", process.cwd())!);
 const check = flag("check", "")!;
 const preview = flag("preview");
+// where other people open a preview; the default only works on this machine
+const previewBaseUrl = flag("preview-base-url");
+if (previewBaseUrl && !previewBaseUrl.includes("{port}")) {
+  console.error("--preview-base-url 에는 {port} 가 들어가야 해요. 예: http://my-host:{port}");
+  process.exit(1);
+}
 const reviewers = (flag("reviewers", "") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const ship = flag("ship", "merge");
 if (ship !== "merge" && ship !== "pr") {
@@ -32,7 +38,7 @@ const host = flag("host", "127.0.0.1")!;
 // Anything beyond localhost (e.g. your phone on the LAN) needs a token: agents can edit code on this machine.
 const token = host === "127.0.0.1" || host === "localhost" ? flag("token") : flag("token", randomBytes(12).toString("hex"));
 
-const { app, injectWebSocket } = createApp({ repo, check, token, preview, reviewers, ship, deployCheck, deployEnv });
+const { app, injectWebSocket } = createApp({ repo, check, token, preview, previewBaseUrl, reviewers, ship, deployCheck, deployEnv });
 const server = serve({ fetch: app.fetch, port, hostname: host }, () => {
   const url = `http://${host === "0.0.0.0" ? "localhost" : host}:${port}${token ? `/?token=${token}` : ""}`;
   console.log(`willnew · repo ${repo}${check ? ` · check "${check}"` : ""}${preview ? ` · preview "${preview}"` : ""}`);

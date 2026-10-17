@@ -81,7 +81,20 @@ export function checkBrief(v: unknown): Brief {
 
 export function checkSpec(v: unknown): Omit<WorkSpec, "constraints"> {
   const o = obj(v, "reply");
+  const screens = o.screens === undefined ? [] : Array.isArray(o.screens) ? o.screens : fail("screens must be an array");
+  if (screens.length > 6) fail("at most 6 screens");
+  if (o.needsVisualCheck !== undefined && typeof o.needsVisualCheck !== "boolean") fail("needsVisualCheck must be true or false");
+  const extra: Pick<WorkSpec, "screens" | "needsVisualCheck"> = {};
+  if (screens.length)
+    extra.screens = screens.map((x, i) => {
+      const so = obj(x, `screens[${i}]`);
+      const path = str(so.path, `screens[${i}].path`, 200);
+      if (!path.startsWith("/")) fail(`screens[${i}].path must start with /`);
+      return { name: str(so.name, `screens[${i}].name`, 40), path };
+    });
+  if (o.needsVisualCheck === true) extra.needsVisualCheck = true;
   return {
+    ...extra,
     title: str(o.title, "title", 60),
     problem: str(o.problem, "problem"),
     expected: str(o.expected, "expected"),
