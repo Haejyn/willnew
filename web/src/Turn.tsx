@@ -2,7 +2,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { AgentInfo, Api, Request, Run } from "./api";
 import { Compose } from "./Compose";
-import { useDecide } from "./Decision";
+import { TestChips, useDecide } from "./Decision";
 import { AgentMark, IconPlus } from "./icons";
 import { Moon, PHASE_FILL, isDone, runPhase, type Phase } from "./moon";
 import { ProposalTurnCard } from "./Request";
@@ -153,7 +153,7 @@ function MoonCard({ api, user, run, now, go }: { api: Api; user: User; run: Run;
               {fmtDuration(winner.durationMs)} · +{winner.diff.insertions} −{winner.diff.deletions}
               {test ? ` · 테스트 ${test}` : ""}
             </span>
-            {winner.diff.testsTouched?.length ? <span className="warn-chip">테스트 파일 고침</span> : null}
+            <TestChips diff={winner.diff} />
           </div>
         ) : null}
       </div>

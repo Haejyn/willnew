@@ -366,6 +366,7 @@ export class RunManager {
       checkPassed: agent.check.status === "passed",
       checkSkipped: agent.check.status === "skipped",
       testsTouched: agent.diff.testsTouched ?? [],
+      testsAdded: agent.diff.testsAdded ?? [],
       conflicts: agent.merged ? false : await mergeConflicts(run.repo, agent.branch),
       files: (agent.diff.fileStats ?? []).map((f) => f.path),
       reviewed: run.reviewed?.[agentId] ?? [],

@@ -28,8 +28,10 @@ export interface DiffSummary {
   deletions: number;
   patch: string;
   fileStats?: FileStat[];
-  /** changed files that look like tests — a fix that edits its own tests needs a closer look */
+  /** existing test files the agent edited, deleted or renamed. A fix that bends its own tests needs a closer look (merge gate) */
   testsTouched?: string[];
+  /** new test files (test first). Shown as a neutral chip, never blocks */
+  testsAdded?: string[];
 }
 
 /** A dev server started in one agent's worktree so a human can click through the result. */
@@ -149,6 +151,7 @@ export interface Preflight {
   checkPassed: boolean;
   checkSkipped: boolean;
   testsTouched: string[];
+  testsAdded?: string[];
   /** null = could not tell (old git, missing branch) */
   conflicts: boolean | null;
   files: string[];

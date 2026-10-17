@@ -769,12 +769,16 @@ const diffOf = (patch: string) => {
   let insertions = 0;
   let deletions = 0;
   const fileStats: { path: string; insertions: number; deletions: number }[] = [];
+  // 서버 splitTestChanges 와 같다: 새로 만든 테스트는 추가, 고치거나 지우거나 옮긴 테스트만 고침
+  const added = new Set<string>();
   for (const l of patch.split("\n")) {
     if (l.startsWith("diff --git")) fileStats.push({ path: /b\/(.+)$/.exec(l)?.[1] ?? "?", insertions: 0, deletions: 0 });
+    else if (l.startsWith("new file mode") && fileStats.length) added.add(fileStats[fileStats.length - 1].path);
     else if (l.startsWith("+") && !l.startsWith("+++")) { insertions++; fileStats[fileStats.length - 1].insertions++; }
     else if (l.startsWith("-") && !l.startsWith("---")) { deletions++; fileStats[fileStats.length - 1].deletions++; }
   }
-  return { files: fileStats.length, insertions, deletions, patch, fileStats, testsTouched: fileStats.map((f) => f.path).filter((p) => TEST_FILE.test(p)) };
+  const tests = fileStats.map((f) => f.path).filter((p) => TEST_FILE.test(p));
+  return { files: fileStats.length, insertions, deletions, patch, fileStats, testsTouched: tests.filter((p) => !added.has(p)), testsAdded: tests.filter((p) => added.has(p)) };
 };
 
 // ---------------------------------------------------------------------------------------------- check output (npm / node --test / vitest / pytest)
@@ -2537,10 +2541,17 @@ index 91aa0c4..e3b7d12 100644
 -        <Button size="lg" onClick={pay}>결제하기</Button>
 +        <Button size="xl" onClick={pay}>결제하기</Button>
 diff --git a/src/components/Button.test.tsx b/src/components/Button.test.tsx
-index 3fe1b20..c49d8a1 100644
---- a/src/components/Button.test.tsx
+new file mode 100644
+index 0000000..c49d8a1
+--- /dev/null
 +++ b/src/components/Button.test.tsx
-@@ -40,3 +40,21 @@ describe("Button", () => {
+@@ -0,0 +1,24 @@
++import { render, screen } from "@testing-library/react";
++import { Button } from "./Button";
++import { Checkout } from "../pages/Checkout";
++import { order, setViewport } from "../test/fixtures";
++
++describe("Button", () => {
 +  it("xl uses space-4 (16px) inline padding", () => {
 +    render(<Button size="xl">결제하기</Button>);
 +    expect(getComputedStyle(screen.getByRole("button")).paddingInline).toBe("16px");
@@ -2564,7 +2575,7 @@ index 3fe1b20..c49d8a1 100644
 `;
 const CHECK_XL = vitest(
   "billing-web@0.9.4",
-  [...WEB_FILES, ["src/components/Button.test.tsx", 10, "34"], ["src/pages/InvoiceDetail.test.tsx", 7, "55"]],
+  [...WEB_FILES, ["src/components/Button.test.tsx", 4, "34"], ["src/pages/InvoiceDetail.test.tsx", 13, "55"]],
   [],
   "30 passed (30)",
   "4 passed (4)",
@@ -2829,6 +2840,7 @@ export const demoApi: Api = {
       checkPassed: a.check.status === "passed",
       checkSkipped: a.check.status === "skipped",
       testsTouched: a.diff.testsTouched ?? [],
+      testsAdded: a.diff.testsAdded ?? [],
       conflicts: false,
       files: (a.diff.fileStats ?? []).map((f) => f.path),
       reviewed: run.reviewed?.[agentId] ?? [],

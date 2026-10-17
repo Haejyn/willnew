@@ -54,10 +54,13 @@ export function ReviewActions({ api, run, user }: { api: Api; run: Run; user: Us
   if (run.review.status !== "pending") return null;
   if (user.role === "requester") return <span className="st now">개발자 검토 대기</span>;
   const winner = suggestWinner(run);
-  const tested = !!run.agents.find((a) => a.id === winner)?.diff.testsTouched?.length;
+  const w = run.agents.find((a) => a.id === winner);
+  // 새 테스트를 추가한 것은 막지 않는다. 기존 테스트를 고친 결과만 검토 화면을 거친다
+  const tested = !!w?.diff.testsTouched?.length;
   const review = `#/runs/${run.id}/review`;
   return (
     <div className="row-btns">
+      {w ? <TestChips diff={w.diff} /> : null}
       {winner && !tested ? (
         <button className="btn m" disabled={busy} onClick={() => approve(winner)}>
           {busy ? <Spinner size={12} /> : null}승인
@@ -90,6 +93,18 @@ export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: 
     }}>
       지금 작업 중인 에이전트를 멈춰요. 워크트리와 지금까지의 변경은 남아요.
     </Modal>
+  );
+}
+
+/**
+ * 테스트 파일 칩. 기존 테스트를 고치거나 지우거나 옮겼으면 경고 칩(바로 승인 막힘), 새로 추가만 했으면 중립 칩.
+ */
+export function TestChips({ diff }: { diff: Run["agents"][number]["diff"] }) {
+  return (
+    <>
+      {diff.testsTouched?.length ? <span className="warn-chip">테스트 파일 고침</span> : null}
+      {diff.testsAdded?.length ? <span className="tag">테스트 추가 {diff.testsAdded.length}</span> : null}
+    </>
   );
 }
 
@@ -170,7 +185,8 @@ export function DecisionBar({ api, run, user, go, now, watched, onWatch, onRevis
         <span className="dbar-text" title={reason}>{reason}</span>
         {winner ? (
           <span className="gates">
-            <Gate ok={!touched.length}>{touched.length ? "테스트 파일 고침" : "테스트 파일 그대로"}</Gate>
+            <Gate ok={!touched.length}>{touched.length ? "테스트 파일 고침" : "기존 테스트 그대로"}</Gate>
+            {winner.diff.testsAdded?.length ? <span className="tag">테스트 추가 {winner.diff.testsAdded.length}</span> : null}
             <Gate ok={pf ? (pf.conflicts === null ? null : !pf.conflicts) : null} loading={!pf}>
               {!pf ? "충돌 확인 중" : pf.conflicts ? `${run.baseBranch}과 충돌` : pf.conflicts === null ? "충돌 여부를 알 수 없어요" : `${run.baseBranch}과 충돌 없음`}
             </Gate>
