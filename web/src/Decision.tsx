@@ -44,6 +44,42 @@ export function RejectModal({ title = "반려할까요?", confirm = "반려", in
   );
 }
 
+/**
+ * 채팅 카드의 결과 검토 버튼. 테스트 파일을 고치지 않은 결과는 바로 승인, 고쳤으면 검토 화면을 거친다.
+ * 요청자에게는 버튼 대신 "개발자 검토 대기" 한 줄. 검토 차례가 아니면 아무것도 그리지 않는다.
+ */
+export function ReviewActions({ api, run, user }: { api: Api; run: Run; user: User }) {
+  const [rejecting, setRejecting] = useState(false);
+  const { busy, approve, reject } = useDecide(api, run, user);
+  if (run.review.status !== "pending") return null;
+  if (user.role === "requester") return <span className="st now">개발자 검토 대기</span>;
+  const winner = suggestWinner(run);
+  const tested = !!run.agents.find((a) => a.id === winner)?.diff.testsTouched?.length;
+  const review = `#/runs/${run.id}/review`;
+  return (
+    <div className="row-btns">
+      {winner && !tested ? (
+        <button className="btn m" disabled={busy} onClick={() => approve(winner)}>
+          {busy ? <Spinner size={12} /> : null}승인
+        </button>
+      ) : (
+        <a className="btn m" href={review}>
+          검토하고 승인
+        </a>
+      )}
+      {winner && !tested ? (
+        <a className="btn q" href={review}>
+          검토
+        </a>
+      ) : null}
+      <button className="btn q" onClick={() => setRejecting(true)}>
+        반려
+      </button>
+      {rejecting ? <RejectModal busy={busy} onClose={() => setRejecting(false)} onSubmit={async (r) => (await reject(r)) && setRejecting(false)} /> : null}
+    </div>
+  );
+}
+
 /** 도는 에이전트를 모두 멈춘다 */
 export function StopModal({ api, run, onClose }: { api: Api; run: Run; onClose: () => void }) {
   const live = run.agents.filter(isActive);

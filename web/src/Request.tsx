@@ -1,21 +1,30 @@
 /**
  * 요청 카드. 같은 요청을 역할마다 다르게 보여 준다.
- * 요청자: AI가 이해한 것, 되묻기 선택지, 진행 단계. 파일과 diff 는 보이지 않는다.
- * 개발자: 작업 명세(수용 기준 체크리스트), 구현 제안(파일, 위험, 추가할 테스트, 예상치), 진행 / 고쳐서 진행 / 직접 할게 / 거절.
- * 원문은 어느 쪽이든 접어서 항상 볼 수 있다.
+ * 요청자: AI가 이해한 것(원문 보기), 한 번에 하나씩 되묻기, 네 단계 진행. 파일과 diff 는 보이지 않는다.
+ * 개발자: 작업 명세(수용 기준 체크리스트, 확인 필요 표시), "이렇게 개발할까요?" 제안과 결정 버튼, 결과 검토 버튼.
+ *
+ * 채널 본문에는 짧은 embed(RequestEmbed), 스레드와 요청 화면에는 전체(RequestView). 결정 기록은 요청 화면 오른쪽 맥락 칸에.
  */
-import { useState, type ReactNode } from "react";
-import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, WorkSpec } from "./api";
+import { useState, type CSSProperties, type ReactNode } from "react";
+import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, WorkSpec } from "./api";
 import { TYPE_KO } from "../../src/server/request-state";
-import { useLiveRequest } from "./flow";
-import { IconCheck, IconChevron, IconExternal } from "./icons";
-import { Moon, type Phase } from "./moon";
-import { Avatar, ErrorBox, Spinner, useToast } from "./ui";
+import { ReviewActions } from "./Decision";
+import { useLiveRequest, useLiveRun } from "./flow";
+import { IconCheck, IconChevron } from "./icons";
+import { Moon, runPhase, type Phase } from "./moon";
+import { AiText, Avatar, ErrorBox, LinkChip, Spinner, Working, useToast } from "./ui";
 import { fmtCost, relTime, type User } from "./util";
 
-// ---------------------------------------------------------------------------------------------- stage track
+// ---------------------------------------------------------------------------------------------- stages
 
-export const REQ_STEPS = ["정리", "되묻기", "명세", "제안", "개발자 확인", "작업", "검증", "검토", "병합", "배포"];
+/** 열 칸의 하위 단계. 화면에는 네 단계(이해 → 합의 → 작업 → 반영)로 묶어 보이고, 지금 칸은 낱말 하나로 옆에 쓴다. */
+export const REQ_STEPS = ["정리", "되묻기", "명세", "제안", "확인", "작업", "검증", "검토", "병합", "배포"];
+export const PHASES: { name: string; steps: number[] }[] = [
+  { name: "이해", steps: [0, 1, 2] },
+  { name: "합의", steps: [3, 4] },
+  { name: "작업", steps: [5, 6, 7] },
+  { name: "반영", steps: [8, 9] },
+];
 const AT: Record<Request["status"], number> = {
   draft: 0, clarifying: 1, spec_ready: 3, proposed: 4, approved: 5, building: 5, verifying: 6, code_review: 7, merged: 9, deployed: 10, closed: 10, declined: -1, cancelled: -1,
 };
@@ -34,34 +43,102 @@ export function reqStage(req: Request, deployTracked = true): { at: number; stop
   return { at, complete, phase: complete ? "merged" : STEP_PHASE[at] };
 }
 
-export function RequestTrack({ req, deployTracked = true }: { req: Request; deployTracked?: boolean }) {
-  const { at, stopped, complete, phase } = reqStage(req, deployTracked);
-  const label = (s: string, i: number): ReactNode => {
-    if (i === at && stopped) return stopped === "declined" ? "거절됨" : "취소됨";
-    if (i === 1 && !req.questions.length && at > 1) return "되묻기 없음";
-    if (i === 4 && req.reviewer) return <>{s}<span className="who">{req.reviewer}</span></>;
-    if (i === 5 && req.assignee) return <>직접 작업<span className="who">{req.assignee}</span></>;
-    if (i === 9 && !deployTracked) return "배포 (따로)";
-    return s;
+/** 네 단계 진행 줄의 상태. phase 0~3 은 지금 단계, 4 는 모두 끝. fill 은 지금 단계의 달이 찬 정도. */
+export interface Progress {
+  phase: number;
+  fill: number;
+  word: string;
+  state?: "stop" | "done";
+  /** 지금 보는 사람이 할 차례: 지금 달과 띠가 액센트 */
+  mine?: boolean;
+}
+
+const isDev = (u: User) => u.role !== "requester";
+
+/** 이 요청에서 지금 보는 사람이 할 일이 있는가 (되묻기 답, 제안 확인, 결과 검토) */
+export function myTurn(req: Request, user: User): boolean {
+  if (req.status === "clarifying") return user.name === req.requester && req.questions.some((q) => !q.answer);
+  if (!isDev(user)) return false;
+  if (req.status === "proposed" || req.status === "code_review") return !req.reviewer || req.reviewer === user.name;
+  return false;
+}
+
+export function reqProgress(req: Request, user: User, deployTracked = true): Progress {
+  const { at, stopped, complete } = reqStage(req, deployTracked);
+  if (complete) return { phase: 4, fill: 1, word: req.assignee ? "끝남" : deployTracked ? "배포됨" : "병합됨", state: "done" };
+  const phase = Math.max(0, PHASES.findIndex((p) => p.steps.includes(at)));
+  const steps = PHASES[phase].steps;
+  const fill = (steps.indexOf(at) + 1) / (steps.length + 1);
+  if (stopped) return { phase, fill, word: stopped === "declined" ? "거절됨" : "취소됨", state: "stop" };
+  const word = at === 5 && req.assignee ? "직접 작업" : at === 9 && !deployTracked ? "병합" : REQ_STEPS[at];
+  return { phase, fill, word, mine: myTurn(req, user) };
+}
+
+/** 예전 방식(바로 맡긴 run)도 같은 네 단계로. 합의 단계는 건너뛴 것으로 본다. */
+export function runProgress(run: Run, now = Date.now()): Progress {
+  const { phase } = runPhase(run, now);
+  const st = run.ship?.stage;
+  if (run.review.status === "approved") {
+    if (st === "ci_failed") return { phase: 3, fill: 0.5, word: "CI 실패", state: "stop" };
+    if (st === "deploy_failed") return { phase: 3, fill: 0.5, word: "배포 확인 실패", state: "stop" };
+    if (st === "pr" || st === "ci") return { phase: 3, fill: 0.33, word: "CI 확인" };
+    if (st === "merged" || st === "deploying") return { phase: 3, fill: 0.67, word: "배포 중" };
+    return { phase: 4, fill: 1, word: st === "deployed" ? "배포됨" : "반영됨", state: "done" };
+  }
+  switch (phase) {
+    case "new":
+    case "plan":
+      return { phase: 0, fill: 0.5, word: "접수" };
+    case "run":
+    case "retry":
+      return { phase: 2, fill: 0.25, word: "고치는 중" };
+    case "check":
+      return { phase: 2, fill: 0.5, word: "테스트" };
+    case "turn":
+      return { phase: 2, fill: 0.75, word: "검토 대기" };
+    case "rejected":
+      return { phase: 2, fill: 0.75, word: "반영 안 함", state: "stop" };
+    default:
+      return { phase: 2, fill: 0.5, word: "테스트 실패", state: "stop" };
+  }
+}
+
+/** 네 칸 진행 줄: 칸마다 달이 차오르고, 지금 하위 단계는 옆에 낱말 하나로. 채널 embed, 요청 화면, 내 요청, 휴대폰이 같이 쓴다. */
+export function PhaseTrack({ p, who }: { p: Progress; who?: string }) {
+  const lunar = (i: number): { fill: number; tone: Phase } => {
+    if (p.state === "done" || i < p.phase) return { fill: 1, tone: "check" };
+    if (i === p.phase) return { fill: p.fill, tone: p.state === "stop" ? "rejected" : p.mine ? "turn" : "run" };
+    return { fill: 0, tone: "new" };
   };
   return (
-    <ol className={`rq-track ${complete ? "complete" : ""}`} aria-label="진행 단계">
-      {REQ_STEPS.map((s, i) => {
-        const state = complete || i < at ? "done" : i === at ? "now" : "todo";
-        return (
-          <li key={s} className={`rq-step ${state} ${state === "now" && stopped ? "stop" : ""}`} aria-current={state === "now" ? "step" : undefined}>
-            <span className="mark">{state === "now" ? <Moon phase={phase} size={22} /> : state === "done" ? <IconCheck size={12} /> : null}</span>
-            <span className="lab">{label(s, i)}</span>
-          </li>
-        );
-      })}
-    </ol>
+    <div className={`ptrack ${p.state ?? ""} ${p.mine ? "mine" : ""}`}>
+      <ol aria-label="진행 단계">
+        {PHASES.map((ph, i) => {
+          const m = lunar(i);
+          const state = p.state === "done" || i < p.phase ? "done" : i === p.phase ? "now" : "todo";
+          return (
+            <li key={ph.name} className={`pseg ${state}`} aria-current={state === "now" ? "step" : undefined}>
+              <Moon phase={m.tone} fill={m.fill} size={16} label={`${ph.name} ${state === "done" ? "끝남" : state === "now" ? "지금" : "아직"}`} />
+              <span>{ph.name}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <span className={`ptrack-word st ${p.state === "done" ? "ok" : p.state === "stop" ? "warn" : p.mine ? "now" : ""}`}>
+        {p.word}
+        {who ? <span className="dim"> {who}</span> : null}
+      </span>
+    </div>
   );
 }
 
-// ---------------------------------------------------------------------------------------------- words
+/** 단계별 왼쪽 띠 색. 내 차례면 액센트. */
+export function phaseBar(p: Progress): CSSProperties {
+  const c = p.state === "stop" ? "var(--text4)" : p.mine ? "var(--accent)" : p.state === "done" ? "var(--phase-4)" : `var(--phase-${Math.min(p.phase, 3) + 1})`;
+  return { "--bar": c } as CSSProperties;
+}
 
-const isDev = (u: User) => u.role !== "requester";
+// ---------------------------------------------------------------------------------------------- words
 
 /** 카드 맨 위 한 줄. 요청자 쪽은 쉬운 말, 개발자 쪽은 짧게. */
 export function reqHeadline(req: Request, user: User): string {
@@ -101,49 +178,30 @@ export function reqHeadline(req: Request, user: User): string {
 }
 
 const WHAT_KO: Record<DecisionEntry["what"], string> = {
-  answer: "답함", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡음", decline: "거절", cancel: "취소", close: "닫음",
+  answer: "답했어요", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡았어요", decline: "거절", cancel: "취소", close: "닫았어요",
   approve_result: "결과 승인", reject_result: "결과 반려",
 };
-const CONF_KO: Record<Proposal["confidence"], string> = { high: "높음", medium: "보통", low: "낮음" };
+const working = (req: Request) => req.status === "draft" || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
 
-// ---------------------------------------------------------------------------------------------- pieces
+// ---------------------------------------------------------------------------------------------- clarify: 한 번에 하나
 
-export function Original({ req }: { req: Request }) {
-  return (
-    <details className="rq-orig">
-      <summary>
-        원문 보기 <IconChevron size={12} />
-      </summary>
-      <p>{req.text}</p>
-      {req.attachments.length ? (
-        <ul className="rq-links">
-          {req.attachments.map((a) => (
-            <li key={a.url}>
-              <a href={a.url} target="_blank" rel="noreferrer">
-                {a.kind === "figma" ? "Figma" : a.kind === "image" ? "이미지" : "링크"} <IconExternal size={12} />
-              </a>
-              <span className="mono dim small">{a.url.replace(/^https?:\/\//, "")}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </details>
-  );
-}
-
-function Clarify({ api, req, user }: { api: Api; req: Request; user: User }) {
+export function Clarify({ api, req, user }: { api: Api; req: Request; user: User }) {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const [other, setOther] = useState<string | null>(null);
+  const [other, setOther] = useState(false);
   const [otherText, setOtherText] = useState("");
+  const n = req.questions.length;
+  const open = req.questions.findIndex((q) => !q.answer);
+  if (open < 0) return null;
+  const q = req.questions[open];
   // 답은 요청한 사람만 고른다. 다른 사람은 읽기만
   const mine = req.status === "clarifying" && user.name === req.requester;
-  const send = async (q: ClarifyQuestion, answer: string) => {
+  const send = async (x: ClarifyQuestion, answer: string) => {
     if (!answer.trim() || busy) return;
-    setBusy(q.id);
+    setBusy(answer);
     try {
-      await api.answer(req.id, q.id, answer.trim(), user.name);
-      setOther(null);
+      await api.answer(req.id, x.id, answer.trim(), user.name);
+      setOther(false);
       setOtherText("");
     } catch (e) {
       toast((e as Error).message, "err");
@@ -152,60 +210,68 @@ function Clarify({ api, req, user }: { api: Api; req: Request; user: User }) {
     }
   };
   return (
-    <ol className="rq-qs">
-      {req.questions.map((q, i) => {
-        const custom = !!q.answer && !q.choices.includes(q.answer);
-        return (
-          <li key={q.id} className="rq-q">
-            <span className="rq-qt">
-              {req.questions.length > 1 ? `${i + 1}. ` : ""}
-              {q.question}
-            </span>
-            <div className="chips">
-              {q.choices.map((c) => (
-                <button key={c} className={`chip pick ${q.answer === c ? "on" : ""}`} aria-pressed={q.answer === c} disabled={!mine || !!q.answer || !!busy} onClick={() => send(q, c)}>
-                  {q.answer === c ? <IconCheck size={13} /> : null}
-                  {c}
-                </button>
-              ))}
-              <button className={`chip pick ${custom ? "on" : ""}`} aria-pressed={custom} disabled={!mine || !!q.answer || !!busy} onClick={() => setOther(other === q.id ? null : q.id)}>
-                {custom ? <IconCheck size={13} /> : null}
-                {custom ? `기타: ${q.answer}` : "기타"}
-              </button>
-              {busy === q.id ? <Spinner size={12} /> : null}
-            </div>
-            {other === q.id && !q.answer ? (
-              <form className="rq-other" onSubmit={(e) => { e.preventDefault(); void send(q, otherText); }}>
-                <input autoFocus aria-label="직접 적기" value={otherText} onChange={(e) => setOtherText(e.target.value)} placeholder="직접 적어 주세요" maxLength={200} />
-                <button className="btn sm w" type="submit" disabled={!otherText.trim() || !!busy}>보내기</button>
-              </form>
-            ) : null}
-            {!mine && !q.answer ? <span className="dim small">{req.requester}님 답 기다리는 중</span> : null}
-          </li>
-        );
-      })}
-    </ol>
+    <section className="cq" aria-label="되묻기">
+      {req.questions.slice(0, open).map((d) => (
+        <p key={d.id} className="cq-done">
+          <IconCheck size={12} /> {d.question}: <b>{d.answer}</b>
+        </p>
+      ))}
+      <div className="cq-head">
+        <span className="cq-q">{q.question}</span>
+        {n > 1 ? <span className="t-meta mono">{open + 1}/{n}</span> : null}
+      </div>
+      <div className="chips cq-chips">
+        {q.choices.map((c) => (
+          <button key={c} className={`chip pick ${busy === c ? "on" : ""}`} aria-pressed={busy === c} disabled={!mine || !!busy} onClick={() => send(q, c)}>
+            {busy === c ? <IconCheck size={14} /> : null}
+            {c}
+          </button>
+        ))}
+        <button className={`chip pick ${other ? "on" : ""}`} aria-expanded={other} disabled={!mine || !!busy} onClick={() => setOther((o) => !o)}>
+          기타
+        </button>
+      </div>
+      {other && mine ? (
+        <form className="rq-other" onSubmit={(e) => { e.preventDefault(); void send(q, otherText); }}>
+          <input autoFocus aria-label="직접 적기" value={otherText} onChange={(e) => setOtherText(e.target.value)} placeholder="직접 적어 주세요" maxLength={200} />
+          <button className="btn sm w" type="submit" disabled={!otherText.trim() || !!busy}>보내기</button>
+        </form>
+      ) : null}
+      {!mine ? <span className="t-meta">{req.requester}님 답 기다리는 중</span> : null}
+    </section>
   );
 }
 
+// ---------------------------------------------------------------------------------------------- spec
+
 export function SpecCard({ spec, done }: { spec: WorkSpec; done?: boolean }) {
+  const flags = new Map((spec.needsCheck ?? []).map((f) => [f.criterion, f.names]));
   return (
     <section className="rq-sec" aria-label="작업 명세">
-      <span className="lab">작업 명세</span>
+      <h3 className="sec-t">작업 명세</h3>
       <dl className="rq-dl">
         <dt>문제</dt>
         <dd>{spec.problem}</dd>
         <dt>기대 결과</dt>
         <dd>{spec.expected}</dd>
       </dl>
-      <span className="lab">수용 기준</span>
-      <ul className="rq-check">
-        {spec.acceptanceCriteria.map((c) => (
-          <li key={c} className={done ? "on" : ""}>
-            <span className="box" aria-hidden>{done ? <IconCheck size={11} /> : null}</span>
-            <span>{c}</span>
-          </li>
-        ))}
+      <ul className="rq-check" aria-label="수용 기준">
+        {spec.acceptanceCriteria.map((c) => {
+          const names = flags.get(c);
+          return (
+            <li key={c} className={done ? "on" : names ? "flag" : ""}>
+              <span className="box" aria-hidden>{done ? <IconCheck size={11} /> : null}</span>
+              <span>
+                {c}
+                {names ? (
+                  <span className="flag-note">
+                    <span className="st warn">확인 필요</span> 저장소에서 못 찾은 이름: {names.map((x) => <code key={x}>{x}</code>)}
+                  </span>
+                ) : null}
+              </span>
+            </li>
+          );
+        })}
       </ul>
       {spec.constraints.length ? (
         <>
@@ -220,87 +286,124 @@ export function SpecCard({ spec, done }: { spec: WorkSpec; done?: boolean }) {
       {spec.outOfScope.length ? (
         <div className="rq-row">
           <span className="lab">범위 밖</span>
-          <span className="chips">
-            {spec.outOfScope.map((x) => (
-              <span key={x} className="tag">{x}</span>
-            ))}
-          </span>
+          {spec.outOfScope.map((x) => (
+            <span key={x} className="chip muted">{x}</span>
+          ))}
         </div>
       ) : null}
       {spec.references.length ? (
         <div className="rq-row">
-          <span className="lab">참고</span>
-          <span className="chips">
-            {spec.references.map((u) => (
-              <a key={u} className="tag" href={u} target="_blank" rel="noreferrer">
-                {/figma\.com/.test(u) ? "Figma" : u.replace(/^https?:\/\//, "").slice(0, 32)} <IconExternal size={11} />
-              </a>
-            ))}
-          </span>
+          {spec.references.map((u) => (
+            <LinkChip key={u} url={u} />
+          ))}
         </div>
       ) : null}
     </section>
   );
 }
 
-export function ProposalCard({ p }: { p: Proposal }) {
+// ---------------------------------------------------------------------------------------------- proposal: 이렇게 개발할까요?
+
+function Row({ label, n, children, more }: { label: string; n?: number; children?: ReactNode; more?: ReactNode }) {
+  const [open, setOpen] = useState(false);
   return (
-    <section className="rq-sec rq-prop" aria-label="구현 제안">
-      <span className="lab">구현 제안 {p.by === "fallback" ? <span className="warn-chip">AI 제안 실패</span> : null}</span>
-      <p className="rq-sum">{p.summary}</p>
-      {p.note ? <p className="dim small">{p.note}</p> : null}
-      {p.approach.length ? (
-        <ol className="rq-list">
-          {p.approach.map((x) => (
-            <li key={x}>{x}</li>
-          ))}
-        </ol>
-      ) : null}
-      {p.files.length ? (
+    <div className="prow">
+      <dt>
+        {more ? (
+          <button type="button" className="prow-t" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            <IconChevron size={12} /> {label} {n != null ? <span className="mono">{n}</span> : null}
+          </button>
+        ) : (
+          <span className="prow-t">
+            {label} {n != null ? <span className="mono">{n}</span> : null}
+          </span>
+        )}
+      </dt>
+      <dd>
+        {children}
+        {open ? <div className="prow-more">{more}</div> : null}
+      </dd>
+    </div>
+  );
+}
+
+/** 제안 카드. 결정 버튼은 개발자이고 제안 차례일 때만 카드 안 맨 아래에 붙는다. */
+export function ProposalCard({ p, decide }: { p: Proposal; decide?: ReactNode }) {
+  const est = `${p.estimate.minutes ? `${p.estimate.minutes}분` : "시간 모름"}, ${p.estimate.costUsd != null ? fmtCost(p.estimate.costUsd) : "비용 모름"} (추정${p.confidence === "low" ? ", 확신 낮음" : ""})`;
+  return (
+    <section className="prop" aria-label="구현 제안">
+      <h3 className="t-title">이렇게 개발할까요?</h3>
+      <p className="prop-sum">{p.summary}</p>
+      {p.by === "fallback" ? <p className="warn-chip">AI 제안 실패{p.note ? `: ${p.note}` : ""}</p> : null}
+      <hr />
+      <dl className="prows">
+        <Row
+          label="바꿀 파일"
+          n={p.files.length}
+          more={
+            p.files.length ? (
+              <ul className="rq-files">
+                {p.files.map((f) => (
+                  <li key={f.path}>
+                    <span className="mono">{f.path}</span>
+                    <span className="t-meta">{f.why}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+        >
+          {p.files.length ? <span className="mono prow-files">{p.files.map((f) => f.path.split("/").pop()).join(", ")}</span> : <span className="dim">못 찾았어요</span>}
+        </Row>
+        <Row
+          label="위험"
+          n={p.risks.length}
+          more={
+            p.risks.length > 1 ? (
+              <ul className="rq-list risk">
+                {p.risks.slice(1).map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+        >
+          {p.risks.length ? <span className="st warn prow-risk">{p.risks[0]}</span> : <span className="dim">없음</span>}
+        </Row>
+        <Row
+          label="테스트"
+          n={p.testsToAdd.length}
+          more={
+            p.testsToAdd.length ? (
+              <ul className="rq-list">
+                {p.testsToAdd.map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+        >
+          <span className="dim">{p.testsToAdd.length ? "수용 기준마다 하나씩 먼저 써요" : "추가 없음"}</span>
+        </Row>
+        <Row label="예상">
+          <span className="mono">{est}</span>
+        </Row>
+      </dl>
+      {decide ? (
         <>
-          <span className="lab">바꿀 파일</span>
-          <ul className="rq-files">
-            {p.files.map((f) => (
-              <li key={f.path}>
-                <span className="mono">{f.path}</span>
-                <span className="dim">{f.why}</span>
-              </li>
-            ))}
-          </ul>
+          <hr />
+          {decide}
         </>
       ) : null}
-      {p.risks.length ? (
-        <>
-          <span className="lab">위험</span>
-          <ul className="rq-list risk">
-            {p.risks.map((x) => (
-              <li key={x}>{x}</li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      {p.testsToAdd.length ? (
-        <>
-          <span className="lab">추가할 테스트</span>
-          <ul className="rq-list">
-            {p.testsToAdd.map((x) => (
-              <li key={x}>{x}</li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      <p className="rq-est small">
-        예상 {p.estimate.minutes ? `약 ${p.estimate.minutes}분` : "시간 모름"}, {p.estimate.costUsd != null ? `약 ${fmtCost(p.estimate.costUsd)}` : "비용 모름"} <span className="dim">(추정치, 확신 {CONF_KO[p.confidence]})</span>
-      </p>
     </section>
   );
 }
 
 type Mode = "changes" | "take_over" | "decline";
 const MODE: Record<Mode, { label: string; ask: string; placeholder: string; required: boolean; decision: DecideInput["decision"] }> = {
-  changes: { label: "고쳐서 진행", ask: "무엇을 바꿀까요 · 명세에 조건으로 붙어요", placeholder: "예: lg 전체 말고 결제 화면 버튼에만 새 size=xl 추가", required: true, decision: "proceed_with_changes" },
-  take_over: { label: "직접 할게", ask: "메모 (선택) · AI 작업 없이 내가 맡아요", placeholder: "예: 토큰 정리랑 같이 할게요", required: false, decision: "take_over" },
-  decline: { label: "거절", ask: "사유 · 요청자에게는 쉬운 말로 풀어서 전해요", placeholder: "예: 결제 완료율 측정 중이라 이번 분기엔 화면을 못 바꿔요", required: true, decision: "decline" },
+  changes: { label: "고쳐서 진행", ask: "무엇을 바꿀까요. 명세에 조건으로 붙어요", placeholder: "예: lg 전체 말고 결제 화면 버튼에만 새 size=xl 추가", required: true, decision: "proceed_with_changes" },
+  take_over: { label: "직접 할게", ask: "메모 (선택). AI 작업 없이 내가 맡아요", placeholder: "예: 토큰 정리랑 같이 할게요", required: false, decision: "take_over" },
+  decline: { label: "거절", ask: "사유. 요청자에게는 쉬운 말로 풀어서 전해요", placeholder: "예: 결제 완료율 측정 중이라 이번 분기엔 화면을 못 바꿔요", required: true, decision: "decline" },
 };
 
 export function DecideBar({ api, req, user }: { api: Api; req: Request; user: User }) {
@@ -330,7 +433,7 @@ export function DecideBar({ api, req, user }: { api: Api; req: Request; user: Us
           {busy && !mode ? <Spinner size={12} /> : null}진행
         </button>
         {(Object.keys(MODE) as Mode[]).map((k) => (
-          <button key={k} className={`btn ${k === "decline" ? "q" : ""}`} aria-pressed={mode === k} disabled={busy} onClick={() => { setMode(mode === k ? null : k); setText(""); }}>
+          <button key={k} className="btn q" aria-pressed={mode === k} disabled={busy} onClick={() => { setMode(mode === k ? null : k); setText(""); }}>
             {MODE[k].label}
           </button>
         ))}
@@ -354,32 +457,35 @@ export function DecideBar({ api, req, user }: { api: Api; req: Request; user: Us
   );
 }
 
-export function DecisionLog({ req, now }: { req: Request; now: number }) {
-  if (!req.decisions.length) return null;
+// ---------------------------------------------------------------------------------------------- decision timeline
+
+export function DecisionTimeline({ req, now }: { req: Request; now: number }) {
+  if (!req.decisions.length) return <p className="t-meta">아직 결정한 게 없어요</p>;
   return (
-    <section className="rq-sec" aria-label="결정 기록">
-      <span className="lab">결정 기록</span>
-      <ol className="rq-log">
-        {req.decisions.map((d, i) => (
-          <li key={i}>
-            <Avatar name={d.who} size={20} />
-            <span>
-              <b>{d.who}</b> {WHAT_KO[d.what]} <span className="dim small">{relTime(d.when, now)}</span>
-              {d.why ? <span className="rq-why">{d.why}</span> : null}
-            </span>
-          </li>
-        ))}
-      </ol>
-    </section>
+    <ol className="tl" aria-label="결정 기록">
+      {req.decisions.map((d, i) => (
+        <li key={i}>
+          <Avatar name={d.who} size={16} />
+          <div>
+            <p className="tl-what">
+              <b>{d.who}</b> {WHAT_KO[d.what]} <span className="t-meta">{relTime(d.when, now)}</span>
+            </p>
+            {d.why ? <p className="tl-why">{d.why}</p> : null}
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
 
-function Declined({ req }: { req: Request }) {
+function Declined({ req, dev }: { req: Request; dev: boolean }) {
   const d = req.decline;
   if (!d) return null;
   return (
-    <section className="rq-sec rq-declined">
-      <p>{d.forRequester}</p>
+    <section className="rq-declined">
+      <AiText read={!dev} original={dev ? d.reason : undefined} label="개발자가 쓴 사유 보기">
+        {d.forRequester}
+      </AiText>
       {d.alternatives.length ? (
         <>
           <span className="lab">이렇게는 할 수 있어요</span>
@@ -396,123 +502,232 @@ function Declined({ req }: { req: Request }) {
   );
 }
 
-// ---------------------------------------------------------------------------------------------- the card
+/** 결과 검토 차례면 요청 카드가 run 의 검토 버튼을 대신 단다(카드 하나로). */
+function RunReview({ api, runId, user }: { api: Api; runId: string; user: User }) {
+  const { run } = useLiveRun(api, runId);
+  if (!run) return null;
+  return <ReviewActions api={api} run={run} user={user} />;
+}
 
-export function RequestView({ api, req, user, inChat, deployTracked = true, now = Date.now() }: { api: Api; req: Request; user: User; inChat?: boolean; deployTracked?: boolean; now?: number }) {
+// ---------------------------------------------------------------------------------------------- the full card (thread, request page)
+
+export function RequestView({ api, req, user, deployTracked = true, now = Date.now(), timeline }: { api: Api; req: Request; user: User; deployTracked?: boolean; now?: number; timeline?: boolean }) {
   const dev = isDev(user);
-  const [more, setMore] = useState(false);
-  const { stopped, complete } = reqStage(req, deployTracked);
-  const shipped = ["merged", "deployed", "closed"].includes(req.status) && !req.assignee;
-  // 채팅에서는 개발자가 결정할 때만 명세와 제안을 펼친다. 그 밖에는 눌러서 연다
-  const showSpec = dev && !!req.spec && (!inChat || req.status === "proposed" || more);
+  const p = reqProgress(req, user, deployTracked);
   const understood = req.spec ? (dev ? req.spec.summary.forDeveloper : req.spec.summary.forRequester) : dev ? req.understood?.forDeveloper : req.understood?.forRequester;
-  let body: ReactNode = null;
-  if (!dev) {
-    body = (
-      <>
-        {understood ? <p className="rq-understood">{understood}</p> : null}
-        {req.status === "clarifying" && req.questions.some((q) => !q.answer) ? <p className="rq-ask">{req.questions.length === 1 ? "하나만 확인할게요" : `${["", "하나", "두 가지", "세 가지"][req.questions.length]}만 확인할게요`}</p> : null}
-        {req.questions.length && req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : null}
-      </>
-    );
-  } else {
-    body = (
-      <>
-        {understood ? <p className="rq-understood dev">{understood}</p> : null}
-        {req.questions.length ? (
-          <section className="rq-sec">
-            <span className="lab">되묻기</span>
-            {req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : (
-              <ul className="rq-list qa">
-                {req.questions.map((q) => (
-                  <li key={q.id}>
-                    {q.question} <b>{q.answer ?? "답 없음"}</b>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ) : null}
-        {showSpec && req.spec ? <SpecCard spec={req.spec} done={complete || req.status === "merged" || req.status === "deployed"} /> : null}
-        {showSpec && req.proposal ? <ProposalCard p={req.proposal} /> : null}
-        {inChat && dev && req.spec && req.status !== "proposed" ? (
-          <button className="btn q sm rq-more" aria-expanded={more} onClick={() => setMore((m) => !m)}>
-            {more ? "명세와 제안 접기" : "명세와 제안 보기"}
-          </button>
-        ) : null}
-        {req.planner?.by === "fallback" && req.planner.note ? <p className="warn-chip rq-warn">{req.planner.note}</p> : null}
-      </>
-    );
-  }
+  const decide = dev && req.status === "proposed" ? <DecideBar api={api} req={req} user={user} /> : null;
   return (
-    <div className={`rq ${inChat ? "in-chat" : ""}`}>
-      <div className="rc-head">
-        <Moon phase={reqStage(req, deployTracked).phase} size={16} />
-        <b>{req.title}</b>
-        {req.type ? <span className="rc-phase">{TYPE_KO[req.type]}</span> : null}
+    <div className="rq">
+      <div className="rq-head">
+        <h2 className="t-title">{req.title}</h2>
+        {req.type ? <span className="t-meta">{TYPE_KO[req.type]}</span> : null}
       </div>
-      <div className={`rq-status ${stopped ? "stop" : complete || shipped ? "ok" : ""}`}>{reqHeadline(req, user)}</div>
-      {body}
-      {req.status === "declined" ? <Declined req={req} /> : null}
-      <RequestTrack req={req} deployTracked={deployTracked} />
-      {dev && req.status === "proposed" ? <DecideBar api={api} req={req} user={user} /> : null}
-      {dev && (!inChat || more) ? <DecisionLog req={req} now={now} /> : null}
-      <div className="rq-foot">
-        <Original req={req} />
-        <span className="grow" />
-        {req.runIds.length && dev ? (
-          <a className="msg-link" href={`#/runs/${req.runIds.at(-1)}`}>
-            작업 공간 <IconChevron size={12} />
-          </a>
+      <PhaseTrack p={p} />
+      <p className="rq-status">{reqHeadline(req, user)}</p>
+      {understood ? (
+        <AiText read={!dev} original={req.text}>
+          {understood}
+        </AiText>
+      ) : null}
+      {working(req) ? <Working text={req.status === "spec_ready" ? "저장소 읽는 중" : "정리하는 중"} /> : null}
+      {req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : null}
+      {dev && req.questions.some((q) => q.answer) && req.status !== "clarifying" ? (
+        <ul className="rq-list qa" aria-label="되묻기 답">
+          {req.questions.map((q) => (
+            <li key={q.id}>
+              {q.question} <b>{q.answer ?? "답 없음"}</b>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {dev && req.spec ? <SpecCard spec={req.spec} done={p.state === "done" || req.status === "merged"} /> : null}
+      {dev && req.proposal ? <ProposalCard p={req.proposal} decide={decide} /> : null}
+      {req.planner?.by === "fallback" && req.planner.note && dev ? <p className="warn-chip rq-warn">{req.planner.note}</p> : null}
+      {req.status === "declined" ? <Declined req={req} dev={dev} /> : null}
+      {req.status === "code_review" && req.runIds.length ? <RunReview api={api} runId={req.runIds.at(-1)!} user={user} /> : null}
+      {req.attachments.length ? (
+        <div className="rq-row">
+          {req.attachments.map((a) => (
+            <LinkChip key={a.url} url={a.url} />
+          ))}
+        </div>
+      ) : null}
+      {timeline ? (
+        <section className="rq-tl">
+          <h3 className="sec-t">결정 기록</h3>
+          <DecisionTimeline req={req} now={now} />
+        </section>
+      ) : null}
+      {req.runIds.length && dev ? (
+        <a className="msg-link" href={`#/runs/${req.runIds.at(-1)}`}>
+          작업 공간 <IconChevron size={12} />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------- compact embed (channel)
+
+/**
+ * 채널 본문의 요청 embed: 왼쪽 3px 띠(단계 색, 내 차례면 액센트) + 제목 + 진행 줄 + 필드 두세 개 + 지금 할 일.
+ * 요청자의 되묻기와 개발자의 진행, 결과 검토는 여기서 바로 한다. 나머지는 스레드에서.
+ */
+export function RequestEmbed({ api, id, user, deployTracked, onThread }: { api: Api; id: string; user: User; deployTracked?: boolean; onThread?: () => void }) {
+  const { req, error, reload } = useLiveRequest(api, id);
+  if (error && !req) return <ErrorBox error={error} onRetry={reload} />;
+  if (!req) return <div className="embed skel" aria-busy style={{ height: 120 }} />;
+  return <EmbedBody api={api} req={req} user={user} deployTracked={deployTracked} onThread={onThread} />;
+}
+
+function EmbedBody({ api, req, user, deployTracked = true, onThread }: { api: Api; req: Request; user: User; deployTracked?: boolean; onThread?: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const dev = isDev(user);
+  const p = reqProgress(req, user, deployTracked);
+  const summary = req.spec ? (dev ? req.spec.summary.forDeveloper : req.spec.summary.forRequester) : dev ? req.understood?.forDeveloper : req.understood?.forRequester;
+  const proceed = async () => {
+    setBusy(true);
+    try {
+      await api.decide(req.id, { decision: "proceed", by: user.name });
+      toast("진행해요. 에이전트가 시작해요", "ok");
+    } catch (e) {
+      toast((e as Error).message, "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const flagged = req.spec?.needsCheck?.length ?? 0;
+  return (
+    <article className="embed slide-in" style={phaseBar(p)} aria-label={`요청: ${req.title}`}>
+      <div className="embed-head">
+        <b className="t-title">{req.title}</b>
+        {req.type ? <span className="t-meta">{TYPE_KO[req.type]}</span> : null}
+      </div>
+      <PhaseTrack p={p} />
+      <dl className="embed-fields">
+        <div>
+          <dt>상태</dt>
+          <dd>{reqHeadline(req, user)}</dd>
+        </div>
+        {dev && req.status === "proposed" && req.proposal ? (
+          <div>
+            <dt>제안</dt>
+            <dd>
+              {req.proposal.summary}
+              {flagged ? <span className="st warn"> 확인 필요 {flagged}</span> : null}
+            </dd>
+          </div>
+        ) : summary && !working(req) ? (
+          <div>
+            <dt>{dev ? "요약" : "이해한 것"}</dt>
+            <dd className={dev ? "" : "t-read"}>{summary}</dd>
+          </div>
         ) : null}
-        {inChat ? (
+        {req.status === "declined" && req.decline ? (
+          <div>
+            <dt>이유</dt>
+            <dd className={dev ? "" : "t-read"}>{req.decline.forRequester}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {working(req) ? <Working text={req.status === "spec_ready" ? "저장소 읽는 중" : "정리하는 중"} /> : null}
+      {req.status === "clarifying" && !dev ? <Clarify api={api} req={req} user={user} /> : null}
+      {dev && req.status === "proposed" ? (
+        <div className="row-btns">
+          <button className="btn m" disabled={busy} onClick={proceed}>
+            {busy ? <Spinner size={12} /> : null}진행
+          </button>
+          <button className="btn q" onClick={onThread}>
+            제안 자세히
+          </button>
+        </div>
+      ) : null}
+      {req.status === "code_review" && req.runIds.length ? <RunReview api={api} runId={req.runIds.at(-1)!} user={user} /> : null}
+      <div className="embed-foot">
+        {req.attachments.map((a) => (
+          <LinkChip key={a.url} url={a.url} />
+        ))}
+        <span className="grow" />
+        {onThread ? (
+          <button className="msg-link" onClick={onThread}>
+            스레드 보기 <IconChevron size={12} />
+          </button>
+        ) : (
           <a className="msg-link" href={`#/requests/${req.id}`}>
             자세히 <IconChevron size={12} />
           </a>
-        ) : null}
+        )}
       </div>
-    </div>
+    </article>
   );
 }
 
-export function RequestCard({ api, id, user, deployTracked }: { api: Api; id: string; user: User; deployTracked?: boolean }) {
-  const { req, error, reload } = useLiveRequest(api, id);
-  if (error && !req) return <ErrorBox error={error} onRetry={reload} />;
-  if (!req) return <div className="runcard skel" aria-busy style={{ height: 120 }} />;
-  return (
-    <div className="runcard rq-card">
-      <RequestView api={api} req={req} user={user} inChat deployTracked={deployTracked} />
-    </div>
-  );
-}
+/** 예전 이름: 채널 카드 = embed */
+export const RequestCard = RequestEmbed;
+
+// ---------------------------------------------------------------------------------------------- request page
 
 export function RequestPage({ api, id, user, deployTracked }: { api: Api; id: string; user: User; deployTracked?: boolean }) {
   const { req, error, reload } = useLiveRequest(api, id);
+  const now = Date.now();
   return (
     <div className="turn-page">
-      <div className="turn-col rq-page">
-        <a className="msg-link" href={user.role === "requester" ? "#/" : "#/mine"} onClick={(e) => { if (window.history.length > 1) { e.preventDefault(); window.history.back(); } }}>
-          뒤로
-        </a>
-        {error && !req ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={reload} /> : null}
-        {!req && !error ? <div className="skel card-skel" /> : null}
+      <div className="rq-layout">
+        <div className="rq-main">
+          <a className="msg-link" href={user.role === "requester" ? "#/" : "#/mine"} onClick={(e) => { if (window.history.length > 1) { e.preventDefault(); window.history.back(); } }}>
+            뒤로
+          </a>
+          {error && !req ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={reload} /> : null}
+          {!req && !error ? <div className="skel card-skel" /> : null}
+          {req ? (
+            <article className="mine-card">
+              <RequestView api={api} req={req} user={user} deployTracked={deployTracked} now={now} />
+            </article>
+          ) : null}
+        </div>
         {req ? (
-          <article className="mine-card">
-            <div className="mine-top">
-              <span className="dim small who">
-                <Avatar name={req.requester} size={20} src={req.requesterAvatar} />
-                {req.requester}
-                {req.requesterTitle ? <span className="title-chip">{req.requesterTitle}</span> : null}
-                <span>#{req.channel} · {relTime(req.createdAt)}</span>
-              </span>
-            </div>
-            <RequestView api={api} req={req} user={user} deployTracked={deployTracked} />
-          </article>
+          <aside className="ctx" aria-label="맥락">
+            <section>
+              <h3 className="sec-t">요청</h3>
+              <dl className="ctx-dl">
+                <dt>요청자</dt>
+                <dd>
+                  <Avatar name={req.requester} size={20} src={req.requesterAvatar} /> {req.requester}
+                  {req.requesterTitle ? <span className="title-chip">{req.requesterTitle}</span> : null}
+                </dd>
+                <dt>채널</dt>
+                <dd>
+                  <a href={`#/chat/${req.channel}`}>#{req.channel}</a>
+                </dd>
+                {req.reviewer ? (
+                  <>
+                    <dt>확인</dt>
+                    <dd>{req.reviewer}</dd>
+                  </>
+                ) : null}
+                {req.assignee ? (
+                  <>
+                    <dt>담당</dt>
+                    <dd>{req.assignee}</dd>
+                  </>
+                ) : null}
+                <dt>받은 때</dt>
+                <dd className="t-meta">{relTime(req.createdAt, now)}</dd>
+              </dl>
+            </section>
+            <section>
+              <h3 className="sec-t">결정 기록</h3>
+              <DecisionTimeline req={req} now={now} />
+            </section>
+          </aside>
         ) : null}
       </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------------------------- 내 차례, 내 요청
 
 /** 내 차례 맨 위: 내가 확인할 제안 */
 export function ProposalTurnCard({ api, req, user, now, go }: { api: Api; req: Request; user: User; now: number; go: (p: string) => void }) {
@@ -530,16 +745,18 @@ export function ProposalTurnCard({ api, req, user, now, go }: { api: Api; req: R
           </a>
         </h2>
         <div className="mc-meta">
-          #{req.channel} · <Avatar name={req.requester} size={18} src={req.requesterAvatar} />
-          {req.requester} · {relTime(req.createdAt, now)}
+          <span>#{req.channel}</span>
+          <Avatar name={req.requester} size={16} src={req.requesterAvatar} />
+          <span>{req.requester}</span>
+          <span>{relTime(req.createdAt, now)}</span>
         </div>
         {p ? (
           <div className="mc-rec">
             <span>{p.summary}</span>
-            <span className="mono">
-              {p.files.length ? `파일 ${p.files.length}개 · ` : ""}
-              {p.estimate.minutes ? `약 ${p.estimate.minutes}분` : ""}
-              {p.estimate.costUsd != null ? ` · 약 ${fmtCost(p.estimate.costUsd)}` : ""}
+            <span className="t-meta mono">
+              {p.files.length ? `파일 ${p.files.length}, ` : ""}
+              {p.estimate.minutes ? `${p.estimate.minutes}분` : ""}
+              {p.estimate.costUsd != null ? `, ${fmtCost(p.estimate.costUsd)} (추정)` : ""}
             </span>
             {p.risks.length ? <span className="warn-chip">위험 {p.risks.length}</span> : null}
           </div>
@@ -563,7 +780,7 @@ export function ProposalTurnCard({ api, req, user, now, go }: { api: Api; req: R
         >
           {busy ? <Spinner size={12} /> : null}진행
         </button>
-        <a className="btn" href={`#${href}`}>
+        <a className="btn q" href={`#${href}`}>
           제안 보기
         </a>
       </div>
@@ -573,31 +790,35 @@ export function ProposalTurnCard({ api, req, user, now, go }: { api: Api; req: R
 
 /** 내 요청 카드 (요청자) */
 export function RequestMineCard({ api, req, user, now, note, deployTracked = true }: { api: Api; req: Request; user: User; now: number; note?: string; deployTracked?: boolean }) {
-  const { stopped, complete } = reqStage(req, deployTracked);
+  const p = reqProgress(req, user, deployTracked);
   const summary = req.spec?.summary.forRequester ?? req.understood?.forRequester;
   return (
-    <article className={`mine-card ${stopped ? "stopped" : ""} ${complete ? "complete" : ""}`}>
-      <div className={`mine-status ${stopped ? "s-rejected" : complete ? "s-merged" : ""}`}>{reqHeadline(req, user)}</div>
+    <article className="mine-card embed" style={phaseBar(p)}>
       <div className="mine-top">
         <h2>{req.title}</h2>
-        <span className="dim small who">
-          <Avatar name={req.requester} size={20} src={req.requesterAvatar} />#{req.channel} · {relTime(req.createdAt, now)}
+        <span className="t-meta">
+          #{req.channel}, {relTime(req.createdAt, now)}
         </span>
       </div>
-      <RequestTrack req={req} deployTracked={deployTracked} />
-      {summary && req.status !== "declined" ? <p className="mine-detail">{summary}</p> : null}
+      <PhaseTrack p={p} />
+      <p className="mine-status">{reqHeadline(req, user)}</p>
+      {summary && req.status !== "declined" ? (
+        <AiText read original={req.text}>
+          {summary}
+        </AiText>
+      ) : null}
+      {working(req) ? <Working /> : null}
       {req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : null}
-      {req.status === "declined" ? <Declined req={req} /> : null}
+      {req.status === "declined" ? <Declined req={req} dev={false} /> : null}
       {note ? (
         <blockquote className="mine-note">
           <span className="lab">결과 설명</span>
           {note}
         </blockquote>
       ) : null}
-      <div className="rq-foot">
-        <Original req={req} />
-        <span className="grow" />
+      <div className="embed-foot">
         <a className="msg-link" href={`#/chat/${req.channel}`}>채널에서 보기</a>
+        <span className="grow" />
         <a className="msg-link" href={`#/requests/${req.id}`}>
           자세히 <IconChevron size={12} />
         </a>

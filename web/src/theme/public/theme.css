@@ -90,6 +90,11 @@
   --role-dev-2: #a9c9ff;
   --role-dev-3: #79b0f2;
   --role-bot: var(--accent);
+  /* 요청 네 단계(이해, 합의, 작업, 반영)의 왼쪽 띠. 내 차례면 띠는 액센트 */
+  --phase-1: #8b949e;
+  --phase-2: #d2a8ff;
+  --phase-3: #79b0f2;
+  --phase-4: #3fb950;
 
   --r-ctrl: 6px;
   --r-card: 8px;

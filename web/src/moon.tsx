@@ -63,11 +63,13 @@ function lit(f: number) {
   return `M12 2A10 10 0 0 1 12 22A${rx} 10 0 0 ${f > 0.5 ? 1 : 0} 12 2Z`;
 }
 
-export function Moon({ phase, size = 16, label }: { phase: Phase; size?: number; label?: string }) {
+/** `fill` (0~1) overrides how much of the moon is lit, for the four-phase track. */
+export function Moon({ phase, size = 16, label, fill }: { phase: Phase; size?: number; label?: string; fill?: number }) {
+  const f = fill ?? LIT[phase];
   return (
     <svg className={`moon m-${phase}`} width={size} height={size} viewBox="0 0 24 24" role="img" aria-label={label ?? NAME[phase]}>
       <circle className="moon-ring" cx="12" cy="12" r="10" fill="none" strokeWidth="1.5" />
-      <path className="moon-lit" d={lit(LIT[phase])} style={{ d: `path("${lit(LIT[phase])}")` } as CSSProperties} transform={phase === "rejected" ? "translate(24 0) scale(-1 1)" : undefined} />
+      {f > 0 ? <path className="moon-lit" d={lit(f)} style={{ d: `path("${lit(f)}")` } as CSSProperties} transform={phase === "rejected" ? "translate(24 0) scale(-1 1)" : undefined} /> : null}
       {phase === "retry" ? <circle className="moon-dot" cx="20" cy="4" r="3" /> : null}
     </svg>
   );

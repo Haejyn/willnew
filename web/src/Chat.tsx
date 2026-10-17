@@ -293,6 +293,8 @@ function RunCard({ api, id, user, go }: { api: Api; id: string; user: User; go: 
   const active = !!run?.agents.some(isActive);
   const now = useNow(1000, active);
   if (!run) return <div className="runcard skel" aria-busy style={{ height: 96 }} />;
+  // 요청에 딸린 run 은 요청 embed 가 검토 버튼까지 맡는다. 카드는 하나만
+  if (run.requestId) return null;
   return <RunCardBody api={api} run={run} user={user} go={go} now={now} />;
 }
 
