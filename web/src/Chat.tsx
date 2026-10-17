@@ -1,10 +1,11 @@
 /**
  * 팀 채널. 커뮤니티 채팅처럼 읽힌다: 왼쪽 채널 목록(묶음, 안 읽음 점, 나를 부른 수), 가운데 메시지(작성자별 묶음, 날짜 줄,
  * 새 메시지 줄, 반응, 호버 동작 줄), 오른쪽은 스레드 또는 멤버.
- * @willnew 로 맡기면 요청이 생기고, 요청은 스레드에 산다. 채널 본문에는 짧은 embed 만 남고 전체 카드는 스레드에서 연다.
+ * @willnew 로 맡기면 요청이 생기고, 요청에 대한 말은 전부 그 카드의 스레드에 산다. 채널에는 요청한 메시지, 카드(embed),
+ * 그 아래 "답글 n개, 마지막 3분 전" 한 줄만 남는다. 스레드 칸에는 자기 입력칸이 있고 "채널에도 보내기" 를 고를 수 있다.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Api, Channel, ChatMessage, Member, Request, Run } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type ReactNode, type RefObject } from "react";
+import type { Api, Channel, ChatMessage, Member, Request, Run, ThreadSummary } from "./api";
 import { ReviewActions } from "./Decision";
 import { useLiveRequest, useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconExternal, IconLink, IconList, IconMore, IconPlus, IconSend, IconSmile, IconThread, IconUsers, IconX, Logo } from "./icons";
@@ -13,23 +14,28 @@ import { RequestEmbed, RequestView, phaseBar, reqHeadline, runProgress, PhaseTra
 import { Moon, runPhase } from "./moon";
 import { groupOrder, nameColor, roleFamily } from "./people";
 import { ShipRow } from "./Ship";
+import { mentionsOf } from "../../src/server/threads";
 import { Avatar, ErrorBox, LinkChip, Spinner, Tag, agentState, useOutside, useToast } from "./ui";
-import { clockTime, fmtCost, fmtDuration, isActive, useMedia, useNow, type User } from "./util";
+import { clockTime, fmtCost, fmtDuration, isActive, relTime, useMedia, useNow, type User } from "./util";
 
 const EXAMPLES = ["@willnew 버그 수정: duration 테스트 실패", "@willnew 테스트 작성: 환불 API 경계값", "@willnew 리팩터링: 날짜 포맷 함수 통합"];
 /** 반응은 사용자 콘텐츠다. UI 글자에는 이모지를 쓰지 않는다 */
 const REACTIONS = ["👍", "✅", "👀"];
 const GROUP_MS = 5 * 60_000;
 const OPENED = Date.now();
-/** 처음 보는 채널은 최근 20분을 새 메시지로 본다 */
+/** 처음 보는 채널과 스레드는 최근 20분을 새 메시지로 본다 */
 const DEFAULT_SEEN = OPENED - 20 * 60_000;
 
-type Thread = { request: string } | { run: string };
+/** 스레드 칸에 여는 것: 뿌리 메시지 id. 요청 카드면 요청, 바로 맡긴 일의 카드면 run 도 같이 */
+type Thread = { id: string; request?: string; run?: string };
 type Mode = "request" | "direct";
+/** 요청 카드의 스레드 id 는 req-<요청 id> */
+const targetOf = (id: string, run?: string): Thread => (id.startsWith("req-") ? { id, request: id.slice(4) } : { id, run });
 
 // ---------------------------------------------------------------------------------------------- seen / unread
 
 const SEEN_KEY = "willnew.seen";
+const THREAD_SEEN_KEY = "willnew.seen.threads";
 const CATS_KEY = "willnew.cats.closed";
 const MEMBERS_KEY = "willnew.members";
 function readJson<T>(key: string, fallback: T): T {
@@ -52,7 +58,27 @@ const markSeen = (ch: string, ts = Date.now()) => writeJson(SEEN_KEY, { ...readJ
 const textOf = (m: ChatMessage, user: User) => (m.bodies ? (user.role === "requester" ? m.bodies.forRequester : m.bodies.forDeveloper) : m.text);
 const mentionsMe = (m: ChatMessage, user: User) => m.user !== user.name && textOf(m, user).includes(`@${user.name}`);
 
-/** 지금 보고 있지 않은 채널마다: 새 메시지 수와 나를 부른 수 */
+/** 스레드마다 읽은 시각. 열어 둔 동안은 읽은 것으로 */
+function useThreadSeen() {
+  const [seen, setSeen] = useState<Record<string, number>>(() => readJson(THREAD_SEEN_KEY, {}));
+  const mark = useCallback((id: string) => {
+    setSeen((cur) => {
+      const next = { ...cur, [id]: Date.now() };
+      writeJson(THREAD_SEEN_KEY, next);
+      return next;
+    });
+  }, []);
+  return { seen, mark };
+}
+
+/** 한 스레드에서 나에게 새로 온 답글 수와 나를 부른 수 */
+function threadUnread(sum: ThreadSummary | undefined, seen: number | undefined, me: string) {
+  if (!sum) return { n: 0, mentions: 0 };
+  const fresh = sum.replies.filter((r) => r.ts > (seen ?? DEFAULT_SEEN) && r.user !== me);
+  return { n: fresh.length, mentions: fresh.filter((r) => r.mentions.includes(me)).length };
+}
+
+/** 지금 보고 있지 않은 채널마다: 새 메시지 수와 나를 부른 수 (스레드에서 부른 것도 센다) */
 function useUnread(api: Api, channels: Channel[], current: string, user: User) {
   const [state, setState] = useState<Record<string, { n: number; mentions: number }>>({});
   useEffect(() => {
@@ -64,9 +90,11 @@ function useUnread(api: Api, channels: Channel[], current: string, user: User) {
         channels
           .filter((c) => c.id !== current)
           .map(async (c) => {
-            const list = await api.messages(c.id).catch(() => [] as ChatMessage[]);
-            const fresh = list.filter((m) => m.ts > seenOf(c.id) && m.user !== user.name);
-            out[c.id] = { n: fresh.length, mentions: fresh.filter((m) => mentionsMe(m, user)).length };
+            const [list, threads] = await Promise.all([api.messages(c.id).catch(() => [] as ChatMessage[]), api.threads(c.id).catch(() => [] as ThreadSummary[])]);
+            const since = seenOf(c.id);
+            const fresh = list.filter((m) => m.ts > since && m.user !== user.name);
+            const inThreads = threads.reduce((s, t) => s + t.replies.filter((r) => r.ts > since && r.user !== user.name && r.mentions.includes(user.name)).length, 0);
+            out[c.id] = { n: fresh.length, mentions: fresh.filter((m) => mentionsMe(m, user)).length + inThreads };
           }),
       );
       if (alive) setState(out);
@@ -91,6 +119,15 @@ function dayLabel(ts: number, now = Date.now()): string {
   return d.toLocaleDateString("ko-KR", { month: "long", day: "numeric" });
 }
 
+/** 스레드 요약에 답글 하나를 더한다 (채널 스트림으로 온 답글) */
+function addReply(cur: ThreadSummary | undefined, m: ChatMessage): ThreadSummary {
+  const mentions = mentionsOf(m);
+  const name = m.bot ? "willnew" : m.user;
+  const replies = cur?.replies.some((r) => r.ts === m.ts && r.user === name) ? cur.replies : [...(cur?.replies ?? []), { ts: m.ts, user: name, mentions }];
+  const users = [{ name, avatar: m.bot ? undefined : m.userAvatar, bot: m.bot || undefined }, ...(cur?.users ?? []).filter((u) => u.name !== name)].slice(0, 3);
+  return { id: m.threadId!, count: replies.length, lastTs: Math.max(cur?.lastTs ?? 0, m.ts), users, replies };
+}
+
 // ---------------------------------------------------------------------------------------------- the channel
 
 export function Chat({ api, user, channelId, focus, runs, requests, go, deployTracked, onCompose, me }: {
@@ -107,6 +144,7 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
 }) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
+  const [threads, setThreads] = useState<Record<string, ThreadSummary>>({});
   const [local, setLocal] = useState<ChatMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [thread, setThread] = useState<Thread | null>(null);
@@ -117,6 +155,7 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
   const [membersOpen, setMembersOpen] = useState(() => window.innerWidth >= 1180 && readJson<boolean>(MEMBERS_KEY, true));
   const [drawer, setDrawer] = useState(false);
   const [since] = useState(() => seenOf(channelId));
+  const { seen: threadSeen, mark: markThread } = useThreadSeen();
   const toast = useToast();
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -124,6 +163,7 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
   const lastTop = useRef(0);
   const channel = channels.find((c) => c.id === channelId);
   const unread = useUnread(api, channels, channelId, user);
+  const now = useNow(30_000);
 
   useEffect(() => {
     api.channels().then(setChannels).catch((e: Error) => toast(e.message, "err"));
@@ -132,11 +172,12 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
   const load = useCallback(() => {
     setLoadError(null);
     api.messages(channelId).then(setMessages).catch((e: Error) => setLoadError(e.message));
+    api.threads(channelId).then((list) => setThreads(Object.fromEntries(list.map((t) => [t.id, t])))).catch(() => undefined);
   }, [api, channelId]);
 
   useEffect(() => {
     load();
-    return api.subscribeChannel(channelId, (m) =>
+    const upsert = (m: ChatMessage) =>
       setMessages((list) => {
         const cur = list ?? [];
         const i = cur.findIndex((x) => x.id === m.id);
@@ -146,8 +187,12 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
           return next;
         }
         return [...cur, m];
-      }),
-    );
+      });
+    return api.subscribeChannel(channelId, (m) => {
+      // 스레드 답글은 뿌리 아래 한 줄(요약)만 바뀐다. 채널에도 보낸 답글은 채널에도 보인다
+      if (m.threadId) setThreads((cur) => ({ ...cur, [m.threadId!]: addReply(cur[m.threadId!], m) }));
+      if (!m.threadId || m.broadcast) upsert(m);
+    });
   }, [api, channelId, load]);
 
   // 보고 있는 동안은 읽은 것으로
@@ -162,7 +207,7 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
     const seen = new Set<string>();
     const out = new Set<string>();
     for (const m of sorted)
-      if (m.runId && m.bot && !m.requestId && !seen.has(m.runId)) {
+      if (m.runId && m.bot && !m.requestId && !m.threadId && !seen.has(m.runId)) {
         seen.add(m.runId);
         out.add(m.id);
       }
@@ -223,6 +268,10 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
     setMembersOpen(next);
     if (!phone) writeJson(MEMBERS_KEY, next);
   };
+  const openThread = useCallback((t: Thread) => {
+    setThread(t);
+    markThread(t.id);
+  }, [markThread]);
 
   // 날짜 줄, 새 메시지 줄, 작성자 묶음
   const rows: ReactNode[] = [];
@@ -252,7 +301,10 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
     }
     const card = m.kind === "request" && !!m.requestId;
     const prevCard = prev?.kind === "request" && !!prev?.requestId;
-    const grouped = !broke && !!prev && !card && !prevCard && prev.user === m.user && prev.bot === m.bot && m.ts - prev.ts < GROUP_MS && !cardFor.has(m.id);
+    // 답글이 달린 메시지 다음 줄은 묶지 않는다 (요약 줄이 사이에 있다)
+    const prevThreaded = !!prev && !!threads[prev.id];
+    const grouped = !broke && !!prev && !card && !prevCard && !prevThreaded && !m.broadcast && prev.user === m.user && prev.bot === m.bot && m.ts - prev.ts < GROUP_MS && !cardFor.has(m.id);
+    const sum = threads[m.id];
     rows.push(
       <Message
         key={m.id}
@@ -265,10 +317,11 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
         go={go}
         focus={focus === m.id}
         deployTracked={deployTracked}
-        onThread={setThread}
+        onThread={openThread}
         onReact={react}
         onWorking={onWorking}
         ephemeral={m.id.startsWith("local-")}
+        footer={sum ? <ThreadFooter sum={sum} unread={threadUnread(sum, threadSeen[sum.id], user.name)} now={now} open={thread?.id === sum.id} onOpen={() => openThread(targetOf(m.id, cardFor.has(m.id) ? m.runId : undefined))} /> : null}
       />,
     );
   });
@@ -348,7 +401,21 @@ export function Chat({ api, user, channelId, focus, runs, requests, go, deployTr
       </section>
 
       {thread ? (
-        <ThreadPanel api={api} target={thread} user={user} messages={sorted} deployTracked={deployTracked} go={go} onClose={() => setThread(null)} onThread={setThread} />
+        <ThreadPanel
+          key={thread.id}
+          api={api}
+          channelId={channelId}
+          channel={channel}
+          target={thread}
+          user={user}
+          root={sorted.find((m) => m.id === thread.id)}
+          channelMessages={sorted}
+          deployTracked={deployTracked}
+          go={go}
+          onClose={() => setThread(null)}
+          onThread={openThread}
+          onSeen={() => markThread(thread.id)}
+        />
       ) : membersOpen ? (
         <MemberPanel api={api} channelId={channelId} user={user} requests={requests} runs={runs} onClose={toggleMembers} />
       ) : null}
@@ -371,7 +438,7 @@ function Categories({ byCat, current, unread, onPick }: { byCat: [string, Channe
       {byCat.map(([cat, list]) => {
         const shut = closed.includes(cat);
         // 접힌 묶음에서도 지금 채널과 안 읽은 채널은 보인다
-        const shown = shut ? list.filter((c) => c.id === current || unread[c.id]?.n) : list;
+        const shown = shut ? list.filter((c) => c.id === current || unread[c.id]?.n || unread[c.id]?.mentions) : list;
         return (
           <div key={cat} className="cat">
             <button className="cat-h" aria-expanded={!shut} onClick={() => toggle(cat)}>
@@ -382,7 +449,7 @@ function Categories({ byCat, current, unread, onPick }: { byCat: [string, Channe
               const u = unread[c.id];
               const on = c.id === current;
               return (
-                <a key={c.id} href={`#/chat/${c.id}`} onClick={onPick} className={`ch ${on ? "on" : ""} ${!on && u?.n ? "unread" : ""}`} aria-current={on ? "page" : undefined}>
+                <a key={c.id} href={`#/chat/${c.id}`} onClick={onPick} className={`ch ${on ? "on" : ""} ${!on && (u?.n || u?.mentions) ? "unread" : ""}`} aria-current={on ? "page" : undefined}>
                   <span className="hash" aria-hidden>
                     #
                   </span>
@@ -404,9 +471,41 @@ function Categories({ byCat, current, unread, onPick }: { byCat: [string, Channe
   );
 }
 
+// ---------------------------------------------------------------------------------------------- thread footer
+
+/** 뿌리 메시지 아래 한 줄: 아바타 셋, 답글 n개, 마지막 답글 시각. 새 답글은 굵게, 나를 부른 답글이 있으면 액센트 배지 */
+function ThreadFooter({ sum, unread, now, open, onOpen }: { sum: ThreadSummary; unread: { n: number; mentions: number }; now: number; open?: boolean; onOpen: () => void }) {
+  return (
+    <button className={`tfoot ${unread.n ? "fresh" : ""} ${open ? "on" : ""}`} onClick={onOpen} aria-label={`스레드 열기, 답글 ${sum.count}개${unread.n ? `, 새 답글 ${unread.n}개` : ""}${unread.mentions ? `, 나를 부른 답글 ${unread.mentions}개` : ""}`}>
+      <span className="tfoot-av" aria-hidden>
+        {sum.users.map((u) =>
+          u.bot ? (
+            <span key={u.name} className="avatar bot" style={{ width: 20, height: 20 }}>
+              <Logo size={12} />
+            </span>
+          ) : (
+            <Avatar key={u.name} name={u.name} size={20} src={u.avatar} />
+          ),
+        )}
+      </span>
+      <span className="tfoot-n">답글 {sum.count}개</span>
+      {unread.n ? <span className="tfoot-new">새 답글 {unread.n}</span> : null}
+      <span className="t-meta">마지막 {relTime(sum.lastTs, now)}</span>
+      {unread.mentions ? (
+        <span className="ch-badge mono tfoot-badge" aria-hidden>
+          @{unread.mentions}
+        </span>
+      ) : null}
+      <span className="tfoot-go t-meta" aria-hidden>
+        스레드 보기 <IconChevron size={12} />
+      </span>
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------------------------- one message
 
-function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deployTracked, onThread, onReact, onWorking, ephemeral }: {
+function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deployTracked, onThread, onReact, onWorking, ephemeral, footer }: {
   m: ChatMessage;
   grouped: boolean;
   cardHost: boolean;
@@ -420,6 +519,7 @@ function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deploy
   onReact: (m: ChatMessage, emoji: string) => void;
   onWorking?: (id: string, on: boolean) => void;
   ephemeral?: boolean;
+  footer?: ReactNode;
 }) {
   const toast = useToast();
   const [menu, setMenu] = useState<"react" | "more" | null>(null);
@@ -430,7 +530,8 @@ function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deploy
   const text = textOf(m, user);
   const toMe = mentionsMe(m, user);
   const card = m.kind === "request" && !!m.requestId;
-  const thread: Thread | null = m.requestId ? { request: m.requestId } : m.runId ? { run: m.runId } : null;
+  // 채널에도 보낸 답글은 그 뿌리의 스레드를, 나머지는 자기 스레드를 연다
+  const thread: Thread = m.threadId ? targetOf(m.threadId) : card ? { id: m.id, request: m.requestId } : targetOf(m.id, cardHost ? m.runId : undefined);
   const urls = card ? [] : [...new Set(text.match(/https?:\/\/[^\s)]+/g) ?? [])];
   const reactions = Object.entries(m.reactions ?? {}).filter(([, who]) => who.length);
   const copyLink = async () => {
@@ -467,7 +568,12 @@ function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deploy
             <time className="t-meta">{clockTime(m.ts)}</time>
           </div>
         ) : null}
-        {card ? <RequestEmbed api={api} id={m.requestId!} user={user} deployTracked={deployTracked} onThread={() => onThread({ request: m.requestId! })} onWorking={onWorking} /> : <div className="msg-text">{highlight(text, user.name)}</div>}
+        {m.broadcast ? (
+          <button className="msg-link reply-of" onClick={() => onThread(thread)}>
+            스레드에 남긴 답글 <IconChevron size={12} />
+          </button>
+        ) : null}
+        {card ? <RequestEmbed api={api} id={m.requestId!} user={user} deployTracked={deployTracked} onThread={() => onThread(thread)} onWorking={onWorking} threaded={!!footer} /> : <div className="msg-text">{highlight(text, user.name)}</div>}
         {urls.length ? (
           <div className="msg-previews">
             {urls.map((u) => (
@@ -489,14 +595,13 @@ function Message({ m, grouped, cardHost, api, user, channelId, go, focus, deploy
             })}
           </div>
         ) : null}
+        {footer}
       </div>
       {ephemeral ? null : (
         <div className="msg-actions" role="toolbar" aria-label="메시지 동작" ref={box}>
-          {thread ? (
-            <button className="ib sm" title="스레드에서 보기" aria-label="스레드에서 보기" onClick={() => onThread(thread)}>
-              <IconThread size={16} />
-            </button>
-          ) : null}
+          <button className="ib sm" title="스레드에서 답하기" aria-label="스레드에서 답하기" onClick={() => onThread(thread)}>
+            <IconThread size={16} />
+          </button>
           <button className="ib sm" title="반응" aria-label="반응" aria-expanded={menu === "react"} onClick={() => setMenu(menu === "react" ? null : "react")}>
             <IconSmile size={16} />
           </button>
@@ -563,6 +668,75 @@ function highlight(text: string, me: string) {
   ));
 }
 
+// ---------------------------------------------------------------------------------------------- @ 이름 고르기
+
+/** 입력칸에서 @ 뒤에 글자를 치면 채널 멤버 이름을 고를 수 있다. ↑↓ 로 고르고 ↵ 나 Tab 으로 넣는다. */
+function useMentionPick(api: Api, channelId: string, text: string, setText: (t: string) => void, area: RefObject<HTMLTextAreaElement | null>) {
+  const [members, setMembers] = useState<Member[]>([]);
+  const [caret, setCaret] = useState(0);
+  const [sel, setSel] = useState(0);
+  const [shut, setShut] = useState(false);
+  useEffect(() => {
+    api.members(channelId).then(setMembers).catch(() => undefined);
+  }, [api, channelId]);
+  const m = /(^|\s)@([\p{L}\p{N}_]*)$/u.exec(text.slice(0, caret));
+  const q = m?.[2];
+  const list = q === undefined || shut ? [] : members.filter((x) => x.name.startsWith(q) && x.name !== q).slice(0, 6);
+  const pick = (name: string) => {
+    const head = text.slice(0, caret - (q?.length ?? 0));
+    const next = `${head}${name} ${text.slice(caret)}`;
+    setText(next);
+    const at = head.length + name.length + 1;
+    setCaret(at);
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(at, at);
+    });
+  };
+  /** true = the key was used by the list */
+  const onKey = (e: RKeyboardEvent): boolean => {
+    if (!list.length) return false;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel((s) => (s + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length);
+      return true;
+    }
+    if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      pick(list[Math.min(sel, list.length - 1)].name);
+      return true;
+    }
+    if (e.key === "Escape") {
+      setShut(true);
+      return true;
+    }
+    return false;
+  };
+  const track = (el: HTMLTextAreaElement) => {
+    setCaret(el.selectionStart ?? el.value.length);
+    setSel(0);
+    setShut(false);
+  };
+  const menu = list.length ? (
+    <div className="slash mention-pick" role="listbox" aria-label="이름">
+      {list.map((x, i) => (
+        <button key={x.name} role="option" aria-selected={i === sel} className={i === sel ? "on" : ""} onMouseEnter={() => setSel(i)} onMouseDown={(e) => { e.preventDefault(); pick(x.name); }}>
+          {x.bot ? (
+            <span className="avatar bot" style={{ width: 20, height: 20 }} aria-hidden>
+              <Logo size={12} />
+            </span>
+          ) : (
+            <Avatar name={x.name} size={20} src={x.avatar} />
+          )}
+          <b style={{ color: nameColor(x.title, x.bot) }}>{x.name}</b>
+          <span>{x.bot ? "봇" : x.title ?? ""}</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
+  return { menu, onKey, track };
+}
+
 // ---------------------------------------------------------------------------------------------- composer
 
 const COMMANDS: { cmd: string; desc: string; devOnly?: boolean; run: "request" | "direct" | "status" }[] = [
@@ -580,6 +754,7 @@ function Composer({ api, user, channelId, channel, typing, onCompose, onStatus, 
   const box = useRef<HTMLDivElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   useOutside(box, plus, useCallback(() => setPlus(false), []));
+  const mention = useMentionPick(api, channelId, text, setText, area);
   const cmds = COMMANDS.filter((c) => !c.devOnly || user.role !== "requester");
   const slash = /^\/\S*$/.test(text);
   const shown = plus ? cmds : slash ? cmds.filter((c) => c.cmd.startsWith(text)) : [];
@@ -617,7 +792,9 @@ function Composer({ api, user, channelId, channel, typing, onCompose, onStatus, 
             </button>
           ))}
         </div>
-      ) : null}
+      ) : (
+        mention.menu
+      )}
       {typing ? (
         <div className="typing" role="status">
           <b>willnew</b>가 정리하는 중
@@ -657,8 +834,11 @@ function Composer({ api, user, channelId, channel, typing, onCompose, onStatus, 
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
+            mention.track(e.target);
           }}
+          onSelect={(e) => mention.track(e.currentTarget)}
           onKeyDown={(e) => {
+            if (!shown.length && mention.onKey(e)) return;
             if (shown.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
               e.preventDefault();
               setSel((s) => (s + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length);
@@ -681,88 +861,208 @@ function Composer({ api, user, channelId, channel, typing, onCompose, onStatus, 
   );
 }
 
+/** 스레드 입력칸: 답글은 스레드에만, "채널에도 보내기" 를 고르면 채널에도 보인다. @ 이름 고르기는 채널과 같다 */
+function ThreadComposer({ api, user, channelId, threadId, onSent }: { api: Api; user: User; channelId: string; threadId: string; onSent: (m: ChatMessage) => void }) {
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [also, setAlso] = useState(false);
+  const [sending, setSending] = useState(false);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const mention = useMentionPick(api, channelId, text, setText, area);
+  const send = async () => {
+    const v = text.trim();
+    if (!v || sending) return;
+    setSending(true);
+    try {
+      const { message } = await api.reply(channelId, threadId, { user: user.name, text: v, userTitle: user.title || undefined, userAvatar: user.avatar, broadcast: also });
+      onSent(message);
+      setText("");
+      setAlso(false);
+    } catch (e) {
+      toast((e as Error).message, "err");
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div className="composer-wrap thread-composer">
+      {mention.menu}
+      <form className="composer" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+        <label htmlFor={`reply-${threadId}`} className="sr">
+          답글
+        </label>
+        <textarea
+          id={`reply-${threadId}`}
+          ref={area}
+          value={text}
+          rows={1}
+          placeholder="답글 남기기, @ 로 부르기"
+          onChange={(e) => {
+            setText(e.target.value);
+            mention.track(e.target);
+          }}
+          onSelect={(e) => mention.track(e.currentTarget)}
+          onKeyDown={(e) => {
+            if (mention.onKey(e)) return;
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <button className="ib" type="submit" disabled={!text.trim() || sending} aria-label="답글 보내기">
+          {sending ? <Spinner size={14} /> : <IconSend size={17} />}
+        </button>
+      </form>
+      <label className="also">
+        <input type="checkbox" checked={also} onChange={(e) => setAlso(e.target.checked)} />
+        채널에도 보내기
+      </label>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------------------------- thread panel
 
-function ThreadPanel({ api, target, user, messages, deployTracked, go, onClose, onThread }: { api: Api; target: Thread; user: User; messages: ChatMessage[]; deployTracked?: boolean; go: (p: string) => void; onClose: () => void; onThread: (t: Thread) => void }) {
+function ThreadPanel({ api, channelId, channel, target, user, root, channelMessages, deployTracked, go, onClose, onThread, onSeen }: {
+  api: Api;
+  channelId: string;
+  channel?: Channel;
+  target: Thread;
+  user: User;
+  root?: ChatMessage;
+  channelMessages: ChatMessage[];
+  deployTracked?: boolean;
+  go: (p: string) => void;
+  onClose: () => void;
+  onThread: (t: Thread) => void;
+  onSeen: () => void;
+}) {
+  const [replies, setReplies] = useState<ChatMessage[] | null>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
   useEffect(() => {
-    const on = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const on = (e: KeyboardEvent) => e.key === "Escape" && !(e.target as HTMLElement).closest("input, textarea, .anno") && onClose();
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
   }, [onClose]);
+  useEffect(() => {
+    let alive = true;
+    api.threadMessages(channelId, target.id).then((list) => alive && setReplies(list)).catch(() => alive && setReplies([]));
+    const off = api.subscribeThread(channelId, target.id, (m) =>
+      setReplies((cur) => {
+        const list = cur ?? [];
+        const i = list.findIndex((x) => x.id === m.id);
+        if (i < 0) return [...list, m];
+        const next = list.slice();
+        next[i] = m;
+        return next;
+      }),
+    );
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [api, channelId, target.id]);
+  // 열어 둔 동안 새 답글은 읽은 것으로, 그리고 맨 아래를 따라간다
+  useEffect(() => {
+    if (!replies) return;
+    onSeen();
+    const el = body.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [replies?.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const add = (m: ChatMessage) => setReplies((cur) => (cur && !cur.some((x) => x.id === m.id) ? [...cur, m] : cur));
+  // 바로 맡긴 일: 그 run 의 채널 메시지도 같이 (예전처럼)
+  const runLines = target.run ? channelMessages.filter((m) => m.runId === target.run && m.id !== target.id) : [];
+  const sorted = (replies ?? []).slice().sort((a, b) => a.ts - b.ts);
   return (
     <aside className="side-panel thread-panel" aria-label="스레드">
       <header className="panel-top">
         <span className="t-title">스레드</span>
+        {channel ? <span className="t-meta"># {channel.name}</span> : null}
         <span className="grow" />
         <button className="ib sm" aria-label="스레드 닫기" onClick={onClose}>
           <IconX size={16} />
         </button>
       </header>
-      <div className="panel-body">
-        {"request" in target ? (
-          <RequestThread api={api} id={target.request} user={user} messages={messages} deployTracked={deployTracked} />
-        ) : (
-          <RunThread api={api} id={target.run} user={user} messages={messages} go={go} onThread={onThread} />
-        )}
+      <div
+        className="panel-body"
+        ref={body}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+      >
+        {target.request ? (
+          <RequestRoot api={api} id={target.request} user={user} deployTracked={deployTracked} />
+        ) : target.run ? (
+          <RunRoot api={api} id={target.run} user={user} go={go} onThread={onThread} />
+        ) : root ? (
+          <TMsg m={root} user={user} />
+        ) : null}
+        {runLines.length ? <ThreadMessages list={runLines} user={user} title="작업 소식" /> : null}
+        {!replies ? <div className="skel" style={{ height: 64 }} /> : <ThreadMessages list={sorted} user={user} title={sorted.length ? `답글 ${sorted.length}` : "아직 답글이 없어요"} />}
       </div>
+      <ThreadComposer api={api} user={user} channelId={channelId} threadId={target.id} onSent={add} />
     </aside>
   );
 }
 
-function ThreadMessages({ list, user }: { list: ChatMessage[]; user: User }) {
-  if (!list.length) return null;
+function TMsg({ m, user }: { m: ChatMessage; user: User }) {
+  return (
+    <div className={`tmsg ${mentionsMe(m, user) ? "to-me" : ""}`}>
+      {m.bot ? (
+        <span className="avatar bot" style={{ width: 28, height: 28 }} aria-hidden>
+          <Logo size={16} />
+        </span>
+      ) : (
+        <Avatar name={m.user} size={28} src={m.userAvatar} />
+      )}
+      <div className="tmsg-main">
+        <p className="tmsg-head">
+          <b style={{ color: nameColor(m.userTitle, m.bot) }}>{m.bot ? "willnew" : m.user}</b>
+          {m.via ? <span className="via-tag">willnew로 보냄</span> : null}
+          {m.broadcast ? <span className="via-tag">채널에도 보냄</span> : null}
+          <time className="t-meta">{clockTime(m.ts)}</time>
+        </p>
+        <div className="msg-text">{highlight(textOf(m, user), user.name)}</div>
+      </div>
+    </div>
+  );
+}
+
+function ThreadMessages({ list, user, title }: { list: ChatMessage[]; user: User; title: string }) {
   return (
     <section className="thread-msgs" aria-label="스레드 메시지">
-      <h3 className="sec-t">답글 {list.length}</h3>
+      <h3 className="sec-t thread-div">{title}</h3>
       {list.map((m) => (
-        <div key={m.id} className="tmsg">
-          {m.bot ? (
-            <span className="avatar bot" style={{ width: 24, height: 24 }} aria-hidden>
-              <Logo size={14} />
-            </span>
-          ) : (
-            <Avatar name={m.user} size={24} src={m.userAvatar} />
-          )}
-          <div>
-            <p className="tmsg-head">
-              <b style={{ color: nameColor(m.userTitle, m.bot) }}>{m.bot ? "willnew" : m.user}</b> <time className="t-meta">{clockTime(m.ts)}</time>
-            </p>
-            <div className="msg-text">{highlight(textOf(m, user), user.name)}</div>
-          </div>
-        </div>
+        <TMsg key={m.id} m={m} user={user} />
       ))}
     </section>
   );
 }
 
-function RequestThread({ api, id, user, messages, deployTracked }: { api: Api; id: string; user: User; messages: ChatMessage[]; deployTracked?: boolean }) {
+function RequestRoot({ api, id, user, deployTracked }: { api: Api; id: string; user: User; deployTracked?: boolean }) {
   const { req, error, reload } = useLiveRequest(api, id);
   if (error && !req) return <ErrorBox error={error} onRetry={reload} />;
   if (!req) return <div className="skel card-skel" />;
-  const related = messages.filter((m) => !(m.kind === "request") && (m.requestId === id || (m.runId && req.runIds.includes(m.runId))));
   return (
-    <>
+    <div className="thread-root">
       <RequestView api={api} req={req} user={user} deployTracked={deployTracked} timeline={user.role !== "requester"} />
-      <ThreadMessages list={related} user={user} />
       <a className="msg-link" href={`#/requests/${req.id}`}>
         요청 화면에서 보기 <IconChevron size={12} />
       </a>
-    </>
+    </div>
   );
 }
 
-function RunThread({ api, id, user, messages, go, onThread }: { api: Api; id: string; user: User; messages: ChatMessage[]; go: (p: string) => void; onThread: (t: Thread) => void }) {
+function RunRoot({ api, id, user, go, onThread }: { api: Api; id: string; user: User; go: (p: string) => void; onThread: (t: Thread) => void }) {
   const { run } = useLiveRun(api, id);
   useEffect(() => {
-    if (run?.requestId) onThread({ request: run.requestId });
+    if (run?.requestId) onThread({ id: `req-${run.requestId}`, request: run.requestId });
   }, [run?.requestId, onThread]);
   if (!run) return <div className="skel card-skel" />;
-  return (
-    <>
-      <RunCardBody api={api} run={run} user={user} go={go} now={Date.now()} />
-      <ThreadMessages list={messages.filter((m) => m.runId === id)} user={user} />
-    </>
-  );
+  return <RunCardBody api={api} run={run} user={user} go={go} now={Date.now()} />;
 }
 
 // ---------------------------------------------------------------------------------------------- members
