@@ -25,10 +25,34 @@ import type {
   RequestStatus,
   RequestUpdate,
   WorkSpec,
+  ThreadSummary,
+  RequesterCheck,
+  ShotPair,
+  Feedback,
+  Screen,
 } from "../../src/server/types";
 
 export type { Ship, AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
 export type { Bodies, ClarifyQuestion, DecisionEntry, Proposal, Request, RequestStatus, RequestUpdate, WorkSpec };
+export type { ThreadSummary, RequesterCheck, ShotPair, Feedback, Screen };
+
+/** 요청자 확인: 의도대로예요 / 다시 봐 주세요 (boxes) / 건너뛰기 (developer, with a reason) */
+export interface RequesterCheckInput {
+  verdict: "ok" | "changes" | "skip";
+  by: string;
+  feedback?: Feedback[];
+  note?: string;
+  reason?: string;
+}
+
+export interface ReplyInput {
+  user: string;
+  text: string;
+  userTitle?: string;
+  userAvatar?: string;
+  /** 채널에도 보내기 */
+  broadcast?: boolean;
+}
 export type { Member } from "./people";
 import { membersFrom, type Member } from "./people";
 
@@ -127,6 +151,10 @@ export interface ServerConfig {
   /** 배포 확인 명령이 있는가 */
   deploy?: boolean;
   deployEnv?: string;
+  /** --preview-base-url, e.g. http://127.0.0.1:{port} */
+  previewBaseUrl?: string;
+  /** preview links only open on the machine running willnew */
+  previewLocalOnly?: boolean;
 }
 
 export interface Api {
@@ -143,8 +171,17 @@ export interface Api {
   decide(id: string, input: DecideInput): Promise<Request>;
   /** instant keyword plan for the compose box */
   plan(text: string): Promise<Triage>;
-  /** New or replaced chat messages for one channel (same id = replace). */
+  /** New or replaced chat messages for one channel (same id = replace). Thread replies come through here too (they carry threadId). */
   subscribeChannel(channel: string, onMessage: (m: ChatMessage) => void): () => void;
+  /** one summary per thread in the channel (count, last reply, who, mentions) */
+  threads(channel: string): Promise<ThreadSummary[]>;
+  threadMessages(channel: string, threadId: string): Promise<ChatMessage[]>;
+  subscribeThread(channel: string, threadId: string, onMessage: (m: ChatMessage) => void): () => void;
+  reply(channel: string, threadId: string, input: ReplyInput): Promise<{ message: ChatMessage }>;
+  requesterCheck(id: string, input: RequesterCheckInput): Promise<Request>;
+  setScreens(id: string, screens: Screen[], by: string): Promise<Request>;
+  /** a stored screenshot URL as this browser loads it (token added) */
+  shotUrl(url: string): string;
   /** toggle one reaction (👍 ✅ 👀) on a message; the changed message also arrives through subscribeChannel */
   react(channel: string, messageId: string, emoji: string, user: string): Promise<ChatMessage>;
   /** who is in a channel: message authors, reviewers and the bot (presence only in the demo) */
@@ -240,6 +277,13 @@ export const httpApi: Api = {
   decide: (id, input) => post(`/api/requests/${enc(id)}/decide`, input).then((r) => json<Request>(r)),
   plan: (text) => post("/api/plan", { text }).then((r) => json<Triage>(r)),
   subscribeChannel: (ch, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/stream`, on),
+  threads: (ch) => get(`/api/channels/${enc(ch)}/threads`).then((r) => json<ThreadSummary[]>(r)),
+  threadMessages: (ch, tid) => get(`/api/channels/${enc(ch)}/threads/${enc(tid)}/messages`).then((r) => json<ChatMessage[]>(r)),
+  subscribeThread: (ch, tid, on) => sse<ChatMessage>(`/api/channels/${enc(ch)}/threads/${enc(tid)}/stream`, on),
+  reply: (ch, tid, input) => post(`/api/channels/${enc(ch)}/messages`, { ...input, threadId: tid }).then((r) => json(r)),
+  requesterCheck: (id, input) => post(`/api/requests/${enc(id)}/requester-check`, input).then((r) => json<Request>(r)),
+  setScreens: (id, screens, by) => post(`/api/requests/${enc(id)}/screens`, { screens, by }, "PUT").then((r) => json<Request>(r)),
+  shotUrl: (u) => (u.startsWith("/api/") ? withToken(u) : u),
   react: (ch, mid, emoji, user) => post(`/api/channels/${enc(ch)}/messages/${enc(mid)}/react`, { emoji, user }).then((r) => json<ChatMessage>(r)),
   members: async (ch) => {
     const [list, channels] = await Promise.all([httpApi.messages(ch), httpApi.channels()]);

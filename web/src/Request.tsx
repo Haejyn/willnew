@@ -6,8 +6,9 @@
  * 채널 본문에는 짧은 embed(RequestEmbed), 스레드와 요청 화면에는 전체(RequestView). 결정 기록은 요청 화면 오른쪽 맥락 칸에.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, WorkSpec } from "./api";
-import { TYPE_KO } from "../../src/server/request-state";
+import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, Screen, WorkSpec } from "./api";
+import { isVisual, TYPE_KO } from "../../src/server/request-state";
+import { CheckPanel } from "./Check";
 import { ReviewActions } from "./Decision";
 import { useLiveRequest, useLiveRun } from "./flow";
 import { IconCheck, IconChevron } from "./icons";
@@ -187,6 +188,9 @@ const WHAT_KO: Record<DecisionEntry["what"], string> = {
   preview_ok: "화면 확인: 의도대로예요", preview_changes: "화면 확인: 다시 봐 주세요", preview_skip: "요청자 확인 건너뜀",
 };
 const working = (req: Request) => req.status === "draft" || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
+/** 요청자 확인이 지금 일인가: 확인 차례이거나, 다시 봐 달라고 한 뒤 고치는 중 */
+const checkNow = (req: Request) =>
+  !!req.checks?.length && (req.status === "preview" || ((req.status === "building" || req.status === "verifying") && req.checks.at(-1)!.status === "changes"));
 
 // ---------------------------------------------------------------------------------------------- clarify: 한 번에 하나
 
@@ -303,6 +307,74 @@ export function SpecCard({ spec, done }: { spec: WorkSpec; done?: boolean }) {
           ))}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------- 전후 화면을 찍을 페이지
+
+/** 계획 에이전트가 채운 페이지 목록. 개발자가 고칠 수 있고, 다음 확인부터 이 목록으로 찍는다. */
+function ScreensEdit({ api, req, user }: { api: Api; req: Request; user: User }) {
+  const toast = useToast();
+  const screens = req.spec?.screens ?? [];
+  const [edit, setEdit] = useState<Screen[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      await api.setScreens(req.id, edit.filter((s) => s.name.trim() || s.path.trim()), user.name);
+      setEdit(null);
+    } catch (e) {
+      toast((e as Error).message, "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="rq-sec" aria-label="확인할 화면">
+      <div className="chk-head">
+        <h3 className="sec-t">확인할 화면</h3>
+        <span className="grow" />
+        {!edit ? (
+          <button className="btn q sm" onClick={() => setEdit(screens.map((s) => ({ ...s })))}>
+            고치기
+          </button>
+        ) : null}
+      </div>
+      {!edit ? (
+        <div className="rq-row">
+          {screens.length ? screens.map((s) => (
+            <span key={s.path} className="chip muted">
+              {s.name} <span className="mono">{s.path}</span>
+            </span>
+          )) : <span className="t-meta">아직 없어요. 첫 화면을 찍어요</span>}
+        </div>
+      ) : (
+        <form className="scr-edit" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          {edit.map((s, i) => (
+            <div key={i} className="scr-row">
+              <input aria-label="화면 이름" value={s.name} placeholder="결제 화면" onChange={(e) => setEdit(edit.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+              <input aria-label="경로" className="mono" value={s.path} placeholder="/checkout" onChange={(e) => setEdit(edit.map((x, j) => (j === i ? { ...x, path: e.target.value } : x)))} />
+              <button type="button" className="btn q sm" onClick={() => setEdit(edit.filter((_, j) => j !== i))}>
+                빼기
+              </button>
+            </div>
+          ))}
+          <div className="row-btns">
+            <button type="button" className="btn q sm" onClick={() => setEdit([...edit, { name: "", path: "/" }])}>
+              화면 더하기
+            </button>
+            <span className="grow" />
+            <button className="btn w sm" type="submit" disabled={busy}>
+              {busy ? <Spinner size={12} /> : null}저장
+            </button>
+            <button className="btn q sm" type="button" onClick={() => setEdit(null)}>
+              닫기
+            </button>
+          </div>
+        </form>
+      )}
     </section>
   );
 }
@@ -536,6 +608,7 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
       ) : null}
       {working(req) ? <Working text={req.status === "spec_ready" ? "저장소 읽는 중" : "정리하는 중"} /> : null}
       {req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : null}
+      {checkNow(req) ? <CheckPanel api={api} req={req} user={user} /> : null}
       {dev && req.questions.some((q) => q.answer) && req.status !== "clarifying" ? (
         <ul className="rq-list qa" aria-label="되묻기 답">
           {req.questions.map((q) => (
@@ -546,7 +619,9 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
         </ul>
       ) : null}
       {dev && req.spec ? <SpecCard spec={req.spec} done={p.state === "done" || req.status === "merged"} /> : null}
+      {dev && req.spec && isVisual(req) ? <ScreensEdit api={api} req={req} user={user} /> : null}
       {dev && req.proposal ? <ProposalCard p={req.proposal} decide={decide} /> : null}
+      {req.checks?.length && !checkNow(req) ? <CheckPanel api={api} req={req} user={user} /> : null}
       {req.planner?.by === "fallback" && req.planner.note && dev ? <p className="warn-chip rq-warn">{req.planner.note}</p> : null}
       {req.status === "declined" ? <Declined req={req} dev={dev} /> : null}
       {req.status === "code_review" && req.runIds.length ? <RunReview api={api} runId={req.runIds.at(-1)!} user={user} /> : null}
@@ -580,7 +655,7 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
  * 채널 본문의 요청 embed: 왼쪽 3px 띠(단계 색, 내 차례면 액센트) + 제목 + 진행 줄 + 필드 두세 개 + 지금 할 일.
  * 요청자의 되묻기와 개발자의 진행, 결과 검토는 여기서 바로 한다. 나머지는 스레드에서.
  */
-export function RequestEmbed({ api, id, user, deployTracked, onThread, onWorking }: { api: Api; id: string; user: User; deployTracked?: boolean; onThread?: () => void; onWorking?: (id: string, on: boolean) => void }) {
+export function RequestEmbed({ api, id, user, deployTracked, onThread, onWorking, threaded }: { api: Api; id: string; user: User; deployTracked?: boolean; onThread?: () => void; onWorking?: (id: string, on: boolean) => void; threaded?: boolean }) {
   const { req, error, reload } = useLiveRequest(api, id);
   const busy = !!req && working(req);
   useEffect(() => {
@@ -589,10 +664,11 @@ export function RequestEmbed({ api, id, user, deployTracked, onThread, onWorking
   }, [id, busy, onWorking]);
   if (error && !req) return <ErrorBox error={error} onRetry={reload} />;
   if (!req) return <div className="embed skel" aria-busy style={{ height: 120 }} />;
-  return <EmbedBody api={api} req={req} user={user} deployTracked={deployTracked} onThread={onThread} />;
+  return <EmbedBody api={api} req={req} user={user} deployTracked={deployTracked} onThread={onThread} threaded={threaded} />;
 }
 
-function EmbedBody({ api, req, user, deployTracked = true, onThread }: { api: Api; req: Request; user: User; deployTracked?: boolean; onThread?: () => void }) {
+/** threaded: the channel draws a reply footer under the card, so the card does not need its own "스레드 보기" */
+function EmbedBody({ api, req, user, deployTracked = true, onThread, threaded }: { api: Api; req: Request; user: User; deployTracked?: boolean; onThread?: () => void; threaded?: boolean }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const dev = isDev(user);
@@ -645,6 +721,7 @@ function EmbedBody({ api, req, user, deployTracked = true, onThread }: { api: Ap
       </dl>
       {working(req) ? <Working text={req.status === "spec_ready" ? "저장소 읽는 중" : "정리하는 중"} /> : null}
       {req.status === "clarifying" && !dev ? <Clarify api={api} req={req} user={user} /> : null}
+      {checkNow(req) ? <CheckPanel api={api} req={req} user={user} compact /> : null}
       {dev && req.status === "proposed" ? (
         <div className="row-btns">
           <button className="btn m" disabled={busy} onClick={proceed}>
@@ -661,7 +738,7 @@ function EmbedBody({ api, req, user, deployTracked = true, onThread }: { api: Ap
           <LinkChip key={a.url} url={a.url} />
         ))}
         <span className="grow" />
-        {onThread ? (
+        {threaded ? null : onThread ? (
           <button className="msg-link" onClick={onThread}>
             스레드 보기 <IconChevron size={12} />
           </button>
@@ -813,7 +890,7 @@ export function RequestMineCard({ api, req, user, now, note, deployTracked = tru
         </span>
       </div>
       <PhaseTrack p={p} />
-      <p className="mine-status">{reqHeadline(req, user)}</p>
+      <p className={`mine-status ${p.mine ? "turn" : ""}`}>{reqHeadline(req, user)}</p>
       {summary && req.status !== "declined" ? (
         <AiText read original={req.text}>
           {summary}
@@ -821,6 +898,7 @@ export function RequestMineCard({ api, req, user, now, note, deployTracked = tru
       ) : null}
       {working(req) ? <Working /> : null}
       {req.status === "clarifying" ? <Clarify api={api} req={req} user={user} /> : null}
+      {checkNow(req) ? <CheckPanel api={api} req={req} user={user} compact /> : null}
       {req.status === "declined" ? <Declined req={req} dev={false} /> : null}
       {note ? (
         <blockquote className="mine-note">
