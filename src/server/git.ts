@@ -75,10 +75,10 @@ export async function diffSummary(wt: string, baseRef: string): Promise<DiffSumm
   return { files, insertions, deletions, patch, fileStats, testsTouched: touched, testsAdded: added };
 }
 
-/** Would merging `branch` into the current HEAD of `root` conflict? null when git cannot tell (needs git ≥ 2.38). */
-export async function mergeConflicts(root: string, branch: string): Promise<boolean | null> {
+/** Would merging `branch` into `base` (default the current HEAD of `root`) conflict? null when git cannot tell (needs git ≥ 2.38). */
+export async function mergeConflicts(root: string, branch: string, base = "HEAD"): Promise<boolean | null> {
   try {
-    await run("git", ["-C", root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", branch], { windowsHide: true });
+    await run("git", ["-C", root, "merge-tree", "--write-tree", "--name-only", "--no-messages", base, branch], { windowsHide: true });
     return false;
   } catch (e) {
     const code = (e as { code?: number }).code;

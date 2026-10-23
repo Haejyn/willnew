@@ -32,6 +32,8 @@ export interface DiffSummary {
   testsTouched?: string[];
   /** new test files (test first). Shown as a neutral chip, never blocks */
   testsAdded?: string[];
+  /** the patch was cut at 1 MB on its way from a runner (team mode) */
+  truncated?: boolean;
 }
 
 /** A dev server started in one agent's worktree so a human can click through the result. */
@@ -135,6 +137,8 @@ export interface Run {
   requestId?: string;
   /** dev server on a detached worktree of baseRef, for before/after screenshots (B2) */
   basePreview?: Preview;
+  /** team mode: the runner this run was given to (absent while it waits in the hub queue) */
+  runnerId?: string;
 }
 
 export interface ReviewComment {
