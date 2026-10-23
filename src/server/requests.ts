@@ -15,14 +15,14 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createPlanner, fallbackProposal, type Planner } from "./brief.js";
+import { createPlanner, fallbackProposal, type Brief, type Planned, type Planner } from "./brief.js";
 import { defaultProposalAgent, propose, type ProposalAgent } from "./proposal.js";
 import { buildRunTask, feedbackConstraints, followUpTask, isOpenRequest, isVisual, moveTo, parseAttachments, routeAfterVerify, screensFromFiles, statusFromRun, TEMPLATE_FOR_TYPE, transition, wantsMobile, withConstraint } from "./request-state.js";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { flagUnverified } from "./spec-check.js";
 import { templateById } from "./templates.js";
 import { defaultVisualCheck, type VisualCheck } from "./visual.js";
-import type { AgentSpec, DecisionEntry, DecisionKind, Feedback, Request, RequesterCheck, RequestUpdate, Run, RunUpdate, Screen } from "./types.js";
+import type { AgentSpec, DecisionEntry, DecisionKind, DeclineNote, Feedback, Proposal, Request, RequesterCheck, RequestUpdate, Run, RunUpdate, Screen, SpecFlag, WorkSpec } from "./types.js";
 
 const REQUESTS_DIR = join(HOME, "requests");
 const rid = () => `q${new Date().toISOString().slice(2, 10).replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6)}`;
@@ -63,6 +63,29 @@ type Runs = Pick<RunManager, "bus" | "create" | "get"> & Partial<Pick<RunManager
 
 const NO_PREVIEW = "미리보기를 띄울 수 없는 환경이에요. 개발자가 serve --preview 로 띄우면 링크와 스크린샷이 붙어요";
 const clamp = (x: unknown) => Math.min(1, Math.max(0, Number(x) || 0));
+/** a request a developer can still claim: before anyone decided on the proposal */
+const CLAIMABLE = new Set(["draft", "clarifying", "spec_ready", "proposed"]);
+
+/**
+ * Team mode planning on the claimer's runner (the hub has no API key). Each call goes to `req.runnerId` and comes back
+ * with the same shapes the local planner and proposal pass return.
+ */
+export interface RemotePlanning {
+  brief(req: Request): Promise<Planned<Brief>>;
+  spec(req: Request): Promise<Planned<WorkSpec>>;
+  proposal(req: Request): Promise<{ proposal: Proposal; needsCheck: SpecFlag[] }>;
+  decline(req: Request, reason: string, developer: string): Promise<Planned<DeclineNote>>;
+}
+
+/**
+ * Team mode (hub). Every request waits for a developer to claim it (내가 맡을게요); only that developer decides on its
+ * proposal, and its runs go to that developer's runner. With `remote`, nothing is planned until the claim, and the
+ * planning runs on the claimer's runner. Without it, the hub plans right away (its own API key) and the request waits at
+ * the proposal.
+ */
+export interface TeamRequests {
+  remote?: RemotePlanning;
+}
 
 export class RequestManager {
   readonly bus = new EventEmitter();
@@ -72,11 +95,15 @@ export class RequestManager {
   private proposer: ProposalAgent | null;
   private agents?: AgentSpec[];
   private visual: VisualCheck | null;
+  private team?: TeamRequests;
+  /** requests whose planning is in flight (a second claim does not start it twice) */
+  private planning = new Set<string>();
 
-  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[]; visual?: VisualCheck | null } = {}) {
+  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[]; visual?: VisualCheck | null; team?: TeamRequests } = {}) {
     this.planner = deps.planner ?? createPlanner();
     this.proposer = deps.proposer !== undefined ? deps.proposer : defaultProposalAgent();
     this.agents = deps.agents;
+    this.team = deps.team;
     this.visual = deps.visual !== undefined ? deps.visual : runs.startBasePreview ? defaultVisualCheck(runs as RunManager, HOME) : null;
     this.bus.setMaxListeners(200);
     mkdirSync(REQUESTS_DIR, { recursive: true });
@@ -124,9 +151,41 @@ export class RequestManager {
       text, attachments: parseAttachments(text), status: "draft", title: text.replace(/@willnew\b/gi, "").trim().split("\n")[0].slice(0, 40),
       questions: [], decisions: [], reviewer: input.reviewer, runIds: [], createdAt: now, updatedAt: now,
     };
+    if (this.team) req.unclaimed = true;
     this.reqs.set(req.id, req);
     this.changed(req);
-    void this.plan(req);
+    // team mode without a hub API key: planning waits for the claim and runs on the claimer's runner
+    if (!this.team?.remote) void this.plan(req);
+    return req;
+  }
+
+  /** Team mode: whether this request can still be claimed, and by whom. */
+  claimable(req: Request, by: string): string | null {
+    if (!this.team) return "팀 모드에서만 맡을 수 있어요";
+    if (!CLAIMABLE.has(req.status)) return "이미 진행 중이거나 끝난 요청이에요";
+    if (req.assignee && req.assignee !== by) return `이미 ${req.assignee}님이 맡았어요`;
+    return null;
+  }
+
+  /**
+   * Team mode: 내가 맡을게요. The developer and their runner are set; when planning has not happened yet (or stopped
+   * halfway, e.g. the runner dropped), it starts again on that runner.
+   */
+  claim(id: string, input: { by: string; runnerId: string }): Request {
+    const req = this.need(id);
+    const why = this.claimable(req, input.by);
+    if (why) throw new Error(why);
+    const again = req.assignee === input.by;
+    req.assignee = input.by;
+    req.runnerId = input.runnerId;
+    delete req.unclaimed;
+    if (!again) this.log(req, input.by, "claim");
+    this.changed(req);
+    if (!again) this.bus.emit("claimed", req, input.by);
+    if (this.team?.remote && !this.planning.has(req.id)) {
+      if (req.status === "draft") void this.plan(req);
+      else if ((req.status === "clarifying" && req.questions.every((q) => q.answer)) || (req.status === "spec_ready" && !req.proposal)) void this.specify(req);
+    }
     return req;
   }
 
@@ -152,6 +211,9 @@ export class RequestManager {
     const req = this.need(id);
     if (req.status !== "proposed") throw new Error("확인할 제안이 없어요");
     const by = input.by.trim() || "anonymous";
+    // team mode: the developer who claimed it decides, and the work goes to their runner
+    if (this.team && !req.assignee) throw new Error("먼저 내가 맡을게요를 눌러 주세요");
+    if (this.team && req.assignee !== by) throw new Error(`맡은 ${req.assignee}님만 제안을 확인할 수 있어요`);
     const text = input.text?.trim() ?? "";
     switch (input.decision) {
       case "proceed":
@@ -174,7 +236,9 @@ export class RequestManager {
       case "decline": {
         if (!text) throw new Error("거절 사유를 적어 주세요");
         this.log(req, by, "decline", text);
-        const note = await this.planner.decline(req, text, by);
+        const note = this.team?.remote
+          ? await this.team.remote.decline(req, text, by).catch((e: Error) => ({ value: { reason: text, forRequester: `이번엔 진행하지 않기로 했어요. 개발자가 남긴 이유: ${text}`, alternatives: [] }, by: "fallback" as const, note: `거절 설명을 만들지 못했어요: ${e.message.slice(0, 120)}`, costUsd: null, attempts: 0 }))
+          : await this.planner.decline(req, text, by);
         req.decline = note.value;
         if (note.by === "fallback") req.planner = { ...(req.planner ?? { by: "llm" }), note: note.note };
         transition(req, "declined");
@@ -239,8 +303,8 @@ export class RequestManager {
     this.log(req, by, "preview_changes", [...feedback.map((f) => `${f.screen}${f.viewport === "mobile" ? " (모바일)" : ""}: ${f.note}`), ...(note ? [note] : [])].join(" / "));
     this.changed(req);
     this.bus.emit("preview_changes", req, check, by);
-    // same agent, same worktree and branch, same CLI session when it can be resumed
-    this.runs.steer(check.runId, check.agentId, followUpTask(check.round, feedback, note), by);
+    // same agent, same worktree and branch, same CLI session when it can be resumed (team mode: may wait for the runner owner)
+    this.runs.steer(check.runId, check.agentId, followUpTask(check.round, feedback, note), by, "changes");
     if (req.status === "preview") moveTo(req, "building");
     this.changed(req);
     return req;
@@ -279,8 +343,17 @@ export class RequestManager {
   // -------------------------------------------------------------------------------------------- pipeline
 
   private async plan(req: Request) {
+    this.planning.add(req.id);
     try {
-      const b = await this.planner.brief(req.text, req.attachments, req.repo);
+      await this.planSteps(req);
+    } finally {
+      this.planning.delete(req.id);
+    }
+  }
+
+  private async planSteps(req: Request) {
+    try {
+      const b = this.team?.remote ? await this.team.remote.brief(req) : await this.planner.brief(req.text, req.attachments, req.repo);
       Object.assign(req, { type: b.value.type, title: b.value.title, understood: b.value.understood, questions: b.value.questions });
       req.planner = { by: b.by, note: b.note, costUsd: b.costUsd };
       if (req.questions.length) {
@@ -297,31 +370,53 @@ export class RequestManager {
   }
 
   private async specify(req: Request) {
+    const own = !this.planning.has(req.id);
+    if (own) this.planning.add(req.id);
     try {
       await this.specifyAndPropose(req);
     } catch (e) {
       req.planner = { ...(req.planner ?? { by: "fallback" }), note: `명세나 제안을 만드는 중 오류: ${(e as Error).message}` };
       this.changed(req);
+    } finally {
+      if (own) this.planning.delete(req.id);
     }
   }
 
   private async specifyAndPropose(req: Request) {
-    const s = await this.planner.spec(req.text, req.attachments, req.questions, req.repo);
-    req.spec = s.value;
-    req.title = s.value.title || req.title;
-    req.planner = { by: req.planner?.by === "fallback" || s.by === "fallback" ? "fallback" : "llm", note: s.note ?? req.planner?.note, costUsd: add(req.planner?.costUsd, s.costUsd) };
-    transition(req, "spec_ready");
-    this.changed(req);
-    let p;
-    try {
-      p = await propose(req, req.repo, this.proposer, HOME);
-    } catch (e) {
-      p = fallbackProposal(req.spec, `제안을 만들지 못했어요: ${(e as Error).message.slice(0, 160)}`);
+    const remote = this.team?.remote;
+    // a claim again after the proposal step failed: the spec is already there
+    if (req.status !== "spec_ready" || !req.spec) {
+      const s = remote ? await remote.spec(req) : await this.planner.spec(req.text, req.attachments, req.questions, req.repo);
+      req.spec = s.value;
+      req.title = s.value.title || req.title;
+      req.planner = { by: req.planner?.by === "fallback" || s.by === "fallback" ? "fallback" : "llm", note: s.note ?? req.planner?.note, costUsd: add(req.planner?.costUsd, s.costUsd) };
+      transition(req, "spec_ready");
+      this.changed(req);
     }
-    req.proposal = p;
-    // names in the criteria that the requester never wrote and nobody can find in the repo → 확인 필요
-    const flags = await flagUnverified(req.spec, req, p, req.repo).catch(() => []);
-    req.spec = { ...req.spec, needsCheck: flags.length ? flags : undefined };
+    const spec = req.spec!;
+    let p: Proposal;
+    let flags: SpecFlag[] = [];
+    if (remote) {
+      // the claimer's runner reads its own clone: the proposal and the 확인 필요 names come back together
+      try {
+        const r = await remote.proposal(req);
+        p = r.proposal;
+        flags = r.needsCheck ?? [];
+      } catch (e) {
+        p = fallbackProposal(spec, `제안을 만들지 못했어요: ${(e as Error).message.slice(0, 160)}`);
+      }
+      req.proposal = p;
+    } else {
+      try {
+        p = await propose(req, req.repo, this.proposer, HOME);
+      } catch (e) {
+        p = fallbackProposal(spec, `제안을 만들지 못했어요: ${(e as Error).message.slice(0, 160)}`);
+      }
+      req.proposal = p;
+      // names in the criteria that the requester never wrote and nobody can find in the repo → 확인 필요
+      flags = await flagUnverified(spec, req, p, req.repo).catch(() => []);
+    }
+    req.spec = { ...spec, needsCheck: flags.length ? flags : undefined };
     // pages for the before/after pairs: the planner's, else guessed from the proposal's files, else the first page
     if (isVisual(req) && !req.spec.screens?.length) {
       const guessed = screensFromFiles(p.files);
@@ -345,7 +440,7 @@ export class RequestManager {
     try {
       run = await this.runs.create({
         repo: req.repo, task, title, agents, check, requester: req.requester, requesterTitle: req.requesterTitle, requesterAvatar: req.requesterAvatar,
-        team: req.team, template: tpl.id, channel: req.channel, requestId: req.id,
+        team: req.team, template: tpl.id, channel: req.channel, requestId: req.id, runnerId: req.runnerId,
         triage: { by: "llm", template: tpl.id, title, task, plan: req.proposal?.approach ?? [], agents, check, reason: "개발자가 제안을 확인했어요" },
       });
     } catch (e) {
@@ -367,6 +462,8 @@ export class RequestManager {
     const req = reqId ? this.reqs.get(reqId) : undefined;
     const run = this.runs.get(runId);
     if (!req || !run || (!isOpenRequest(req.status) && req.status !== "merged")) return;
+    // team mode: a follow-up waits for the runner owner; the finished result is not the one to show or review yet
+    if (run.held?.length) return;
     let to = statusFromRun(run);
     // a passing result of a screen change goes to the requester first (요청자 확인)
     if (to === "code_review" && ["approved", "building", "verifying", "preview"].includes(req.status)) to = routeAfterVerify(req);
@@ -409,7 +506,7 @@ export class RequestManager {
         return;
       }
       const pv = await this.visual.previews(run, check.agentId);
-      Object.assign(check, { previewUrl: pv.after?.url, baseUrl: pv.before?.url, localOnly: pv.localOnly, note: pv.note });
+      Object.assign(check, { previewUrl: pv.after?.url || undefined, baseUrl: pv.before?.url || undefined, localOnly: pv.localOnly, note: pv.note });
       if (!pv.after && !pv.before) {
         check.capture = "skipped";
         return;

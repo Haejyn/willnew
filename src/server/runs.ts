@@ -14,7 +14,7 @@ import { LocalExecutor, type AgentSink, type Executor } from "./executor.js";
 import { repoInfo } from "./git.js";
 import { HOME } from "./home.js";
 import { Shipper, type ShipOptions } from "./ship.js";
-import type { AgentEvent, AgentRun, CreateRunInput, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
+import type { AgentEvent, AgentRun, CreateRunInput, HeldWork, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
 
 export { HOME } from "./home.js";
 export { runShell, LocalExecutor, type AgentSink, type Executor } from "./executor.js";
@@ -118,6 +118,8 @@ export class RunManager {
       channel: input.channel, triage: input.triage, review: { status: "none" },
       maxAttempts: input.maxAttempts ?? 2, agents, requestId: input.requestId,
     };
+    // team mode: a claimed request runs on the claimer's runner (the hub pins it; it never goes to another runner)
+    if (this.opts.team && input.runnerId) run.runnerId = input.runnerId;
     this.runs.set(runId, run);
     this.save(run, true);
     for (const a of agents) this.executor.start(run, a, this.sink(run, a));
@@ -185,17 +187,55 @@ export class RunManager {
    * Hand an instruction to one agent. Working → its current turn stops and the same session continues with it.
    * Checking → it is picked up right after the check. Finished → the agent reopens, works on it, and is re-verified.
    */
-  steer(runId: string, agentId: string, text: string, by = "anonymous") {
+  steer(runId: string, agentId: string, text: string, by = "anonymous", kind: HeldWork["kind"] = "steer"): { held: boolean } {
     const run = this.runs.get(runId);
     const agent = run?.agents.find((a) => a.id === agentId);
     if (!run || !agent) throw new Error("not found");
     const t = text.trim();
     if (!t) throw new Error("지시 내용이 비어 있습니다");
     if (run.review.status === "approved") throw new Error("이미 병합된 요청입니다");
+    // team mode: a subscription runner only does what its owner asked for; anyone else's follow-up waits for the owner
+    const owner = this.executor.holdFor?.(run, by);
+    if (owner) {
+      const item: HeldWork = { agentId, text: t, by, at: Date.now(), kind };
+      this.emit(run, agent, {}, { ts: item.at, kind: "status", text: `${owner}님 확인 뒤에 이어서 작업해요 (${by})` }, { held: [...(run.held ?? []), item] });
+      this.bus.emit("held", run, item, owner);
+      return { held: true };
+    }
+    this.deliver(run, agent, t, by);
+    return { held: false };
+  }
+
+  /**
+   * Team mode: the runner owner lets the held follow-ups go. Each agent gets one instruction with everything that
+   * waited for it, in the order it came in.
+   */
+  releaseHeld(runId: string, by: string): number {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("not found");
+    const held = run.held ?? [];
+    if (!held.length) throw new Error("확인을 기다리는 작업이 없어요");
+    if (run.review.status === "approved") throw new Error("이미 병합된 요청입니다");
+    for (const agentId of [...new Set(held.map((h) => h.agentId))]) {
+      const agent = run.agents.find((a) => a.id === agentId);
+      if (!agent) continue;
+      const mine = held.filter((h) => h.agentId === agentId);
+      const who = [...new Set(mine.map((h) => h.by))].join(", ");
+      this.deliver(run, agent, mine.map((h) => h.text).join("\n\n"), who);
+    }
+    // cleared last: while the instructions go out, nobody mistakes the old result for the new one
+    this.emit(run, undefined, {}, undefined, { held: [] });
+    this.bus.emit("released", run, by, held);
+    return held.length;
+  }
+
+  /** Record the instruction and hand it to the executor. */
+  private deliver(run: Run, agent: AgentRun, t: string, by: string) {
     const at = Date.now();
-    this.emit(run, agent, { steers: [...(agent.steers ?? []), { text: t, by, at }] }, { ts: at, kind: "steer", text: `${by}: ${t}` });
-    // finished: the agent reopens, so the run is back at work rather than waiting on a human
+    // finished: the agent reopens, so the run is back at work rather than waiting on a human (first, so nothing that
+    // listens to the steer below sees a finished run still waiting for review)
     if (FINISHED.has(agent.status) && run.review.status === "pending") this.emit(run, undefined, {}, undefined, { review: { status: "none" } });
+    this.emit(run, agent, { steers: [...(agent.steers ?? []), { text: t, by, at }] }, { ts: at, kind: "steer", text: `${by}: ${t}` });
     if (FINISHED.has(agent.status)) this.cancelled.delete(agent.id);   // reopening a cancelled agent is allowed
     this.executor.steer(run, agent, t, this.sink(run, agent));
   }
@@ -224,7 +264,7 @@ export class RunManager {
     const text = `Review comments:\n${open.map((c) => `${c.file}:${c.line} — ${c.text}`).join("\n")}`;
     const now = Date.now();
     this.emit(run, undefined, {}, undefined, { comments: (run.comments ?? []).map((c) => (open.includes(c) ? { ...c, sentAt: now } : c)) });
-    this.steer(runId, agentId, text, by);
+    this.steer(runId, agentId, text, by, "comments");
     return open.length;
   }
 

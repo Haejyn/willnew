@@ -46,6 +46,11 @@ export interface Executor {
   push(run: Run, agent: AgentRun): Promise<{ branch: string; sha: string }>;
   /** Team mode: give a queued run to one runner. */
   assign?(run: Run, runnerId: string): void;
+  /**
+   * Team mode: the runner owner's name when a follow-up from `by` must wait for that owner (a subscription runner only
+   * does work its owner asked for). null when it can go straight to the runner.
+   */
+  holdFor?(run: Run, by: string): string | null;
   /** Team mode: called once after RunManager loaded the saved runs, so work in flight can be picked up again. */
   attach?(host: ExecutorHost): void;
   startPreview(run: Run, agent: AgentRun, sink: AgentSink): Promise<Preview>;

@@ -195,13 +195,21 @@ export function buildRunTask(req: Pick<Request, "spec" | "text" | "proposal">, i
   return parts.join("\n\n");
 }
 
+/** Team mode: nobody claimed it and nothing was planned yet (planning waits for the claimer's runner). */
+export const waitsForClaim = (req: Pick<Request, "unclaimed" | "status" | "planner">) => !!req.unclaimed && req.status === "draft" && !req.planner;
+
+/** 직접 할게: the developer took it out of the AI flow (in team mode, claiming also sets the assignee). */
+export const takenOver = (req: Pick<Request, "assignee" | "decisions">) => !!req.assignee && req.decisions.some((d) => d.what === "take_over");
+
 /** The one-line status on the live request card, per role. */
 export function cardBodies(req: Request): Bodies {
   const dev = req.reviewer ?? "개발자";
   const t = req.title;
   switch (req.status) {
     case "draft":
-      return { forRequester: "받았어요. 정리하는 중", forDeveloper: "받았어요. 정리하는 중" };
+      return waitsForClaim(req)
+        ? { forRequester: "받았어요. 맡을 사람 기다리는 중", forDeveloper: "맡을 사람 기다리는 중. 웹에서 내가 맡을게요를 누르면 그 러너가 정리해요" }
+        : { forRequester: "받았어요. 정리하는 중", forDeveloper: "받았어요. 정리하는 중" };
     case "clarifying": {
       const left = req.questions.filter((q) => !q.answer).length;
       return { forRequester: `${req.understood?.forRequester ?? t} 확인할 게 ${left}개 있어요`, forDeveloper: `되묻는 중 · ${left}/${req.questions.length} 남음 · ${t}` };
@@ -209,9 +217,11 @@ export function cardBodies(req: Request): Bodies {
     case "spec_ready":
       return { forRequester: "정리했어요. 어떻게 만들지 살펴보는 중", forDeveloper: `명세 완료 · 저장소를 읽고 제안 만드는 중 · ${t}` };
     case "proposed":
-      return { forRequester: `개발자가 제안을 보고 있어요 (${dev})`, forDeveloper: `제안: ${req.proposal?.summary ?? t}` };
+      return req.unclaimed
+        ? { forRequester: "정리했어요. 맡을 사람 기다리는 중", forDeveloper: `제안: ${req.proposal?.summary ?? t} (맡을 사람 기다리는 중)` }
+        : { forRequester: `개발자가 제안을 보고 있어요 (${req.assignee ?? dev})`, forDeveloper: `제안: ${req.proposal?.summary ?? t}` };
     case "approved":
-      return req.assignee
+      return takenOver(req)
         ? { forRequester: `${req.assignee}님이 직접 맡았어요`, forDeveloper: `${req.assignee} 직접 작업 · AI 흐름 밖` }
         : { forRequester: "개발자가 확인했어요. 작업 시작해요", forDeveloper: "확인됨 · 작업 시작" };
     case "building":

@@ -7,20 +7,24 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { createNodeWebSocket } from "@hono/node-ws";
 import { createApp } from "./app.js";
+import type { Members } from "./members.js";
+import type { ProposalAgent } from "./proposal.js";
+import { memberOf } from "./team-auth.js";
 import type { AgentSink, Executor, ExecutorHost } from "./executor.js";
 import { HOME } from "./home.js";
 import {
   capDiff, CLOSE_PROTO, CLOSE_REFUSED, CLOSE_UNAUTHORIZED, ghRepoOf, MAX_ARTIFACT_BYTES, normalizeRemote, PROTO,
-  type Hello, type HubMessage, type Job, type RpcMethod, type RpcResults, type RunnerMessage, type RunReport,
+  type Hello, type HubMessage, type Job, type PlanInput, type PlanResults, type PlanStep, type RpcMethod, type RpcResults, type RunnerMessage, type RunReport,
 } from "./protocol.js";
-import { RequestManager } from "./requests.js";
+import { RequestManager, type RemotePlanning } from "./requests.js";
 import { RunManager } from "./runs.js";
 import type { ShipOptions } from "./ship.js";
 import { safe, ShotService } from "./shots.js";
-import type { AgentEvent, AgentRun, Preview, Run } from "./types.js";
+import { checkBrief, checkDecline, checkProposal, checkSpec, type Planned, type Planner } from "./brief.js";
+import type { AgentEvent, AgentRun, AgentSpec, Preview, Proposal, Request, Run, SpecFlag, Usage } from "./types.js";
 import type { VisualCheck } from "./visual.js";
 
 const FINISHED = new Set(["done", "failed", "cancelled"]);
@@ -31,7 +35,7 @@ const RPC_TIMEOUT_MS = 60_000;
 const HUB_OWNED = new Set(["id", "adapter", "label", "model", "branch", "worktree", "merged", "steers", "events"]);
 const RUN_REPORT = new Set(["triage", "task", "title", "checkCmd", "baseRef"]);
 
-/** Who a runner token belongs to. Integration replaces the env-based version with members.ts. */
+/** Who a runner token belongs to (members.byRunnerToken). */
 export type ResolveRunner = (token: string) => { name: string } | null;
 
 export interface RunnerInfo {
@@ -125,7 +129,15 @@ export class Hub implements Executor {
 
   start(run: Run, agent: AgentRun, sink: AgentSink) {
     let job = this.jobs.get(run.id);
-    if (!job) this.jobs.set(run.id, (job = { run, sinks: new Map(), sent: false }));
+    if (!job) {
+      this.jobs.set(run.id, (job = { run, sinks: new Map(), sent: false }));
+      // a claimed request's run: pinned to the claimer's runner, never handed to anyone else
+      if (run.runnerId) {
+        job.runnerId = run.runnerId;
+        const r = this.runners.get(run.runnerId);
+        if (r) sink.run?.({ runnerOwner: r.owner, runnerAuth: r.hello?.auth });
+      }
+    }
     job.sinks.set(agent.id, sink);
     // RunManager.create starts every agent in one go; send the run once they are all in
     queueMicrotask(() => this.dispatch());
@@ -140,8 +152,24 @@ export class Hub implements Executor {
     const why = this.mismatch(r, job);
     if (why) throw new Error(why);
     job.runnerId = runnerId;
-    this.sinkOf(job).run?.({ runnerId });
+    this.sinkOf(job).run?.({ runnerId, runnerOwner: r.owner, runnerAuth: r.hello.auth });
     this.dispatch();
+  }
+
+  /**
+   * A subscription runner only does work its owner asked for (docs/design/hub-runner.md, 약관 검토). A follow-up from
+   * anyone else waits for the owner. Usage-billed runners take everything. When the runner is unknown (the hub
+   * restarted and it has not come back), it counts as a subscription runner.
+   */
+  holdFor(run: Run, by: string): string | null {
+    const runnerId = this.jobs.get(run.id)?.runnerId ?? run.runnerId;
+    if (!runnerId) return null;
+    const r = this.runners.get(runnerId);
+    const auth = run.runnerAuth ?? r?.hello?.auth;
+    if (auth === "api") return null;
+    const owner = run.runnerOwner ?? r?.owner;
+    if (owner && owner === by) return null;
+    return owner ?? "러너 주인";
   }
 
   steer(run: Run, agent: AgentRun, text: string, sink: AgentSink) {
@@ -258,7 +286,7 @@ export class Hub implements Executor {
     const run = job.run;
     job.runnerId = r.id;
     job.sent = true;
-    this.sinkOf(job).run?.({ runnerId: r.id });
+    this.sinkOf(job).run?.({ runnerId: r.id, runnerOwner: r.owner, runnerAuth: r.hello?.auth });
     const agents = run.agents.filter((a) => job.sinks.has(a.id));
     for (const a of agents) job.sinks.get(a.id)!.patch({ worktree: `runner:${r.id}` }, { ts: Date.now(), kind: "status", text: `${r.owner}의 러너가 맡았어요` });
     const msg: Job = {
@@ -286,6 +314,73 @@ export class Hub implements Executor {
       this.pending.set(id, { runnerId, resolve: resolve as (v: unknown) => void, reject, timer });
       conn.send({ t: "rpc", id, method, params });
     });
+  }
+
+  // ------------------------------------------------------------------------------------------ planning
+
+  /** Ask one runner for a plan step (plan.request → plan.result). */
+  plan<S extends PlanStep>(runnerId: string, step: S, input: PlanInput, timeoutMs = step === "proposal" ? 15 * 60_000 : 3 * 60_000): Promise<PlanResults[S]> {
+    const conn = this.runners.get(runnerId)?.conn;
+    if (!conn) return Promise.reject(new Error("맡은 사람의 러너가 연결돼 있지 않아요"));
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error("러너가 답하지 않아요"));
+      }, timeoutMs);
+      this.pending.set(id, { runnerId, resolve: resolve as (v: unknown) => void, reject, timer });
+      conn.send({ t: "plan.request", id, requestId: input.requestId, step, input });
+    });
+  }
+
+  /**
+   * RequestManager's planning in team mode without a hub API key: every step goes to the runner of the developer who
+   * claimed the request. What comes back is checked again here (same validation as the local planner), and a
+   * subscription runner's cost is dropped.
+   */
+  planning(): RemotePlanning {
+    const input = (req: Request, extra: Partial<PlanInput> = {}): PlanInput => ({
+      requestId: req.id, text: req.text, attachments: req.attachments, questions: req.questions, spec: req.spec, requester: req.requester, ...extra,
+    });
+    const runnerOf = (req: Request) => {
+      if (!req.runnerId) throw new Error("아직 맡은 사람이 없어요");
+      return req.runnerId;
+    };
+    const paid = (runnerId: string) => this.runners.get(runnerId)?.hello?.auth === "api";
+    const planned = <T>(runnerId: string, v: Planned<unknown>, value: T): Planned<T> => ({
+      value, by: v.by === "llm" ? "llm" : "fallback", note: typeof v.note === "string" ? v.note.slice(0, 300) : undefined,
+      costUsd: paid(runnerId) && typeof v.costUsd === "number" ? v.costUsd : null, attempts: Number(v.attempts) || 0,
+    });
+    return {
+      brief: async (req) => {
+        const id = runnerOf(req);
+        const v = await this.plan(id, "brief", input(req));
+        return planned(id, v, checkBrief(v.value));
+      },
+      spec: async (req) => {
+        const id = runnerOf(req);
+        const v = await this.plan(id, "spec", input(req));
+        return planned(id, v, { ...checkSpec(v.value), constraints: [] });
+      },
+      proposal: async (req) => {
+        const id = runnerOf(req);
+        const v = await this.plan(id, "proposal", input(req));
+        const p = v.proposal;
+        const proposal: Proposal = {
+          ...checkProposal(p), by: p?.by === "agent" ? "agent" : "fallback", note: typeof p?.note === "string" ? p.note.slice(0, 300) : undefined,
+          costUsd: paid(id) && typeof p?.costUsd === "number" ? p.costUsd : null, durationMs: typeof p?.durationMs === "number" ? p.durationMs : undefined,
+        };
+        const needsCheck = (Array.isArray(v.needsCheck) ? v.needsCheck : [])
+          .filter((f): f is SpecFlag => typeof f?.criterion === "string" && Array.isArray(f.names))
+          .map((f) => ({ criterion: f.criterion, names: f.names.filter((n) => typeof n === "string").slice(0, 10) }));
+        return { proposal, needsCheck };
+      },
+      decline: async (req, reason, developer) => {
+        const id = runnerOf(req);
+        const v = await this.plan(id, "decline", input(req, { reason, developer }));
+        return planned(id, v, { reason, ...checkDecline(v.value) });
+      },
+    };
   }
 
   // ------------------------------------------------------------------------------------------ connections
@@ -440,6 +535,7 @@ export class Hub implements Executor {
         const was = FINISHED.has(it.agent.status);
         const p = pick(m.patch ?? {}, (k) => !HUB_OWNED.has(k));
         if (p.diff) p.diff = capDiff(p.diff);
+        if (p.usage) p.usage = this.costOf(entry, p.usage);
         // a late report must not bring a cancelled agent back; a steer the hub sent may
         if (was && p.status && !FINISHED.has(p.status) && !this.reopened.delete(key(m.runId, m.agentId))) delete p.status;
         if (Object.keys(p).length || m.event) sink.patch(p, m.event);
@@ -461,6 +557,7 @@ export class Hub implements Executor {
         const sink = this.sinkFor(it.job, it.agent);
         const p = pick(m.agent, (k) => !HUB_OWNED.has(k));
         if (p.diff) p.diff = capDiff(p.diff);
+        if (p.usage) p.usage = this.costOf(entry, p.usage);
         (p as Partial<AgentRun>).events = (m.agent.events ?? []).slice(-MAX_EVENTS);
         sink.patch(p);
         if (finishedThere) {
@@ -469,7 +566,8 @@ export class Hub implements Executor {
         }
         return;
       }
-      case "rpc.result": {
+      case "rpc.result":
+      case "plan.result": {
         const p = this.pending.get(m.id);
         if (!p || p.runnerId !== entry.id) return;
         clearTimeout(p.timer);
@@ -486,6 +584,11 @@ export class Hub implements Executor {
     }
   }
 
+  /** A subscription runner reports no cost (지표에서는 구독으로 따로 센다); token counts stay. */
+  private costOf(entry: RunnerEntry, usage: Usage): Usage {
+    return entry.hello?.auth === "api" ? usage : { ...usage, costUsd: null };
+  }
+
   /** A screenshot from the runner, stored where the web already reads shots: <home>/shots/<requestId>/<round>/<file>. */
   private artifact(entry: RunnerEntry, m: Extract<RunnerMessage, { t: "artifact.put" }>) {
     const it = this.mine(entry, m.runId, m.agentId);
@@ -496,6 +599,11 @@ export class Hub implements Executor {
     const dir = join(this.shotsDir, safe(it.run.requestId), name[1]);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, name[2]), buf);
+  }
+
+  /** One runner as /api/runners shows it. */
+  runner(id: string): RunnerInfo | undefined {
+    return this.list().find((r) => r.runnerId === id);
   }
 
   /** What /api/runners shows. */
@@ -517,7 +625,10 @@ export class Hub implements Executor {
     return {
       previews: async (run, agentId) => {
         if (run.requestId) last.set(run.requestId, { run, agentId });
-        return this.call(run, "shots.previews", { runId: run.id, agentId }, 150_000);
+        const pv = await this.call(run, "shots.previews", { runId: run.id, agentId }, 150_000);
+        // without --preview-base-url on the runner the links only open on that PC: screenshots only, no links
+        if (pv.localOnly) for (const side of [pv.after, pv.before]) if (side) side.url = "";
+        return pv;
       },
       capture: async (input) => {
         const it = last.get(input.requestId);
@@ -531,8 +642,12 @@ export class Hub implements Executor {
 
 type UpgradeWebSocket = ReturnType<typeof createNodeWebSocket>["upgradeWebSocket"];
 
-/** `/runner` (websocket), `GET /api/runners`, `POST /api/runs/:id/assign { runnerId }`. */
-export function mountHub(app: Hono, upgradeWebSocket: UpgradeWebSocket, hub: Hub, runs: RunManager) {
+/**
+ * `/runner` (websocket), `GET /api/runners`, `POST /api/runs/:id/assign { runnerId }`,
+ * `POST /api/requests/:id/claim { runnerId }` (내가 맡을게요), `POST /api/runs/:id/held/release` (이어서 실행).
+ * The person comes from the team-auth guard; a developer may only hand work to a runner they own.
+ */
+export function mountHub(app: Hono, upgradeWebSocket: UpgradeWebSocket, hub: Hub, runs: RunManager, requests: RequestManager) {
   app.get("/runner", upgradeWebSocket((c) => {
     const token = c.req.header("authorization")?.replace(/^Bearer /i, "");
     let h: ReturnType<Hub["connect"]> | undefined;
@@ -549,21 +664,66 @@ export function mountHub(app: Hono, upgradeWebSocket: UpgradeWebSocket, hub: Hub
     };
   }));
   app.get("/api/runners", (c) => c.json(hub.list()));
+
+  /** The runner, when `name` owns it and it is connected; otherwise the reason as a response. */
+  const ownRunner = (c: Context, runnerId: string) => {
+    const m = memberOf(c);
+    const r = runnerId ? hub.runner(runnerId) : undefined;
+    if (!m || !r || r.owner !== m.name) return { error: c.json({ error: "자기 러너로만 맡을 수 있어요" }, 403) };
+    if (!r.connected) return { error: c.json({ error: "러너가 연결돼 있지 않아요. 러너를 먼저 띄워 주세요" }, 400) };
+    return { member: m, runner: r };
+  };
+
   app.post("/api/runs/:id/assign", async (c) => {
     const { runnerId } = await c.req.json();
-    runs.assign(c.req.param("id"), String(runnerId ?? ""));
+    const own = ownRunner(c, String(runnerId ?? ""));
+    if (own.error) return own.error;
+    runs.assign(c.req.param("id"), own.runner.runnerId);
     return c.json({ ok: true });
+  });
+
+  app.post("/api/requests/:id/claim", async (c) => {
+    const { runnerId } = await c.req.json();
+    const own = ownRunner(c, String(runnerId ?? ""));
+    if (own.error) return own.error;
+    const req = requests.get(c.req.param("id"));
+    if (!req) return c.json({ error: "요청을 찾을 수 없어요" }, 404);
+    const why = requests.claimable(req, own.member.name);
+    if (why) return c.json({ error: why }, 409);
+    if (!own.runner.repos.some((x) => normalizeRemote(x.remote) === normalizeRemote(req.repo))) return c.json({ error: "이 러너에는 그 저장소가 없어요" }, 400);
+    return c.json(requests.claim(req.id, { by: own.member.name, runnerId: own.runner.runnerId }));
+  });
+
+  app.post("/api/runs/:id/held/release", (c) => {
+    const m = memberOf(c);
+    const run = runs.get(c.req.param("id"));
+    if (!run) return c.json({ error: "not found" }, 404);
+    const owner = run.runnerOwner ?? (run.runnerId ? hub.runner(run.runnerId)?.owner : undefined);
+    if (!m || !owner || owner !== m.name) return c.json({ error: `러너 주인(${owner ?? "모름"})만 이어서 실행할 수 있어요` }, 403);
+    return c.json({ ok: true, released: runs.releaseHeld(run.id, m.name) });
   });
 }
 
 export interface HubOptions {
   /** `github.com/org/app`; channels and runs use it as their repo */
   remote: string;
+  /** people (members.json): person tokens for the web, runner tokens for runners, Slack ids */
+  members: Members;
+  /** approving your own request or a result you are assigned to is refused */
+  noSelfApprove?: boolean;
+  /**
+   * The hub plans before anyone claims (되묻기, 명세, 제안) with its own API key. Off: planning waits for the claim and
+   * runs on the claimer's runner. The CLI turns it on when ANTHROPIC_API_KEY is set.
+   */
+  planOnHub?: boolean;
+  /** tests: the hub's own planner and proposal agent (planOnHub) */
+  planner?: Planner;
+  proposer?: ProposalAgent | null;
+  /** tests: the agents a request's run uses instead of the template's */
+  agents?: AgentSpec[];
   baseBranch?: string;
   check?: string;
-  token?: string;
   reviewers?: string[];
-  resolveRunner: ResolveRunner;
   deployCheck?: string;
   deployEnv?: string;
   /** extra ship options (tests: a fake gh runner, fast polling) */
@@ -578,11 +738,12 @@ export function createHub(opts: HubOptions) {
   const remote = normalizeRemote(opts.remote);
   const ghRepo = ghRepoOf(remote);
   if (!ghRepo) throw new Error(`--repo-remote 는 github.com/org/app 처럼 적어 주세요 (받은 값: ${opts.remote})`);
-  const hub = new Hub({ resolveRunner: opts.resolveRunner, graceMs: opts.graceMs, rpcTimeoutMs: opts.rpcTimeoutMs, log: opts.log });
+  const members = opts.members;
+  const hub = new Hub({ resolveRunner: (t) => members.byRunnerToken(t), graceMs: opts.graceMs, rpcTimeoutMs: opts.rpcTimeoutMs, log: opts.log });
   const runs = new RunManager({ executor: hub, team: { baseBranch: opts.baseBranch ?? "main" },
     ship: { deployCheck: opts.deployCheck, deployEnv: opts.deployEnv, ...opts.ship, mode: "pr", ghRepo } });
-  const requests = new RequestManager(runs, { visual: hub.visual() });
-  const app = createApp({ repo: remote, check: opts.check ?? "", token: opts.token, reviewers: opts.reviewers, manager: runs, requests, terminal: false,
-    routes: (a, up) => mountHub(a, up, hub, runs) });
-  return { ...app, hub };
+  const requests = new RequestManager(runs, { visual: hub.visual(), planner: opts.planner, proposer: opts.proposer, agents: opts.agents, team: { remote: opts.planOnHub ? undefined : hub.planning() } });
+  const app = createApp({ repo: remote, check: opts.check ?? "", reviewers: opts.reviewers, manager: runs, requests, terminal: false,
+    members, noSelfApprove: opts.noSelfApprove, claims: true, routes: (a, up) => mountHub(a, up, hub, runs, requests) });
+  return { ...app, hub, members };
 }

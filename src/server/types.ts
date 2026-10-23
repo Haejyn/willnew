@@ -139,6 +139,21 @@ export interface Run {
   basePreview?: Preview;
   /** team mode: the runner this run was given to (absent while it waits in the hub queue) */
   runnerId?: string;
+  /** team mode: who owns that runner (the one who may release held work) */
+  runnerOwner?: string;
+  /** team mode: how that runner pays for AI. A subscription runner reports no cost */
+  runnerAuth?: "subscription" | "api";
+  /** team mode, subscription runner: follow-ups from someone other than the owner wait here until the owner releases them */
+  held?: HeldWork[];
+}
+
+/** A follow-up that waits for the runner owner (이어서 지시, 줄 댓글, 다시 봐 주세요). */
+export interface HeldWork {
+  agentId: string;
+  text: string;
+  by: string;
+  at: number;
+  kind: "steer" | "comments" | "changes";
 }
 
 export interface ReviewComment {
@@ -185,6 +200,8 @@ export interface CreateRunInput {
   triage?: Triage;
   maxAttempts?: number;
   requestId?: string;
+  /** team mode: the runner the request was claimed with */
+  runnerId?: string;
 }
 
 /** Streaming update pushed to the web UI. */
@@ -361,7 +378,7 @@ export interface Proposal {
 }
 
 export type DecisionKind =
-  | "answer" | "proceed" | "proceed_with_changes" | "take_over" | "decline" | "cancel" | "close"
+  | "answer" | "proceed" | "proceed_with_changes" | "take_over" | "decline" | "cancel" | "close" | "claim"
   | "approve_result" | "reject_result"
   | "preview_ok" | "preview_changes" | "preview_skip";
 
@@ -406,8 +423,12 @@ export interface Request {
   decisions: DecisionEntry[];
   /** the developer asked to confirm the proposal */
   reviewer?: string;
-  /** 직접 할게: the developer who took it out of the AI flow */
+  /** 직접 할게: the developer who took it out of the AI flow. Team mode: the developer who claimed it (내가 맡을게요) */
   assignee?: string;
+  /** team mode: nobody has claimed it yet (맡을 사람 기다리는 중) */
+  unclaimed?: boolean;
+  /** team mode: the claimer's runner, which plans and runs this request */
+  runnerId?: string;
   runIds: string[];
   /** the thread every message about this request lives in (= the card's message id, `req-<id>`) */
   threadId?: string;

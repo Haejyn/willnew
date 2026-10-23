@@ -12,7 +12,6 @@ import { ThreadStore } from "./store.js";
 export { SlackBridge } from "./bridge.js";
 export type { SlackUser, SlackRequests, SlackRuns, SlackChannelInfo } from "./bridge.js";
 export type { SlackClient } from "./client.js";
-export { slackPeople, loadSlackPeople } from "./people.js";
 
 type Ack = (response?: unknown) => Promise<void>;
 type Body = { user?: { id?: string }; trigger_id?: string };

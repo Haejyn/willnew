@@ -5,11 +5,15 @@
  * do. Solo mode never installs this.
  *
  *   developer only    제안 확인(decide), 결과 승인과 반려(review, merge), 바로 맡기기(POST /api/runs, direct message),
- *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens)
+ *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens), 요청 취소, 실행 삭제, 에이전트 멈추기,
+ *                     미리보기 켜고 끄기, 내가 맡을게요(claim), 러너에 맡기기(assign)
+ *   claims (hub)      제안 확인은 그 요청을 맡은 개발자만
  *   requester only    되묻기 답(answer): the request's requester
  *   requester or dev  요청자 확인 의도대로예요, 다시 봐 주세요: the request's requester, or any developer
  *   nobody            터미널 (팀 모드에서는 끈다)
  *   noSelfApprove     approving your own request, or a result you are assigned to, is refused
+ *
+ * 이어서 지시와 줄 댓글은 누구나 된다. 구독 러너면 러너 주인이 확인할 때까지 기다린다(held, runs.ts).
  */
 import type { Context, MiddlewareHandler } from "hono";
 import type { Member, Members } from "./members.js";
@@ -20,6 +24,14 @@ export interface TeamAuthOptions {
   runs: { get(id: string): Run | undefined };
   requests: { get(id: string): Request | undefined };
   noSelfApprove?: boolean;
+  /** hub: only the developer who claimed a request decides on its proposal */
+  claims?: boolean;
+}
+
+/** The reason when approving this run would be approving your own work (noSelfApprove), else null. Slack uses it too. */
+export function selfApproval(name: string, run: Run | undefined, req: Request | undefined): string | null {
+  if (run && (run.requester === name || req?.requester === name || req?.assignee === name)) return "자기 요청이나 자기가 맡은 결과는 다른 개발자가 승인해요";
+  return null;
 }
 
 /** What /api/me returns. */
@@ -50,7 +62,19 @@ export function denied(m: Member, method: string, path: string, body: Record<str
   if (method === "POST" && /^\/api\/channels\/[^/]+\/messages$/.test(path) && body.direct === true && !body.threadId)
     return dev(m) ? null : "바로 맡기기는 개발자만 할 수 있어요";
 
-  if (method === "POST" && /^\/api\/requests\/[^/]+\/decide$/.test(path)) return dev(m) ? null : "제안 확인은 개발자만 할 수 있어요";
+  if (method === "POST" && (x = /^\/api\/requests\/([^/]+)\/decide$/.exec(path))) {
+    if (!dev(m)) return "제안 확인은 개발자만 할 수 있어요";
+    if (!o.claims) return null;
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    if (req && !req.assignee) return "먼저 내가 맡을게요를 눌러 주세요";
+    return !req || req.assignee === m.name ? null : `맡은 ${req.assignee}님만 제안을 확인할 수 있어요`;
+  }
+  if (method === "POST" && /^\/api\/requests\/[^/]+\/claim$/.test(path)) return dev(m) ? null : "내가 맡을게요는 개발자만 할 수 있어요";
+  if (method === "POST" && /^\/api\/runs\/[^/]+\/assign$/.test(path)) return dev(m) ? null : "러너에 맡기기는 개발자만 할 수 있어요";
+  if (method === "POST" && /^\/api\/requests\/[^/]+\/cancel$/.test(path)) return dev(m) ? null : "요청 취소는 개발자만 할 수 있어요";
+  if (method === "DELETE" && /^\/api\/runs\/[^/]+$/.test(path)) return dev(m) ? null : "실행 삭제는 개발자만 할 수 있어요";
+  if (method === "POST" && /^\/api\/runs\/[^/]+\/agents\/[^/]+\/cancel$/.test(path)) return dev(m) ? null : "에이전트 멈추기는 개발자만 할 수 있어요";
+  if ((method === "POST" || method === "DELETE") && /^\/api\/runs\/[^/]+\/agents\/[^/]+\/preview$/.test(path)) return dev(m) ? null : "미리보기는 개발자만 켜고 끌 수 있어요";
 
   if (method === "POST" && (x = /^\/api\/requests\/([^/]+)\/answer$/.exec(path))) {
     const req = o.requests.get(decodeURIComponent(x[1]));
@@ -73,8 +97,8 @@ export function denied(m: Member, method: string, path: string, body: Record<str
     if (o.noSelfApprove && approving) {
       const run = o.runs.get(decodeURIComponent((review ?? merge)![1]));
       const req = run?.requestId ? o.requests.get(run.requestId) : undefined;
-      if (run && (run.requester === m.name || req?.requester === m.name || req?.assignee === m.name))
-        return "자기 요청이나 자기가 맡은 결과는 다른 개발자가 승인해요";
+      const self = selfApproval(m.name, run, req);
+      if (self) return self;
     }
     return null;
   }

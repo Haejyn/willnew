@@ -73,8 +73,14 @@ beforeAll(async () => {
   const { HOME } = await import("../src/server/home.js");
   if (HOME !== hubHome) throw new Error(`home.js was loaded before WILLNEW_HOME was set (${HOME})`);
   const { createHub } = await import("../src/server/hub.js");
-  const { runnerTokensFromEnv } = await import("../src/server/cli-team.js");
-  hubApp = createHub({ remote: REMOTE, check: "node --test", resolveRunner: runnerTokensFromEnv("이해준:tok-1,한지우:tok-2"),
+  const { hashToken, Members } = await import("../src/server/members.js");
+  // people: 이해준 owns runner token tok-1, 한지우 owns tok-2; p-1 is 이해준's person token for the web API
+  const membersPath = join(hubHome, "members.json");
+  writeFileSync(membersPath, JSON.stringify([
+    { name: "이해준", title: "", role: "developer", tokenHash: hashToken("p-1"), runnerTokenHashes: [hashToken("tok-1")] },
+    { name: "한지우", title: "", role: "developer", tokenHash: hashToken("p-2"), runnerTokenHashes: [hashToken("tok-2")] },
+  ]));
+  hubApp = createHub({ remote: REMOTE, check: "node --test", members: Members.load(membersPath),
     ship: { runner: fakeGh, sleep: async () => undefined, ciPollMs: 1 }, graceMs: 400, log: () => undefined });
   server = serve({ fetch: hubApp.app.fetch, port: 0, hostname: "127.0.0.1" });
   hubApp.injectWebSocket(server);
@@ -98,7 +104,7 @@ afterAll(async () => {
 
 const runs = () => hubApp.runs;
 const api = (path: string, body?: unknown) =>
-  hubApp.app.request(path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  hubApp.app.request(path, body === undefined ? { headers: { authorization: "Bearer p-1" } } : { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer p-1" }, body: JSON.stringify(body) });
 const create = (extra: Partial<{ requestId: string; agents: { adapter: string; model?: string; label?: string }[] }> = {}) =>
   runs().create({ repo: REMOTE, task: "fix add()", check: "node --test", agents: extra.agents ?? [{ adapter: "script", model: NOTE, label: "note" }], requester: "한지우", requestId: extra.requestId });
 const agentOf = (id: string) => runs().get(id)!.agents[0];
@@ -129,7 +135,7 @@ describe("hub and runner over loopback (offline agent, fake gh)", () => {
     expect(stored).not.toContain(clone);
     expect(a.events.some((e) => e.text.includes("runner:haejun-pc"))).toBe(true);
 
-    const list = await (await hubApp.app.request("/api/runners")).json();
+    const list = await (await api("/api/runners")).json();
     expect(list.find((x: { runnerId: string }) => x.runnerId === "haejun-pc")).toMatchObject({ owner: "이해준", connected: true, auth: "subscription", claim: "manual", slots: 1, used: 0, repos: [{ remote: REMOTE }] });
 
     // follow-up after it finished: the runner reopens the same session

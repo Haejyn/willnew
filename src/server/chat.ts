@@ -17,7 +17,7 @@ import { defaultChannels, templateById, wantsRace, withRace } from "./templates.
 import { inChannel, requestThreadId, threadSummaries } from "./threads.js";
 import { triage } from "./triage.js";
 import type { ShipEvent } from "./ship.js";
-import type { AgentSpec, Bodies, Channel, ChatMessage, ClarifyQuestion, Request, RequesterCheck, Run, ThreadSummary } from "./types.js";
+import type { AgentSpec, Bodies, Channel, ChatMessage, ClarifyQuestion, HeldWork, Request, RequesterCheck, Run, ThreadSummary } from "./types.js";
 
 /** What the person changed in the compose box before sending — wins over the planner's choice. */
 export interface PlanOverrides {
@@ -66,6 +66,16 @@ export class Chat {
     rq.on("preview_ok", (req: Request, c: RequesterCheck, by: string) => void this.onPreviewOk(req, c, by));
     rq.on("preview_changes", (req: Request, c: RequesterCheck, by: string) => this.onPreviewChanges(req, c, by));
     rq.on("preview_skip", (req: Request, c: RequesterCheck, by: string) => void this.onPreviewSkip(req, c, by));
+    // team mode: who took it, and follow-ups that wait for a subscription runner's owner
+    rq.on("claimed", (req: Request, by: string) => this.say(req, { forRequester: `${by}님이 맡았어요`, forDeveloper: `${by} 담당, ${by}의 러너에서 정리하고 작업해요` }));
+    runs.bus.on("held", (run: Run, item: HeldWork, owner: string) => {
+      const req = run.requestId ? this.requests.get(run.requestId) : undefined;
+      if (req) this.say(req, { forRequester: `${owner}님 확인 뒤에 이어서 작업해요`, forDeveloper: `@${owner} ${item.by}님 요청이 확인을 기다려요. 작업 화면에서 이어서 실행을 눌러 주세요` });
+    });
+    runs.bus.on("released", (run: Run, by: string) => {
+      const req = run.requestId ? this.requests.get(run.requestId) : undefined;
+      if (req) this.say(req, { forRequester: "이어서 작업해요", forDeveloper: `${by}님이 이어서 실행했어요` });
+    });
   }
 
   /**

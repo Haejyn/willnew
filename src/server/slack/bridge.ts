@@ -9,9 +9,10 @@
  */
 import { deployedReply, mergedReply, pickReviewer, rejectedReply, reviewMessage } from "../handoff.js";
 import type { RequestManager } from "../requests.js";
+import { selfApproval } from "../team-auth.js";
 import { suggestWinner, type RunManager } from "../runs.js";
 import type { ShipEvent } from "../ship.js";
-import type { ClarifyQuestion, Request, RequesterCheck, Run } from "../types.js";
+import type { ClarifyQuestion, HeldWork, Request, RequesterCheck, Run } from "../types.js";
 import { both, cardMessage, checkMessage, detailsMessage, fromSlack, mentionify, modalView, proposalMessage, questionMessage, replyFrom, reviewBlocks, shipMessage, type At, type ModalKind, type ModalMeta } from "./blocks.js";
 import type { SlackClient, SlackFile, SlackMessage } from "./client.js";
 import type { ThreadRecord, ThreadStore } from "./store.js";
@@ -49,6 +50,8 @@ export interface BridgeOptions {
   check?: string;
   /** where people open the web app (deep links, 상자 그리기) */
   webBaseUrl?: string;
+  /** 승인 refuses your own request or a result you are assigned to (same rule as the web, --no-self-approve) */
+  noSelfApprove?: boolean;
   client: SlackClient;
   store: ThreadStore;
   log?: (msg: string) => void;
@@ -103,7 +106,10 @@ export class SlackBridge {
     this.on(rq, "preview_ok", (req: Request, c: RequesterCheck, by: string) => this.checkOutcome(req, c, `${by}님이 의도대로라고 했어요`));
     this.on(rq, "preview_changes", (req: Request, c: RequesterCheck, by: string) => this.onPreviewChanges(req, c, by));
     this.on(rq, "preview_skip", (req: Request, c: RequesterCheck, by: string) => this.checkOutcome(req, c, `${by}님이 요청자 확인을 건너뛰었어요. 이유: ${c.reason ?? ""}`));
+    this.on(rq, "claimed", (req: Request, by: string) => this.onClaimed(req, by));
     if (o.runs) {
+      this.on(o.runs.bus, "held", (run: Run, item: HeldWork, owner: string) => this.onHeld(run, item, owner));
+      this.on(o.runs.bus, "released", (run: Run, by: string) => this.onReleased(run, by));
       this.on(o.runs.bus, "reviewed", (run: Run) => this.onReviewed(run));
       this.on(o.runs.bus, "ship", (run: Run, e: ShipEvent) => this.onShip(run, e));
     }
@@ -286,6 +292,8 @@ export class SlackBridge {
       if (v.d === "approve")
         return tryIt(async () => {
           if (this.o.requests.get(req.id)?.status === "preview") throw new Error("요청자 확인이 먼저예요. 건너뛰려면 개발자용 건너뛰기를 눌러 이유를 적어 주세요");
+          const self = this.o.noSelfApprove ? selfApproval(who.name, runs.get(v.run!), this.o.requests.get(req.id)) : null;
+          if (self) throw new Error(self);
           await runs.review(v.run!, { decision: "approve", agentId: v.a, reviewer: who.name });
         });
     }
@@ -414,6 +422,27 @@ export class SlackBridge {
     const rec = this.o.store.get(req.id);
     if (!rec?.proposalTs) return;
     void this.enqueue(req.id, async () => this.update(rec, rec.proposalTs!, proposalMessage(req, this.at, line)));
+  }
+
+  /** Team mode: someone pressed 내가 맡을게요 on the web. */
+  private onClaimed(req: Request, by: string) {
+    const rec = this.o.store.get(req.id);
+    if (!rec) return;
+    void this.enqueue(req.id, async () => void (await this.post(rec, both(`${by}님이 맡았어요`, `${by} 담당, ${by}의 러너에서 정리하고 작업해요`, this.at))));
+  }
+
+  /** Team mode, subscription runner: a follow-up from someone else waits for the runner owner. */
+  private onHeld(run: Run, item: HeldWork, owner: string) {
+    const rec = run.requestId ? this.o.store.get(run.requestId) : undefined;
+    if (!rec) return;
+    const what = item.kind === "changes" ? "다시 봐 주세요" : item.kind === "comments" ? "줄 댓글" : "이어서 지시";
+    void this.enqueue(rec.requestId, async () => void (await this.post(rec, both(`${owner}님 확인 뒤에 이어서 작업해요`, `@${owner} ${item.by}님 ${what} 대기 중이에요. 웹에서 이어서 실행을 눌러 주세요`, this.at))));
+  }
+
+  private onReleased(run: Run, by: string) {
+    const rec = run.requestId ? this.o.store.get(run.requestId) : undefined;
+    if (!rec) return;
+    void this.enqueue(rec.requestId, async () => void (await this.post(rec, both("이어서 작업해요", `${by}님이 이어서 실행했어요`, this.at))));
   }
 
   private onTakenOver(req: Request, by: string) {

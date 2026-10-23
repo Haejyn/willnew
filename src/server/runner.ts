@@ -13,12 +13,15 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { hostname, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { ADAPTERS, installed as isInstalled } from "./adapters.js";
+import { createPlanner, type Planner } from "./brief.js";
 import { LocalExecutor, type AgentSink } from "./executor.js";
 import { git, mergeConflicts } from "./git.js";
 import { HOME } from "./home.js";
+import { defaultProposalAgent, propose, type ProposalAgent } from "./proposal.js";
+import { flagUnverified } from "./spec-check.js";
 import {
   capDiff, CLOSE_PROTO, CLOSE_REFUSED, CLOSE_UNAUTHORIZED, MAX_ARTIFACT_BYTES, normalizeRemote, PROTO,
-  type Claim, type Hello, type HubMessage, type Job, type RunnerAuth, type RunnerMessage, type ShotsCaptureParams,
+  type Claim, type Hello, type HubMessage, type Job, type PlanInput, type PlanResults, type PlanStep, type RunnerAuth, type RunnerMessage, type ShotsCaptureParams,
 } from "./protocol.js";
 import { safe, ShotService, type CapturerFactory } from "./shots.js";
 import type { AgentRun, Preview, Run } from "./types.js";
@@ -91,6 +94,10 @@ export interface RunnerOptions extends RunnerPlan {
   log?: (s: string) => void;
   /** the hub refused this runner for good (bad token, other proto, subscription + auto) */
   onFatal?: (reason: string) => void;
+  /** planning for claimed requests (되묻기, 명세, 거절 설명); default Haiku through this PC's Claude Code */
+  planner?: Planner;
+  /** the read-only proposal pass; default this PC's Claude Code */
+  proposer?: ProposalAgent | null;
 }
 
 interface LocalJob {
@@ -111,6 +118,7 @@ export class Runner {
   private saveTimers = new Map<string, NodeJS.Timeout>();
   private remote = "";
   private root = "";
+  private planner?: Planner;
   connected = false;
 
   constructor(private opts: RunnerOptions) {
@@ -333,6 +341,15 @@ export class Runner {
 
   private async onMessage(m: HubMessage) {
     if (m.t === "job.assign") return this.take(m.run);
+    if (m.t === "plan.request") {
+      try {
+        const value = await this.plan(m.step, m.input);
+        this.send({ t: "plan.result", id: m.id, requestId: m.requestId, ok: true, value });
+      } catch (e) {
+        this.send({ t: "plan.result", id: m.id, requestId: m.requestId, ok: false, error: this.scrubLocal((e as Error).message) });
+      }
+      return;
+    }
     if (m.t !== "rpc") return;   // terminal frames: later (6단계)
     try {
       const value = await this.rpc(m.method, m.params);
@@ -461,6 +478,49 @@ export class Runner {
       default:
         throw new Error(`모르는 요청이에요: ${method}`);
     }
+  }
+
+  /**
+   * One planning step for a request this runner's owner claimed, on the local clone with this PC's login. The proposal
+   * pass reads the repo in a throwaway detached worktree, read-only, exactly as `willnew serve` does.
+   */
+  private async plan<S extends PlanStep>(step: S, input: PlanInput): Promise<PlanResults[S]> {
+    const planner = (this.planner ??= this.opts.planner ?? createPlanner());
+    const text = String(input.text ?? "");
+    const attachments = Array.isArray(input.attachments) ? input.attachments : [];
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    let out: unknown;
+    switch (step) {
+      case "brief":
+        out = await planner.brief(text, attachments, this.root);
+        break;
+      case "spec":
+        out = await planner.spec(text, attachments, questions, this.root);
+        break;
+      case "proposal": {
+        if (!input.spec) throw new Error("명세가 없어요");
+        const agent = this.opts.proposer !== undefined ? this.opts.proposer : defaultProposalAgent();
+        const proposal = await propose({ id: String(input.requestId), text, spec: input.spec }, this.root, agent, this.home);
+        const needsCheck = await flagUnverified(input.spec, { text, questions }, proposal, this.root).catch(() => []);
+        if (proposal.note) proposal.note = this.scrubLocal(proposal.note);
+        out = { proposal, needsCheck };
+        break;
+      }
+      case "decline":
+        out = await planner.decline({ text, spec: input.spec, requester: String(input.requester ?? ""), repo: this.root }, String(input.reason ?? ""), String(input.developer ?? ""));
+        break;
+      default:
+        throw new Error(`모르는 계획 단계예요: ${step}`);
+    }
+    return out as PlanResults[S];
+  }
+
+  /** Local paths out of a message that is not about one run. */
+  private scrubLocal(s: string): string {
+    let out = s;
+    for (const p of variants(this.root)) out = out.split(p).join(`(${basename(this.root)})`);
+    for (const p of variants(this.home)) out = out.split(p).join("(runner home)");
+    return out;
   }
 
   /** Capture the pairs here, upload every PNG (artifact.put), then answer with the same result the web expects. */

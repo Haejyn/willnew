@@ -2,7 +2,8 @@
  * Hub ↔ runner protocol (docs/design/hub-runner.md, "프로토콜"). The runner opens a websocket to the hub
  * (`/runner`, `Authorization: Bearer <runner token>`); every message is one JSON object.
  */
-import type { AgentEvent, AgentRun, DiffSummary, Preview, Run, Screen, ShotPair } from "./types.js";
+import type { Brief, Planned } from "./brief.js";
+import type { AgentEvent, AgentRun, ClarifyQuestion, DeclineNote, DiffSummary, Preview, Proposal, RequestAttachment, Run, Screen, ShotPair, SpecFlag, WorkSpec } from "./types.js";
 import type { Previews } from "./visual.js";
 
 export const PROTO = 1;
@@ -42,6 +43,8 @@ export type RunnerMessage =
   | { t: "rpc.result"; id: number; ok: true; value: unknown }
   | { t: "rpc.result"; id: number; ok: false; error: string }
   | { t: "artifact.put"; runId: string; agentId: string; name: string; mime: string; base64: string }
+  | { t: "plan.result"; id: number; requestId: string; ok: true; value: unknown }
+  | { t: "plan.result"; id: number; requestId: string; ok: false; error: string }
   | { t: "term.data"; sid: string; data: string }
   | { t: "term.exit"; sid: string };
 
@@ -99,8 +102,35 @@ export interface RpcResults {
   "shots.capture": { shots: ShotPair[]; note?: string };
 }
 
+/**
+ * Planning before the work starts (되묻기, 명세, 제안, 거절 설명), done by the runner of the developer who claimed the
+ * request when the hub has no API key. The runner uses its own clone and its own login.
+ */
+export type PlanStep = "brief" | "spec" | "proposal" | "decline";
+
+export interface PlanInput {
+  requestId: string;
+  text: string;
+  attachments: RequestAttachment[];
+  questions?: ClarifyQuestion[];
+  spec?: WorkSpec;
+  requester?: string;
+  /** decline: the developer's reason and name */
+  reason?: string;
+  developer?: string;
+}
+
+/** What each plan step returns. */
+export interface PlanResults {
+  brief: Planned<Brief>;
+  spec: Planned<WorkSpec>;
+  proposal: { proposal: Proposal; needsCheck: SpecFlag[] };
+  decline: Planned<DeclineNote>;
+}
+
 export type HubMessage =
   | { t: "job.assign"; run: Job }
+  | { t: "plan.request"; id: number; requestId: string; step: PlanStep; input: PlanInput }
   | { t: "rpc"; id: number; method: RpcMethod; params: Record<string, unknown> }
   | { t: "term.open"; sid: string; runId: string; agentId: string; cols: number; rows: number }
   | { t: "term.input"; sid: string; data: string }

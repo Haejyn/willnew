@@ -47,7 +47,9 @@ export interface TeamAppOptions {
 
 export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager;
   /** team mode: people come from members.json, every /api call needs a person token */
-  members?: Members; noSelfApprove?: boolean } & TeamAppOptions) {
+  members?: Members; noSelfApprove?: boolean;
+  /** hub: requests are claimed (내가 맡을게요) and only the claimer decides on the proposal */
+  claims?: boolean } & TeamAppOptions) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview, previewBaseUrl: opts.previewBaseUrl, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const requests = opts.requests ?? new RequestManager(runs);
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
@@ -63,7 +65,7 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   };
 
   // team mode: the person token decides who is calling and what they may do (team-auth.ts)
-  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests, noSelfApprove: opts.noSelfApprove }));
+  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests, noSelfApprove: opts.noSelfApprove, claims: opts.claims }));
 
   if (opts.token && !opts.members) {
     app.use("/api/*", async (c, next) => {
@@ -100,8 +102,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   });
   app.post("/api/runs/:id/agents/:aid/steer", async (c) => {
     const { text, by } = await c.req.json();
-    runs.steer(c.req.param("id"), c.req.param("aid"), String(text ?? ""), String(by ?? "anonymous"));
-    return c.json({ ok: true });
+    const { held } = runs.steer(c.req.param("id"), c.req.param("aid"), String(text ?? ""), String(by ?? "anonymous"));
+    return c.json({ ok: true, held });
   });
   app.get("/api/runs/:id/agents/:aid/preflight", async (c) => c.json(await runs.preflight(c.req.param("id"), c.req.param("aid"))));
   app.post("/api/runs/:id/agents/:aid/reviewed", async (c) => {

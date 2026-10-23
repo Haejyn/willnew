@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
-import { serve } from "@hono/node-server";
-import { createApp } from "./app.js";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 const argv = process.argv.slice(2);
 const flag = (name: string, fallback?: string) => {
@@ -16,17 +15,24 @@ if (cmd === "invite" || cmd === "runner-token") {
   const { membersCli } = await import("./members-cli.js");
   process.exit(membersCli(cmd, argv.slice(1)));
 }
-// team mode: runs until the hub or runner stops, then exits (never falls through to serve)
+// team mode: runs until the hub or runner stops, then exits (never falls through to serve).
+// The hub and the runner keep their state apart (~/.willnew/hub, ~/.willnew/runner) so both can run on one PC.
+// members.json stays in ~/.willnew, where `willnew invite` writes it. Nothing that reads the home is imported before this.
 if (cmd === "hub" || cmd === "runner") {
+  const base = process.env.WILLNEW_HOME ?? join(homedir(), ".willnew");
+  process.env.WILLNEW_HOME = join(base, cmd);
   const { main } = await import("./cli-team.js");
-  process.exit(await main(cmd, argv));
+  process.exit(await main(cmd, argv, { membersPath: join(base, "members.json") }));
 }
 if (cmd !== "serve") {
   console.log(`usage: willnew serve | hub | runner   (willnew hub --help, willnew runner --help)
-       willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1] [--slack --slack-channel C0123:backend --slack-members people.json --slack-web-url http://my-host:7777]
+       willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1] [--slack --slack-channel C0123:backend --slack-web-url http://my-host:7777 [--members members.json] [--no-self-approve]]
        willnew invite <이름> [--role developer] · willnew runner-token <이름>`);
   process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
 }
+
+const { serve } = await import("@hono/node-server");
+const { createApp } = await import("./app.js");
 
 const repo = resolve(flag("repo", process.cwd())!);
 const check = flag("check", "")!;
@@ -58,28 +64,14 @@ const server = serve({ fetch: app.fetch, port, hostname: host }, () => {
 });
 injectWebSocket(server);
 
-// Slack app (Socket Mode). Loaded only with --slack. Tokens come from the environment, never from flags
+// Slack app (Socket Mode). Loaded only with --slack. Tokens come from the environment, never from flags.
+// People (Slack id, name, role) come from members.json, the same file the hub uses.
 if (argv.includes("--slack")) {
-  const { startSlack, loadSlackPeople } = await import("./slack/index.js");
-  const channelMap: Record<string, string> = {};
-  argv.forEach((a, i) => {
-    if (a !== "--slack-channel" || !argv[i + 1]) return;
-    const [id, name] = argv[i + 1].split(":");
-    channelMap[id.trim()] = name?.trim() || chat.channels[0].id;
-  });
-  if (!Object.keys(channelMap).length) {
-    console.error("--slack 에는 --slack-channel <Slack 채널 ID>:<willnew 채널> 이 하나 이상 필요해요. 예: --slack-channel C0123:backend");
-    process.exit(1);
-  }
-  const membersFile = flag("slack-members");
-  const people = membersFile ? loadSlackPeople(resolve(membersFile)) : { resolveSlackUser: () => null, slackIdOf: () => null };
-  if (!membersFile) console.warn("--slack-members 가 없어서 Slack 에서 아무도 요청하거나 승인할 수 없어요");
+  const { Members, defaultMembersPath } = await import("./members.js");
+  const { slackFromArgs } = await import("./slack/cli.js");
   try {
-    await startSlack({
-      requests, runs, ...people, channelMap, channels: chat.channels, repo, check,
-      botToken: process.env.SLACK_BOT_TOKEN, appToken: process.env.SLACK_APP_TOKEN, webBaseUrl: flag("slack-web-url"),
-    });
-    console.log(`slack · Socket Mode · 채널 ${Object.entries(channelMap).map(([id, name]) => `${id} → ${name}`).join(", ")}`);
+    const members = Members.load(resolve(flag("members") ?? defaultMembersPath()));
+    console.log(await slackFromArgs({ argv, requests, runs, channels: chat.channels, repo, check, members, noSelfApprove: argv.includes("--no-self-approve"), webBaseUrl: flag("slack-web-url") }));
   } catch (e) {
     console.error(`Slack 을 켜지 못했어요: ${(e as Error).message}`);
     process.exitCode = 1;
