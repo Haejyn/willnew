@@ -11,6 +11,11 @@ const flag = (name: string, fallback?: string) => {
 };
 
 const cmd = argv[0] ?? "serve";
+// team mode people: members.json (src/server/members-cli.ts)
+if (cmd === "invite" || cmd === "runner-token") {
+  const { membersCli } = await import("./members-cli.js");
+  process.exit(membersCli(cmd, argv.slice(1)));
+}
 if (cmd !== "serve") {
   console.log(`usage: willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1]`);
   process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
