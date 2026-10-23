@@ -160,6 +160,11 @@ export class Runner {
     this.stopped = true;
     clearTimeout(this.timer);
     this.ws?.close(1000, "runner stopped");
+    // dev servers started for previews and screenshots do not outlive the runner
+    for (const { run } of this.jobs.values()) {
+      for (const a of run.agents) this.executor.stopPreview(run, a);
+      this.executor.stopBasePreview(run);
+    }
     for (const [id, t] of this.saveTimers) {
       clearTimeout(t);
       const job = this.jobs.get(id);

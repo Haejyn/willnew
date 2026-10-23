@@ -149,6 +149,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   runner?.stop();
+  // the runner stops its preview dev servers; give taskkill a moment before the worker goes away
+  await new Promise((r) => setTimeout(r, 1500));
   await new Promise((r) => server?.close(r));
 });
 
