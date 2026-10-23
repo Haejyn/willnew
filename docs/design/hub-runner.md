@@ -1,6 +1,6 @@
 # 허브와 러너 설계
 
-상태: 1단계(Executor 분리) 완료 (PR #8). 2단계부터 구현 중 (2026-10-23). 이번 구현의 결정은 맨 아래 "팀 모드 결정"
+상태: 1단계부터 5단계까지 구현 (2026-10-24, 브랜치 feat/b3-integrate). 6단계(터미널, 미리보기 터널)는 아직. 이번 구현의 결정은 맨 아래 "팀 모드 결정", 설정 순서는 [팀 모드 설정](../team/setup.md)
 
 ## 목표
 
@@ -175,11 +175,11 @@ export interface AgentSink {
 
 각 단계가 끝날 때 기존 테스트가 모두 통과해야 하고, 혼자 모드는 단계마다 그대로 쓸 수 있어야 한다.
 
-1. Executor 분리: 한 프로세스 안에서 `RunManager` → `RunManager` + `LocalExecutor`. 동작 변화 없음. 가짜 Executor 로 `RunManager` 단위 테스트 추가
-2. 러너 프로세스와 프로토콜: `willnew hub`, `willnew runner`, `RemoteExecutor`. 한 PC 에서 루프백으로 허브와 러너를 띄워 오프라인 script 어댑터로 e2e (맡기기 → 이어서 지시 → 줄 댓글 → 승인 → push)
-3. 사람: `members.json`, 토큰에서 이름 정하기, 승인 권한, 러너 주인 묶기
-4. 팀 반영: 허브의 GitHub 토큰으로 `gh pr … --repo`, push 는 러너. 가짜 `gh` 테스트 재사용
-5. 대기열 화면: "내가 맡을게요", 러너 상태(연결, 인증 방식, 슬롯), 내 요청의 "맡을 사람 기다리는 중"
+1. (완료) Executor 분리: 한 프로세스 안에서 `RunManager` → `RunManager` + `LocalExecutor`. 동작 변화 없음. 가짜 Executor 로 `RunManager` 단위 테스트 추가
+2. (완료) 러너 프로세스와 프로토콜: `willnew hub`, `willnew runner`, `RemoteExecutor`. 한 PC 에서 루프백으로 허브와 러너를 띄워 오프라인 script 어댑터로 e2e (맡기기 → 이어서 지시 → 줄 댓글 → 승인 → push)
+3. (완료) 사람: `members.json`, 토큰에서 이름 정하기, 승인 권한, 러너 주인 묶기
+4. (완료) 팀 반영: 허브의 GitHub 토큰으로 `gh pr … --repo`, push 는 러너. 가짜 `gh` 테스트 재사용
+5. (완료) 대기열 화면: "내가 맡을게요", 러너 상태(연결, 인증 방식, 슬롯), 내 요청의 "맡을 사람 기다리는 중"
 6. 터미널, 미리보기 터널
 
 1단계는 팀 기능과 상관없이 `runs.ts` 를 정리하는 일이라 혼자 쓰는 동안 아무 때나 해도 된다. 2단계부터가 팀용이다.

@@ -156,8 +156,21 @@ node dist/server/cli.js serve --repo ../willnew-demo --check "npm test" --review
 - `--ship pr` 은 `git` 의 `origin` 과 로그인된 `gh` 가 필요합니다
 - `--preview` 는 에이전트 워크트리마다 띄울 개발 서버 명령. `{port}` 와 `PORT` 에 빈 포트가 들어가 서로 겹치지 않습니다
 - 서버 없이 화면만 보려면 `/?demo`
-- 필요: Node 20+, git, `claude` 또는 `codex` 로그인
+- 필요: Node 22+, git, `claude` 또는 `codex` 로그인
 - 외부 접속 `--host 0.0.0.0` 은 토큰 필수(터미널이 열리므로)
+
+## 팀 모드
+
+여럿이 쓸 때는 허브 하나와 개발자마다 러너 하나로 나눈다. 허브는 채널, 요청 기록, 검토, 반영을 맡고 AI 로그인을 갖지 않는다. 러너는 각자 PC 에서 자기 clone 과 자기 로그인으로 에이전트를 돌린다.
+
+```bash
+willnew invite 이해준 --role developer      # 초대 링크
+willnew runner-token 이해준                  # 러너 토큰
+willnew hub --repo-remote github.com/acme/app --host 0.0.0.0
+willnew runner --hub ws://hub-host:7777/runner --token <러너 토큰> --repo ~/code/app
+```
+
+요청은 "맡을 사람 기다리는 중" 으로 들어오고, 개발자가 내가 맡을게요를 누르면 그 사람의 러너가 되묻기부터 반영까지 맡는다. 개인 구독 러너는 주인이 맡은 일만 하고, 다른 사람이 보낸 후속 작업은 주인이 확인한 뒤에 실행한다. 설정 순서와 규칙은 [팀 모드 설정](docs/team/setup.md), Slack 은 [Slack 연결](docs/slack/setup.md).
 
 ## 단축키
 
@@ -219,7 +232,7 @@ pnpm typecheck   # 서버 + 웹
 
 ## 제한
 
-- 사용자 계정이 없습니다. 이름, 역할, 직함은 각자 설정에서 고르고 브라우저에만 저장됩니다. 요청자 역할이어도 URL 로 검토 화면에 들어가 읽을 수 있고, 역할이 권한을 막지는 않습니다
+- 혼자 모드(`serve`)에는 사용자 계정이 없습니다. 이름, 역할, 직함은 각자 설정에서 고르고 브라우저에만 저장됩니다. 팀 모드는 초대 링크의 토큰으로 사람을 정합니다. 요청자 역할이어도 URL 로 검토 화면에 들어가 읽을 수 있고, 역할이 권한을 막지는 않습니다
 - `pr` 모드는 가짜 `gh` 와 가짜 배포 명령으로만 테스트했습니다. 실제 GitHub 에 대해서는 돌려 보지 않았고, 로컬 bare 저장소로는 `git push` 까지만 확인할 수 있어 `gh` 는 검증되지 않습니다. 저장소에 `origin` 이 없거나 `gh` 로그인이 안 되어 있으면 PR 을 올리지 못했다고 알리고 멈춥니다
 - 승인은 CI 결과와 무관하게 기록됩니다. CI 가 실패하면 승인됨 상태로 남지만 병합되지 않고, 다시 올리는 버튼은 아직 없습니다
 - 채널 검토자는 서버를 띄울 때 `--reviewers` 로 한 번 정합니다. 웹에서 바꾸는 화면은 없습니다

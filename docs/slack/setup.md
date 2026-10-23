@@ -38,35 +38,42 @@ willnew 를 쓸 채널마다 `/invite @willnew` 를 한다. 채널 ID 는 채널
 
 Slack 계정마다 willnew 이름과 역할을 정해야 버튼 권한을 가릴 수 있다. 되묻기에 답하기, 의도대로예요, 다시 봐 주세요는 요청한 사람만 누를 수 있다. 진행, 고쳐서 진행, 직접 할게, 거절, 요청자 확인 건너뛰기, 결과 승인과 반려는 `developer` 만 된다. 목록에 없는 사람이 멘션하거나 버튼을 누르면 본인에게만 보이는 안내가 간다.
 
-`members.json` 과 같은 칸을 쓰는 파일을 만든다. Slack ID 는 프로필 → 더 보기 → 멤버 ID 복사.
+사람 목록은 팀 모드 허브와 같은 `~/.willnew/members.json` 을 쓴다. `willnew invite` 로 넣으면서 Slack ID 를 붙인다. Slack ID 는 프로필 → 더 보기 → 멤버 ID 복사.
 
-```json
-[
-  { "name": "이해준", "role": "developer", "slackId": "U01AAAA" },
-  { "name": "한지우", "role": "requester", "title": "디자인", "slackId": "U02BBBB" }
-]
+```bash
+willnew invite 이해준 --role developer --slack-id U01AAAA
+willnew invite 한지우 --title 디자인 --slack-id U02BBBB
 ```
 
-## 5. 허브 실행
+## 5. 실행
+
+팀 모드 허브에 붙이는 것이 기본이다. 허브와 러너는 [팀 모드 설정](../team/setup.md).
 
 ```bash
 export SLACK_BOT_TOKEN=xoxb-…
 export SLACK_APP_TOKEN=xapp-…
+willnew hub --repo-remote github.com/acme/app --check "npm test" --reviewers 이해준 \
+  --slack --slack-channel C0123ABCD:backend --slack-web-url http://hub-host:7777
+```
+
+혼자 모드에 붙여도 된다. 사람 목록은 같은 파일을 읽는다.
+
+```bash
 willnew serve --repo ~/code/app --check "npm test" --reviewers 이해준 \
-  --slack --slack-channel C0123ABCD:backend --slack-members people.json \
-  --slack-web-url http://my-host:7777
+  --slack --slack-channel C0123ABCD:backend --slack-web-url http://my-host:7777
 ```
 
 | 옵션 | 뜻 |
 |---|---|
 | `--slack` | Slack 앱을 켠다. 없으면 Slack 코드는 아예 불러오지 않는다 |
 | `--slack-channel <Slack 채널 ID>:<willnew 채널>` | 채널 대응. 여러 번 줄 수 있다. willnew 채널은 `backend`, `data`, `content-ops` 중 하나이고, 빼면 `backend` |
-| `--slack-members <파일>` | 위 사람 목록 |
+| `--members <파일>` | 사람 목록. 기본 `~/.willnew/members.json` |
+| `--no-self-approve` | Slack 의 승인 버튼에서도 자기 요청이나 자기가 맡은 결과는 다른 개발자가 승인한다 |
 | `--slack-web-url <주소>` | 카드의 "웹에서 보기" 링크와, 다시 봐 주세요에서 화면 위에 상자를 그리러 갈 링크. 다른 사람 PC 에서 열리는 주소여야 한다 |
 
 검토를 맡을 개발자는 `--reviewers` 의 첫 사람(요청자가 아닌 사람)이다. 미리보기와 전후 스크린샷이 붙으려면 `--preview` 도 함께 준다. PR 로 반영하려면 `--ship pr`, 배포 확인까지 하려면 `--deploy-check` 를 준다. 스레드와 요청의 대응은 `~/.willnew/slack/threads.json` 에 남아서, 허브를 다시 띄워도 같은 메시지를 이어서 고친다.
 
-지금은 혼자 모드(`willnew serve`)에 붙어 있다. 팀 모드 허브가 생기면 `willnew hub --slack` 으로 옮기고, 사람 목록은 허브의 `members.json` 을 그대로 쓴다.
+팀 모드에서는 요청이 먼저 "맡을 사람 기다리는 중" 으로 스레드에 올라오고, 개발자가 웹에서 내가 맡을게요를 누르면 "이해준님이 맡았어요" 가 이어진다. 제안 버튼은 맡은 개발자만 누를 수 있다. 개인 구독 러너에 요청자의 다시 봐 주세요가 오면 "이해준님 확인 뒤에 이어서 작업해요" 가 붙고, 러너 주인이 웹에서 이어서 실행을 누르면 이어진다.
 
 ## 스레드에서 보이는 것
 
@@ -88,5 +95,5 @@ willnew serve --repo ~/code/app --check "npm test" --reviewers 이해준 \
 |---|---|
 | `invalid_auth` 로 시작이 안 된다 | 봇 토큰이 `xoxb-`, 앱 토큰이 `xapp-` 인지, 앱 토큰에 `connections:write` 가 있는지 |
 | 멘션해도 답이 없다 | 채널에 `/invite @willnew` 했는지, `--slack-channel` 의 ID 가 맞는지 |
-| "등록되지 않은 Slack 계정" 안내가 온다 | 사람 목록의 `slackId` |
+| "등록되지 않은 Slack 계정" 안내가 온다 | `members.json` 의 `slackId` (`willnew invite <이름> --slack-id U…` 로 다시 넣는다) |
 | 스크린샷이 안 붙는다 | `--preview` 와 `playwright-core` 설치. 없으면 스크린샷 없이 확인 버튼만 나온다 |
