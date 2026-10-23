@@ -44,6 +44,8 @@ export class RunManager {
   readonly bus = new EventEmitter();
   private runs = new Map<string, Run>();
   private saveTimers = new Map<string, NodeJS.Timeout>();
+  /** agents a human cancelled: later executor patches cannot move them out of "cancelled" (a steer reopens them) */
+  private cancelled = new Set<string>();
 
   readonly shipper: Shipper;
   readonly executor: Executor;
@@ -126,7 +128,16 @@ export class RunManager {
 
   /** What the executor writes one agent's progress into. */
   private sink(run: Run, agent: AgentRun): AgentSink {
-    return { patch: (p, event) => this.emit(run, agent, p, event), finished: () => this.afterAgent(run) };
+    return {
+      patch: (p, event) => {
+        if (this.cancelled.has(agent.id) && p.status && p.status !== "cancelled") {
+          const { status: _s, endedAt: _e, durationMs: _d, ...rest } = p;
+          p = rest;
+        }
+        this.emit(run, agent, p, event);
+      },
+      finished: () => this.afterAgent(run),
+    };
   }
 
   /** When the last agent finishes, the run goes to human review (if anything is worth merging). */
@@ -145,6 +156,7 @@ export class RunManager {
     const endedAt = Date.now();
     this.emit(run, agent, { status: "cancelled", endedAt, durationMs: agent.startedAt ? endedAt - agent.startedAt : undefined },
       { ts: endedAt, kind: "status", text: "취소됨" });
+    this.cancelled.add(agent.id);
     this.executor.cancel(run, agent, this.sink(run, agent));
   }
 
@@ -163,6 +175,7 @@ export class RunManager {
     this.emit(run, agent, { steers: [...(agent.steers ?? []), { text: t, by, at }] }, { ts: at, kind: "steer", text: `${by}: ${t}` });
     // finished: the agent reopens, so the run is back at work rather than waiting on a human
     if (FINISHED.has(agent.status) && run.review.status === "pending") this.emit(run, undefined, {}, undefined, { review: { status: "none" } });
+    if (FINISHED.has(agent.status)) this.cancelled.delete(agent.id);   // reopening a cancelled agent is allowed
     this.executor.steer(run, agent, t, this.sink(run, agent));
   }
 
@@ -327,11 +340,18 @@ export class RunManager {
     if (live(run.basePreview)) this.stopBasePreview(runId);
     await this.executor.remove(run);
     this.runs.delete(runId);
+    clearTimeout(this.saveTimers.get(runId));
+    this.saveTimers.delete(runId);
+    for (const a of run.agents) this.cancelled.delete(a.id);
     rmSync(join(RUNS_DIR, `${runId}.json`), { force: true });
   }
 
   private save(run: Run, now = false) {
-    const write = () => { this.saveTimers.delete(run.id); writeFileSync(join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run)); };
+    const write = () => {
+      this.saveTimers.delete(run.id);
+      if (this.runs.get(run.id) !== run) return;   // removed: do not bring the file back
+      writeFileSync(join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run));
+    };
     if (now) return write();
     if (!this.saveTimers.has(run.id)) this.saveTimers.set(run.id, setTimeout(write, 400));
   }

@@ -58,6 +58,8 @@ export class LocalExecutor implements Executor {
   private pending = new Map<string, string[]>();
   private interrupted = new Set<string>();
   private previews = new Map<string, ChildProcess>();
+  /** running check commands, so a cancel can stop them */
+  private checks = new Map<string, ChildProcess>();
 
   constructor(private opts: { preview?: string } = {}) {}
 
@@ -74,6 +76,7 @@ export class LocalExecutor implements Executor {
       sink.finished();
       return;
     }
+    if ((agent.status as string) === "cancelled") return;   // cancelled while the worktree was made; cancel() already finished it
     const startedAt = Date.now();
     sink.patch({ status: "running", startedAt }, { ts: startedAt, kind: "status", text: `작업 시작 · ${agent.worktree}` });
     const early = this.take(agent.id);
@@ -110,6 +113,7 @@ export class LocalExecutor implements Executor {
     } catch (e) {
       note(sink, "error", `diff: ${(e as Error).message}`);
     }
+    if ((agent.status as string) === "cancelled") return;   // cancelled while committing; cancel() already finished it
     const endedAt = Date.now();
     if (!exit.ok) {
       sink.patch({ status: "failed", endedAt, durationMs: endedAt - (agent.startedAt ?? endedAt) },
@@ -122,7 +126,9 @@ export class LocalExecutor implements Executor {
     }
     sink.patch({ status: "checking" }, { ts: Date.now(), kind: "check", text: `$ ${run.checkCmd}` });
     const t0 = Date.now();
-    const res = await runShell(run.checkCmd, agent.worktree, CHECK_TIMEOUT_MS);
+    const res = await runShell(run.checkCmd, agent.worktree, CHECK_TIMEOUT_MS, (child) => this.checks.set(agent.id, child));
+    this.checks.delete(agent.id);
+    if ((agent.status as string) === "cancelled") return;   // cancelled during the check; cancel() already finished it
     const check = { status: res.code === 0 ? "passed" as const : "failed" as const, exitCode: res.code,
       output: res.output.slice(-6000), durationMs: Date.now() - t0 };
     sink.patch({ check }, { ts: Date.now(), kind: "check",
@@ -224,6 +230,8 @@ export class LocalExecutor implements Executor {
   cancel(_run: Run, agent: AgentRun, sink: AgentSink) {
     const child = this.procs.get(agent.id);
     this.pending.delete(agent.id);
+    const check = this.checks.get(agent.id);
+    if (check) killTree(check);
     if (child?.pid) killTree(child);
     else sink.finished();
   }
@@ -331,9 +339,10 @@ export class LocalExecutor implements Executor {
   }
 }
 
-export function runShell(cmd: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
+export function runShell(cmd: string, cwd: string, timeoutMs: number, onSpawn?: (child: ChildProcess) => void): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, { cwd, shell: true, windowsHide: true, env: { ...process.env, CI: "1" } });
+    onSpawn?.(child);
     let output = "";
     const add = (d: Buffer) => { output = (output + d.toString("utf8")).slice(-20000); };
     child.stdout.on("data", add);

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -181,5 +181,40 @@ describe("RunManager with a fake executor", () => {
     expect(ex.calls.map((c) => c.method)).toEqual(["start", "cancel", "remove"]);
     expect(removed).toEqual([agent.id]);
     expect(m.get(run.id)).toBeUndefined();
+  });
+  it("a cancelled agent stays cancelled whatever the executor reports later", async () => {
+    const { ex, m, run, agent } = await setup();
+    const sink = ex.sinks.get(agent.id)!;
+    sink.patch({ status: "checking" });
+    m.cancel(run.id, agent.id);
+    const { endedAt, durationMs } = agent;
+    sink.patch({ check: { status: "passed", exitCode: 0, output: "" } });
+    sink.patch({ status: "done", endedAt: endedAt! + 5000, durationMs: 99_999 });
+    sink.patch({ status: "failed" });
+    expect(agent).toMatchObject({ status: "cancelled", endedAt, durationMs });
+    expect(agent.check.status).toBe("passed");
+    await m.remove(run.id);
+  });
+
+  it("a steer still reopens a cancelled agent", async () => {
+    const { ex, m, run, agent } = await setup();
+    m.cancel(run.id, agent.id);
+    m.steer(run.id, agent.id, "다시 해 주세요", "lead");
+    ex.sinks.get(agent.id)!.patch({ status: "running", startedAt: Date.now() });
+    expect(agent.status).toBe("running");
+    ex.finish(agent.id);
+    expect(agent.status).toBe("done");
+    await m.remove(run.id);
+  });
+
+  it("remove leaves no run file behind, even when a save was pending or a patch comes late", async () => {
+    const { ex, m, run, agent } = await setup();
+    const file = join(process.env.WILLNEW_HOME!, "runs", `${run.id}.json`);
+    const sink = ex.sinks.get(agent.id)!;
+    sink.patch({ status: "running" });   // schedules a delayed save
+    await m.remove(run.id);
+    sink.patch({ summary: "late" });     // executor reports after the run is gone
+    await new Promise((r) => setTimeout(r, 700));
+    expect(existsSync(file)).toBe(false);
   });
 });
