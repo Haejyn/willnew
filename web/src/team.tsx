@@ -42,7 +42,9 @@ export function ClaimButton({ api, req, user, onDone }: { api: Api; req: Request
   const toast = useToast();
   const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
-  if (!on || user.role === "requester" || !waitingForClaim(req) || !runners || !api.claim) return null;
+  // 맡은 사람에게는 정리가 멈췄을 때(러너가 끊겼다 돌아옴) 다시 시키는 버튼. 이미 도는 중이면 허브가 두 번 돌리지 않는다
+  const retry = req.assignee === user.name && (req.status === "draft" || (req.status === "clarifying" && req.questions.every((q) => q.answer)) || (req.status === "spec_ready" && !req.proposal));
+  if (!on || user.role === "requester" || !(waitingForClaim(req) || retry) || !runners || !api.claim) return null;
   const mine = myRunners(runners, user);
   if (!mine.length)
     return (
@@ -57,7 +59,7 @@ export function ClaimButton({ api, req, user, onDone }: { api: Api; req: Request
     setBusy(true);
     try {
       await api.claim!(req.id, chosen);
-      toast(req.status === "draft" ? "맡았어요. 내 러너가 정리를 시작해요" : "맡았어요", "ok");
+      toast(retry ? "내 러너가 다시 정리해요" : req.status === "draft" ? "맡았어요. 내 러너가 정리를 시작해요" : "맡았어요", "ok");
       onDone?.();
     } catch (e) {
       toast((e as Error).message, "err");
@@ -77,8 +79,9 @@ export function ClaimButton({ api, req, user, onDone }: { api: Api; req: Request
           ))}
         </select>
       ) : null}
-      <button className="btn m" disabled={busy || !chosen} onClick={go}>
-        {busy ? <Spinner size={12} /> : null}내가 맡을게요
+      <button className={retry ? "btn q" : "btn m"} disabled={busy || !chosen} onClick={go}>
+        {busy ? <Spinner size={12} /> : null}
+        {retry ? "내 러너로 다시 정리" : "내가 맡을게요"}
       </button>
       {!live.length ? <span className="t-meta">내 러너가 연결돼 있지 않아요</span> : null}
     </div>
