@@ -4,7 +4,7 @@
  *
  * The runner keeps its own copy of every run it took, with local paths (repo clone, worktrees under its own home).
  * Local paths never go to the hub: the hub stores `runner:<id>` as the worktree and the remote address as the repo.
- * Jobs are saved under <home>/runner/jobs so a restart can report what it was doing (in flight → cancelled).
+ * Jobs are saved under <home>/jobs so a restart can report what it was doing (in flight → cancelled).
  *
  * It never reads AI login files (~/.claude/.credentials.json, ~/.codex/auth.json); the auth kind comes from
  * environment variables only (detectAuth).
@@ -124,7 +124,7 @@ export class Runner {
   constructor(private opts: RunnerOptions) {
     this.home = opts.home ?? HOME;
     this.id = opts.runnerId ?? `${hostname()}-${basename(opts.repo)}`.replace(/[^\w.-]+/g, "-").slice(0, 64);
-    this.jobsDir = join(this.home, "runner", "jobs");
+    this.jobsDir = join(this.home, "jobs");
     this.executor = new LocalExecutor({ preview: opts.preview, home: this.home });
     const runs = {
       previewCommand: opts.preview ?? "",

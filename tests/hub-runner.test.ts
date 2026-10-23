@@ -166,7 +166,7 @@ describe("hub and runner over loopback (offline agent, fake gh)", () => {
     expect(gh).toContain("gh pr merge 512 --squash --delete-branch --repo acme/app");
 
     await runs().remove(run.id);
-    expect(existsSync(join(runnerHome, "runner", "jobs", `${run.id}.json`))).toBe(false);
+    expect(existsSync(join(runnerHome, "jobs", `${run.id}.json`))).toBe(false);
     expect(git(clone, "worktree", "list")).not.toContain(a.id);
   }, 90_000);
 

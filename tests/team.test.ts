@@ -317,7 +317,7 @@ describe("team mode: the rest of the rules", () => {
     const aid = run.agents[0].id;
     await waitFor(() => hub.runs.get(run.id)!.agents[0].status === "checking");
     hub.runs.cancel(run.id, aid);
-    const local = join(runnerHome, "runner", "jobs", `${run.id}.json`);
+    const local = join(runnerHome, "jobs", `${run.id}.json`);
     await waitFor(() => existsSync(local) && JSON.parse(readFileSync(local, "utf8")).agents[0].status === "cancelled", 5000);
     await new Promise((r) => setTimeout(r, 2500));
     expect(hub.runs.get(run.id)!.agents[0].status).toBe("cancelled");
