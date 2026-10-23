@@ -1,6 +1,6 @@
 # 허브와 러너 설계
 
-상태: 설계만. 구현 전 (2026-10-14)
+상태: 1단계(Executor 분리) 완료 (PR #8). 2단계부터 구현 중 (2026-10-23). 이번 구현의 결정은 맨 아래 "팀 모드 결정"
 
 ## 목표
 
@@ -56,9 +56,15 @@ triage 를 러너로 옮기는 이유: Haiku 호출도 AI 사용이라 허브가
 | 개인 구독 (`claude` Pro/Max 로그인, Codex ChatGPT 로그인) | 손으로만 | 러너 주인이 웹에서 "내가 맡을게요" 를 눌렀을 때만 그 러너로 간다. 주인이 직접 시킨 일로 본다 |
 | 사용량 과금 (`ANTHROPIC_API_KEY`, Bedrock, Vertex, 회사 Console 키) | 자동 가능 | 대기열에서 비어 있는 러너가 바로 가져간다 |
 
-- 러너는 환경 변수(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`)로 인증 방식을 판별하고, 개인 구독인데 `--claim auto` 를 주면 시작을 거부한다
-- [확인 필요: 개인 구독으로 동료가 올린 요청을 손으로 가져가 처리하는 것이 Anthropic 소비자 약관과 Claude Code 이용 정책에 맞는지. OpenAI 쪽 Codex 도 같은 질문. legal-policy 에이전트로 검토하고 결과를 여기 적는다]
-- 확인 결과가 "안 된다" 이면 팀 모드는 사용량 과금 러너만 받는다. 아래 설계는 그 경우에도 그대로 쓸 수 있다
+- 러너는 환경 변수로 인증 방식을 판별한다. 확실히 사용량 과금인 경우만 `api` 로 본다: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, Codex 는 `OPENAI_API_KEY` 나 `CODEX_API_KEY`. 나머지(`CLAUDE_CODE_OAUTH_TOKEN`, 로그인만 된 상태, 판별 못 함)는 모두 `subscription`. 개인 구독인데 `--claim auto` 를 주면 시작을 거부한다
+- 개인 구독 러너의 동시 슬롯은 기본 1. Pro/Max 한도는 "ordinary, individual usage" 를 전제로 한다
+
+### 약관 검토 (2026-10-23)
+
+- 자동 배정을 개인 구독으로 하는 것은 안 된다. Anthropic AUP 는 "services that route requests through consumer subscriptions" 를, Claude Code 법무 문서(code.claude.com/docs/en/legal-and-compliance)는 "route requests through Free, Pro, or Max plan credentials on behalf of their users" 를 금지한다
+- 수동 가져가기는 문서에 명시되어 있지 않다. 같은 문서가 "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription" 은 막지 않는다고 적고 있어, 개발자가 직접 읽고 맡은 일을 자기 PC 의 수정하지 않은 `claude` 로 처리하는 것은 그 범위로 해석한다. 해석이므로 Anthropic 문의 대상으로 남긴다. OpenAI 는 약관 원문 대조가 아직 안 됐고, Codex 문서는 자동화에 API 키를 권한다
+- 그래서 개인 구독 러너는 주인이 요청과 제안을 직접 읽고 "내가 맡을게요" 를 누른 일만 처리한다. 요청자나 다른 사람에게서 나온 이어서 지시, 줄 댓글 다시 맡기기, "다시 봐 주세요" 재작업도 주인이 확인한 뒤 실행한다. 맡을 사람이 정해지기 전에 도는 AI 호출(되묻기, 명세, 구현 제안)은 허브에 회사 API 키가 있을 때만 허브에서 돌리고, 없으면 맡은 개발자의 러너에서 돈다
+- 러너는 수정하지 않은 `claude`, `codex` 바이너리만 띄우고 `~/.claude/.credentials.json`, `~/.codex/auth.json` 같은 로그인 파일을 읽지도 허브로 보내지도 않는다
 
 ## 실행 순서 (팀 모드)
 
@@ -180,9 +186,46 @@ export interface AgentSink {
 
 ## 정하지 않은 것
 
-- 개인 구독 러너를 손으로 가져가는 방식이 약관상 되는지 (위 확인 필요 항목)
-- 허브를 어디에 둘지: 팀원 PC 하나, 사내 서버, 작은 클라우드 VM
-- PR 작성자: 허브의 봇 계정 토큰으로 할지, GitHub App 으로 할지. 지금 설계는 봇 계정 토큰
-- 자기가 맡은 일을 자기가 승인해도 되는지. 지금 혼자 모드는 된다. 팀 모드에서 막을지는 팀 규칙으로 남긴다
+- 수동 가져가기가 약관에 맞는지 Anthropic, OpenAI 의 공식 답 (위 약관 검토는 문서 해석)
+- 허브를 어디에 둘지: 팀원 PC 하나, 사내 서버, 작은 클라우드 VM. 코드는 어느 쪽이든 같다
 - 한 채널에 저장소 여럿
-- 비용 지표: 개인 구독 러너는 비용이 `null` 이라 팀 합계가 비게 된다. 토큰 수로만 보여 줄지
+- 미리보기와 터미널 터널 (6단계). 이번에는 하지 않는다
+
+## 팀 모드 결정 (2026-10-23)
+
+B3 를 실제로 쓸 수 있게 만들 때 정한 것. 아래 계약을 여러 갈래 작업이 같이 쓴다.
+
+### 실행 방식
+
+- `willnew serve`: 혼자 모드. 지금 동작 그대로
+- `willnew hub --repo-remote github.com/org/app [--members members.json] [--slack]`: 허브. AI 자격증명 없이 뜬다. 허브에 `ANTHROPIC_API_KEY` 가 있으면 맡기 전 계획(되묻기, 명세, 제안)을 허브가 돌린다
+- `willnew runner --hub wss://host/runner --token <러너 토큰> --repo <로컬 clone> [--claim manual|auto] [--slots 1] [--preview "<cmd>"] [--allow-codex]`
+
+### 요청 흐름 (팀 모드)
+
+1. 채널이나 Slack 에 `@willnew …` → 허브는 키워드 규칙으로 유형만 붙이고 요청을 만든다
+2. 허브에 API 키가 있으면 바로 되묻기 → 명세 → 제안까지 간다. 없으면 `draft` 에서 "맡을 사람 기다리는 중"
+3. 개발자가 "내가 맡을게요" → 요청의 `assignee` 와 `runnerId` 가 정해진다. 계획이 아직이면 그 러너가 되묻기, 명세, 제안을 만든다
+4. 제안 확인(진행, 고쳐서 진행, 직접 할게, 거절)은 `role: developer` 만. 진행하면 같은 러너에서 실행
+5. 개인 구독 러너에서는 주인이 아닌 사람이 일으킨 재실행(이어서 지시, 줄 댓글, 다시 봐 주세요)이 `held` 로 쌓이고, 주인이 "이어서 실행" 을 눌러야 러너로 간다
+6. 화면 요청은 러너가 미리보기를 띄워 전후 스크린샷을 찍고 PNG 를 허브에 올린다. 미리보기 링크는 러너에 `--preview-base-url` 이 있을 때만
+7. 승인하면 반영은 `pr` 만: 허브가 러너에 push 를 요청하고, 허브의 `gh`(봇 계정이나 허브를 띄운 사람의 로그인)로 PR → CI → 병합 → 배포 확인
+
+### 사람과 권한
+
+- `members.json`: `[{ name, title, role: "developer"|"requester", avatar?, slackId?, tokenHash, runnerTokenHashes?: string[] }]`. 해시는 sha256 hex
+- `willnew invite <이름> [--role developer]` 가 토큰을 만들어 해시를 넣고 초대 링크(`/?invite=<token>`)를 출력. `willnew runner-token <이름>` 은 러너 토큰
+- 팀 모드 HTTP API 는 `Authorization: Bearer <사람 토큰>` 에서 이름을 정한다. 본문의 `user`, `by`, `reviewer` 는 무시
+- 자기 요청이나 자기가 맡은 결과를 자기가 승인하는 것은 기본 허용, `--no-self-approve` 로 막는다
+- 터미널은 팀 모드에서 끈다
+
+### 코드 계약
+
+- `src/server/members.ts`: `class Members { static load(path); byToken(t): Member | null; byRunnerToken(t): Member | null; bySlackId(id): Member | null; get(name): Member | null; all(): Member[] }`
+- 허브는 사람 확인을 `resolveUser(token) => Member | null`, 러너 확인을 `resolveRunner(token) => Member | null` 로 주입받는다
+- Slack 은 `RequestManager` 의 `bus` 이벤트와 공개 메서드(create, answer, decide, requesterCheck)만 쓴다. 채팅 서버 내부를 고치지 않는다
+- 러너 프로토콜 메시지는 위 "프로토콜" 절에 더해 `{ t: "artifact.put", runId, agentId, name, mime, base64 }`(1 장 5 MB 까지), `{ t: "plan.result", requestId, … }`(맡은 러너가 만든 계획)
+
+### 비용
+
+- 개인 구독 러너는 비용을 `null` 로 두고 지표에서는 "구독" 으로 따로 센다. 토큰 수가 있으면 토큰 수를 보여 준다
