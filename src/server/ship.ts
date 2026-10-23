@@ -33,6 +33,12 @@ export interface ShipOptions {
   ciTimeoutMs?: number;
   deployPollMs?: number;
   deployTimeoutMs?: number;
+  /**
+   * Team mode (hub): `owner/name`. gh gets `--repo owner/name` and runs in `cwd` (default the process cwd) instead of
+   * in run.repo, because the hub has no clone. The push itself comes from the runner (the `push` hook of run()).
+   */
+  ghRepo?: string;
+  cwd?: string;
 }
 
 export type ShipEvent = "pr" | "ci_passed" | "ci_failed" | "merged" | "deployed" | "deploy_failed";
@@ -73,11 +79,15 @@ export class Shipper {
 
   /**
    * Runs the pipeline for one approved run. `set` publishes the new ship state, `event` tells the chat what just happened,
-   * `merged` is called once the PR is merged so the agent can be marked as merged.
+   * `merged` is called once the PR is merged so the agent can be marked as merged. `push`, when given, replaces the
+   * local `git push origin <branch>` (team mode: the runner pushes).
    */
-  async run(run: Run, agent: AgentRun, reviewer: string, hooks: { set: (s: Ship) => void; event: (e: ShipEvent) => void; merged: () => void }): Promise<void> {
+  async run(run: Run, agent: AgentRun, reviewer: string, hooks: { set: (s: Ship) => void; event: (e: ShipEvent) => void; merged: () => void; push?: () => Promise<unknown> }): Promise<void> {
     const o = this.opts;
-    const exec = o.runner ?? nodeRunner;
+    const base = o.runner ?? nodeRunner;
+    const cwd = o.ghRepo ? (o.cwd ?? process.cwd()) : run.repo;
+    const repoArgs = o.ghRepo ? ["--repo", o.ghRepo] : [];
+    const exec: Runner = (file, args, opts) => base(file, file === "gh" ? [...args, ...repoArgs] : args, { ...opts, cwd });
     const sleep = o.sleep ?? defaultSleep;
     const env = this.tracksDeploy ? (o.deployEnv ?? "production") : undefined;
     let ship: Ship = { mode: "pr", stage: "pr", env, at: Date.now() };
@@ -92,8 +102,16 @@ export class Shipper {
     };
     set({});
 
-    const push = await exec("git", ["push", "origin", agent.branch], { cwd: run.repo });
-    if (push.code !== 0) return fail("git push", push.stderr);
+    if (hooks.push) {
+      try {
+        await hooks.push();
+      } catch (e) {
+        return fail("git push", (e as Error).message);
+      }
+    } else {
+      const push = await exec("git", ["push", "origin", agent.branch], { cwd: run.repo });
+      if (push.code !== 0) return fail("git push", push.stderr);
+    }
     const create = await exec("gh", ["pr", "create", "--base", run.baseBranch, "--head", agent.branch, "--title", run.title, "--body", prBody(run, agent, reviewer)], { cwd: run.repo });
     const url = /https?:\/\/\S+\/pull\/(\d+)/.exec(create.stdout);
     if (create.code !== 0 || !url) return fail("gh pr create", create.stderr);

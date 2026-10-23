@@ -54,6 +54,10 @@ class FakeExecutor implements Executor {
     this.calls.push({ method: "conflicts", agentId: agent.id });
     return true;
   }
+  async push(_run: Run, agent: AgentRun) {
+    this.calls.push({ method: "push", agentId: agent.id });
+    return { branch: agent.branch, sha: "abc" };
+  }
   async startPreview(): Promise<Preview> {
     throw new Error("not used");
   }

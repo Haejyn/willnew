@@ -20,6 +20,14 @@ export interface AgentSink {
   patch(p: Partial<AgentRun>, event?: AgentEvent): void;
   /** the agent stopped (done, failed or cancelled); the run may now wait for review */
   finished(): void;
+  /** run-level fields a remote executor learns later (team mode: baseRef once the runner fetched, runnerId) */
+  run?(p: Partial<Run>): void;
+}
+
+/** What RunManager hands an executor that keeps work across restarts (team mode hub). */
+export interface ExecutorHost {
+  runs(): Run[];
+  sink(run: Run, agent: AgentRun): AgentSink;
 }
 
 export interface Executor {
@@ -34,6 +42,12 @@ export interface Executor {
   conflicts(run: Run, agent: AgentRun): Promise<boolean | null>;
   /** Merge the agent's branch into the local base branch. Only a local executor can. */
   merge?(run: Run, agent: AgentRun): Promise<string>;
+  /** Push the agent's branch to origin (pr mode). */
+  push(run: Run, agent: AgentRun): Promise<{ branch: string; sha: string }>;
+  /** Team mode: give a queued run to one runner. */
+  assign?(run: Run, runnerId: string): void;
+  /** Team mode: called once after RunManager loaded the saved runs, so work in flight can be picked up again. */
+  attach?(host: ExecutorHost): void;
   startPreview(run: Run, agent: AgentRun, sink: AgentSink): Promise<Preview>;
   stopPreview(run: Run, agent: AgentRun): void;
   /** The same dev server on the run's base commit, for "before" screenshots. `set` stores the run's basePreview. */
@@ -61,7 +75,8 @@ export class LocalExecutor implements Executor {
   /** running check commands, so a cancel can stop them */
   private checks = new Map<string, ChildProcess>();
 
-  constructor(private opts: { preview?: string } = {}) {}
+  /** `home`: where base preview worktrees go (a runner passes its own; default the willnew home) */
+  constructor(private opts: { preview?: string; home?: string } = {}) {}
 
   start(run: Run, agent: AgentRun, sink: AgentSink) {
     void this.begin(run, agent, sink);
@@ -248,6 +263,12 @@ export class LocalExecutor implements Executor {
     return mergeBranch(run.repo, agent.branch, agent.label);
   }
 
+  async push(run: Run, agent: AgentRun) {
+    await git(run.repo, "push", "origin", agent.branch);
+    const sha = (await git(run.repo, "rev-parse", agent.branch)).trim();
+    return { branch: agent.branch, sha };
+  }
+
   /**
    * Start the preview command in `cwd` on a free port and wait until the port answers. `get` and `set` read and write
    * the Preview on whatever owns it (an agent, or the run for the base preview).
@@ -311,7 +332,7 @@ export class LocalExecutor implements Executor {
 
   /** Where the base worktree for a run's "before" preview lives. */
   private baseWorktree(run: Run) {
-    return join(HOME, "worktrees", `${basename(run.repo)}-${run.id}`, "_base");
+    return join(this.opts.home ?? HOME, "worktrees", `${basename(run.repo)}-${run.id}`, "_base");
   }
 
   /**

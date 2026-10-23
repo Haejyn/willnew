@@ -50,7 +50,11 @@ export class RunManager {
   readonly shipper: Shipper;
   readonly executor: Executor;
 
-  constructor(private opts: { preview?: string; previewBaseUrl?: string; ship?: ShipOptions; executor?: Executor } = {}) {
+  /**
+   * `team`: hub mode. Runs are created without a local clone (repo = remote address, baseRef filled in by the runner),
+   * and work in flight survives a restart because it lives on the runners (the executor picks it up in attach()).
+   */
+  constructor(private opts: { preview?: string; previewBaseUrl?: string; ship?: ShipOptions; executor?: Executor; team?: { baseBranch?: string } } = {}) {
     this.shipper = new Shipper(opts.ship ?? { mode: "merge" });
     this.executor = opts.executor ?? new LocalExecutor({ preview: opts.preview });
     mkdirSync(RUNS_DIR, { recursive: true });
@@ -58,7 +62,7 @@ export class RunManager {
       try {
         const run: Run = JSON.parse(readFileSync(join(RUNS_DIR, f), "utf8"));
         for (const a of run.agents) {   // a server restart interrupts anything still in flight
-          if (!FINISHED.has(a.status)) a.status = "cancelled";
+          if (!FINISHED.has(a.status) && !opts.team) a.status = "cancelled";
           if (a.preview && a.preview.status !== "failed") a.preview = { ...a.preview, status: "stopped" };
         }
         if (run.basePreview && run.basePreview.status !== "failed") run.basePreview = { ...run.basePreview, status: "stopped" };
@@ -66,6 +70,12 @@ export class RunManager {
       } catch { /* skip corrupt file */ }
     }
     this.bus.setMaxListeners(200);
+    this.executor.attach?.({ runs: () => this.list(), sink: (run, agent) => this.sink(run, agent) });
+  }
+
+  /** Hub mode: runs wait in the hub queue and go to a runner. */
+  get team() {
+    return !!this.opts.team;
   }
 
   list(): Run[] {
@@ -80,7 +90,8 @@ export class RunManager {
     if (!input.task.trim()) throw new Error("요청 내용이 비어 있습니다");
     if (!input.agents.length) throw new Error("에이전트를 하나 이상 고르세요");
     for (const a of input.agents) if (!ADAPTERS[a.adapter]) throw new Error(`unknown agent: ${a.adapter}`);
-    const { root, baseRef, baseBranch } = await repoInfo(input.repo);
+    // team mode: no clone here. repo is the remote address; the runner fetches origin/<base> and reports baseRef
+    const { root, baseRef, baseBranch } = this.opts.team ? { root: input.repo, baseRef: "", baseBranch: this.opts.team.baseBranch ?? "main" } : await repoInfo(input.repo);
     const runId = `${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${id(4)}`;
     const labels = new Map<string, number>();
     const agents: AgentRun[] = input.agents.map((spec) => {
@@ -92,7 +103,8 @@ export class RunManager {
       return {
         id: aid, adapter: spec.adapter, label, model: spec.model,
         branch: `willnew/${runId}/${aid}`,
-        worktree: join(HOME, "worktrees", `${basename(root)}-${runId}`, aid),
+        // team mode: the runner picks the path under its own home; the hub only ever stores "runner:<id>"
+        worktree: this.opts.team ? "" : join(HOME, "worktrees", `${basename(root)}-${runId}`, aid),
         status: "queued", attempt: 1, turns: 0,
         usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, costUsd: null },
         summary: "", check: { status: "skipped", exitCode: null, output: "" },
@@ -137,7 +149,16 @@ export class RunManager {
         this.emit(run, agent, p, event);
       },
       finished: () => this.afterAgent(run),
+      run: (p) => this.emit(run, undefined, {}, undefined, p),
     };
+  }
+
+  /** Team mode: give a queued run to one runner ("내가 맡을게요"). */
+  assign(runId: string, runnerId: string) {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error("not found");
+    if (!this.executor.assign) throw new Error("이 실행 환경에서는 러너를 고를 수 없어요");
+    this.executor.assign(run, runnerId);
   }
 
   /** When the last agent finishes, the run goes to human review (if anything is worth merging). */
@@ -321,6 +342,8 @@ export class RunManager {
         set: (ship) => this.emit(run, undefined, {}, undefined, { ship }),
         event: (e) => this.bus.emit("ship", run, e),
         merged: () => this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨 (PR 병합)` }),
+        // team mode: the branch lives on the runner, so the runner pushes it
+        push: this.opts.team ? () => this.executor.push(run, agent) : undefined,
       }).catch((e: Error) => {
         this.emit(run, undefined, {}, undefined, { ship: { mode: "pr", stage: "ci_failed", checks: [{ name: e.message.slice(0, 80), state: "fail" }], at: Date.now() } });
         this.bus.emit("ship", run, "ci_failed");
