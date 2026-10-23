@@ -11,8 +11,14 @@ const flag = (name: string, fallback?: string) => {
 };
 
 const cmd = argv[0] ?? "serve";
+// team mode: runs until the hub or runner stops, then exits (never falls through to serve)
+if (cmd === "hub" || cmd === "runner") {
+  const { main } = await import("./cli-team.js");
+  process.exit(await main(cmd, argv));
+}
 if (cmd !== "serve") {
-  console.log(`usage: willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1]`);
+  console.log(`usage: willnew serve | hub | runner   (willnew hub --help, willnew runner --help)
+       willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1]`);
   process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
 }
 
