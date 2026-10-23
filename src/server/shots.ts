@@ -84,7 +84,8 @@ export interface CaptureInput {
   after?: string;
 }
 
-const safe = (s: string) => s.replace(/[^a-zA-Z0-9가-힣_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "screen";
+/** folder and file name part used for stored shots (the hub stores runner uploads the same way) */
+export const safe = (s: string) => s.replace(/[^a-zA-Z0-9가-힣_-]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "screen";
 const joinUrl = (base: string, path: string) => `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 
 export class ShotService {

@@ -36,7 +36,14 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
   });
 }
 
-export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager }) {
+/** What the team mode hub (hub.ts) adds: its own routes before the web UI fallback, and no terminal. */
+export interface TeamAppOptions {
+  routes?: (app: Hono, upgradeWebSocket: ReturnType<typeof createNodeWebSocket>["upgradeWebSocket"]) => void;
+  /** false: the terminal endpoint refuses (team mode: the worktree is on someone else's PC) */
+  terminal?: boolean;
+}
+
+export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager } & TeamAppOptions) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview, previewBaseUrl: opts.previewBaseUrl, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const requests = opts.requests ?? new RequestManager(runs);
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
@@ -114,6 +121,10 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     let term: import("./terminal.js").Terminal | undefined;
     return {
       async onOpen(_e, ws) {
+        if (opts.terminal === false) {
+          ws.send("\x1b[2m팀 모드에서는 터미널을 열 수 없어요\x1b[0m\r\n");
+          return ws.close();
+        }
         try {
           const { agent } = agentOf(c.req.param("id")!, c.req.param("aid")!);
           term = await terminals.get(agent.id, agent.worktree, Number(c.req.query("cols")) || 100, Number(c.req.query("rows")) || 30);
@@ -211,6 +222,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     const { by, reason } = await c.req.json();
     return c.json(requests.cancel(c.req.param("id"), String(by ?? "anonymous"), reason ? String(reason) : undefined));
   });
+
+  opts.routes?.(app, upgradeWebSocket);
 
   // built web UI
   app.get("*", (c) => {
