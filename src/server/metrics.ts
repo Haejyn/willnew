@@ -19,12 +19,15 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
+/** Team mode: the run went to a runner on a personal subscription. It has no cost; it is counted on its own. */
+export const subscription = (r: Run) => r.runnerAuth === "subscription";
+
 /** Usage metrics across runs, per agent CLI — which agent is worth running for this repo? */
 export function computeMetrics(runs: Run[]) {
   const by: Record<string, { agents: number; done: number; passed: number; finished: number; durations: number[];
     inTok: number; outTok: number; cost: number; files: number[] }> = {};
   const timeline: { runId: string; createdAt: number; adapter: string; label: string; durationMs: number | null;
-    checkStatus: string; costUsd: number | null; tokens: number }[] = [];
+    checkStatus: string; costUsd: number | null; tokens: number; subscription?: boolean }[] = [];
   for (const run of runs) {
     for (const a of run.agents) {
       const m = (by[a.adapter] ??= { agents: 0, done: 0, passed: 0, finished: 0, durations: [], inTok: 0, outTok: 0, cost: 0, files: [] });
@@ -41,7 +44,7 @@ export function computeMetrics(runs: Run[]) {
       m.cost += a.usage.costUsd ?? 0;
       timeline.push({ runId: run.id, createdAt: run.createdAt, adapter: a.adapter, label: a.label, durationMs: a.durationMs ?? null,
         checkStatus: a.status === "done" ? a.check.status : a.status, costUsd: a.usage.costUsd,
-        tokens: a.usage.inputTokens + a.usage.cachedTokens + a.usage.outputTokens });
+        tokens: a.usage.inputTokens + a.usage.cachedTokens + a.usage.outputTokens, ...(subscription(run) ? { subscription: true } : {}) });
     }
   }
   const byAdapter: Record<string, AdapterMetrics> = {};
@@ -65,7 +68,9 @@ export function computeTeamMetrics(runs: Run[], teams: { id: string; name: strin
   const resolved = (r: Run) => r.agents.some((a) => a.status === "done" && a.check.status !== "failed" && a.diff.files > 0);
   const cost = (r: Run) => r.agents.reduce((s, a) => s + (a.usage.costUsd ?? 0), 0) + (r.triage?.costUsd ?? 0);
   const est = (r: Run) => templates.find((t) => t.id === r.template)?.estMinutes ?? 0;
-  const totals = { requests: runs.length, autoResolved: 0, approved: 0, rejected: 0, pendingReview: 0, estHoursSaved: 0, costUsd: 0 };
+  // 구독: runs on personal subscription runners, with their token count (no cost)
+  const totals = { requests: runs.length, autoResolved: 0, approved: 0, rejected: 0, pendingReview: 0, estHoursSaved: 0, costUsd: 0,
+    subscription: { runs: 0, tokens: 0 } };
   const byTeam: Record<string, { name: string; requests: number; autoResolved: number; approved: number; rejected: number;
     costUsd: number; budgetUsd: number; leads: number[]; medianLeadMs: number | null }> = {};
   const byTemplate: Record<string, { name: string; requests: number; resolved: number; approved: number; reviewed: number;
@@ -77,6 +82,10 @@ export function computeTeamMetrics(runs: Run[], teams: { id: string; name: strin
     const tp = (byTemplate[r.template] ??= { name: templates.find((t) => t.id === r.template)?.name ?? r.template, requests: 0,
       resolved: 0, approved: 0, reviewed: 0, costs: [], estHoursSaved: 0, autoResolvedRate: 0, approvalRate: 0, avgCostUsd: null });
     const c = cost(r);
+    if (subscription(r)) {
+      totals.subscription.runs += 1;
+      totals.subscription.tokens += r.agents.reduce((s, a) => s + a.usage.inputTokens + a.usage.cachedTokens + a.usage.outputTokens, 0);
+    }
     tm.requests += 1; tp.requests += 1; tm.costUsd += c; totals.costUsd += c;
     if (finished(r)) tp.costs.push(c);
     if (resolved(r)) { tm.autoResolved += 1; tp.resolved += 1; totals.autoResolved += 1; }
