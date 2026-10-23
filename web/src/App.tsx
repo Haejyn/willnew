@@ -12,6 +12,7 @@ import { Mine } from "./Mine";
 import { RequestPage } from "./Request";
 import { Review } from "./Review";
 import { RunList } from "./Runs";
+import { MyRunners, TeamProvider, waitingForClaim } from "./team";
 import { Turn } from "./Turn";
 import { Avatar, Empty, Kbd, ToastProvider, useOutside } from "./ui";
 import { ROLE_KO, TEAM_KO, adapterName, isActive, loadDense, loadUser, saveDense, saveUser, useMedia, type Role, type User } from "./util";
@@ -116,8 +117,10 @@ export function App() {
   const home = useMemo(() => runs?.find((r) => r.review.status === "pending") ?? runs?.find((r) => r.agents.some(isActive)) ?? runs?.[0], [runs]);
   const openId = route.page === "run" || route.page === "review" ? route.id : route.page === "runs" && !phone ? home?.id : undefined;
   const requester = user.role === "requester";
-  // 내 차례: 확인할 제안 + 승인할 결과
-  const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
+  // 내 차례: 확인할 제안 + 승인할 결과. 팀 모드: 내가 맡은 제안, 맡을 사람 기다리는 요청, 내 러너에서 확인을 기다리는 작업
+  const proposalsN = requester ? 0 : team
+    ? (requests?.filter((r) => (r.status === "proposed" && r.assignee === user.name) || waitingForClaim(r)).length ?? 0) + (runs?.filter((r) => r.held?.length && r.runnerOwner === user.name).length ?? 0)
+    : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
   // 내 요청: 내가 답할 되묻기, 내가 볼 화면(요청자 확인)
   const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
   // 요청자 확인 중인 결과는 아직 개발자 차례가 아니다
@@ -209,6 +212,7 @@ export function App() {
   );
 
   return (
+    <TeamProvider api={api} on={team}>
     <ToastProvider>
       <div className={`app p-${route.page} ${dense ? "dense" : ""}`}>
         <div className="sky" aria-hidden />
@@ -245,6 +249,7 @@ export function App() {
         {help ? <Shortcuts onClose={() => setHelp(false)} /> : null}
       </div>
     </ToastProvider>
+    </TeamProvider>
   );
 }
 
@@ -353,6 +358,7 @@ function Settings({ team, user, teams, onChange, config, agents, demo, onHelp, d
             </button>
             <p className="pop-note">{team ? "초대받은 계정이에요. 이름과 역할은 허브에서 정해요." : "계정 없이 이 브라우저에만 저장돼요. 역할은 직접 고르는 값이라 권한을 막지는 않아요."}</p>
           </form>
+          {team ? <MyRunners user={user} /> : null}
           <dl className="pop-info">
             <dt>저장소</dt>
             <dd className="mono">{config?.repo ? config.repo.split(/[\\/]/).pop() : "…"}</dd>

@@ -74,6 +74,7 @@ export function Metrics({ api }: { api: Api }) {
             <Kpi label="자동 해결률" value={fmtPct(t.autoResolved / t.requests)} />
             <Kpi label="승인율" value={decided ? fmtPct(t.approved / decided) : "—"} />
             <Kpi label="비용" value={fmtCost(t.costUsd)} />
+            {t.subscription?.runs ? <Kpi label="구독 (비용 없음)" value={`${t.subscription.runs}건, ${fmtTokens(t.subscription.tokens)} 토큰`} /> : null}
           </div>
 
           <div className="two-col">
@@ -214,7 +215,7 @@ export function Metrics({ api }: { api: Api }) {
                         </td>
                         <td className="num mono">{fmtDuration(row.durationMs)}</td>
                         <td className="num mono">{fmtTokens(row.tokens)}</td>
-                        <td className="num mono">{row.costUsd == null ? <span className="dim">n/a</span> : fmtCost(row.costUsd)}</td>
+                        <td className="num mono">{row.costUsd == null ? <span className="dim">{row.subscription ? "구독" : "n/a"}</span> : fmtCost(row.costUsd)}</td>
                         <td>
                           <Tag tone={row.checkStatus === "passed" ? "ok" : row.checkStatus === "failed" ? "bad" : "dim"}>
                             {row.checkStatus === "passed" ? "통과" : row.checkStatus === "failed" ? "실패" : "없음"}

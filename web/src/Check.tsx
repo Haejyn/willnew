@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Poin
 import { createPortal } from "react-dom";
 import type { Api, Feedback, Request, RequesterCheck, ShotPair } from "./api";
 import { IconExternal, IconTrash, IconX } from "./icons";
+import { useTeam } from "./team";
 import { Spinner, Working, useToast } from "./ui";
 import type { User } from "./util";
 
@@ -26,6 +27,7 @@ export function CheckPanel({ api, req, user, compact }: { api: Api; req: Request
   const check = req.checks?.at(-1);
   const [annotating, setAnnotating] = useState(false);
   const [skipping, setSkipping] = useState(false);
+  const team = useTeam().on;
   if (!check) return null;
   const waiting = req.status === "preview" && check.status === "waiting";
   const requester = user.name === req.requester;
@@ -57,7 +59,7 @@ export function CheckPanel({ api, req, user, compact }: { api: Api; req: Request
           {check.previewUrl ? <span className="t-meta mono chk-url">{check.previewUrl.replace(/^https?:\/\//, "")}</span> : null}
         </div>
       ) : null}
-      {check.localOnly && check.previewUrl ? <p className="t-meta">이 링크는 willnew 를 띄운 컴퓨터에서만 열려요</p> : null}
+      {check.localOnly && check.previewUrl && !team ? <p className="t-meta">이 링크는 willnew 를 띄운 컴퓨터에서만 열려요</p> : null}
       {check.capture === "running" ? <Working text={check.previewUrl ? "전후 화면 찍는 중" : "미리보기 띄우는 중"} lines={1} /> : null}
       {check.note ? <p className="chk-note">{check.note}</p> : null}
       {check.shots.length ? <PairViewer api={api} shots={check.shots} feedback={check.status === "changes" ? check.feedback : undefined} /> : null}

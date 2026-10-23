@@ -6,6 +6,7 @@ import { DecisionBar, StopModal } from "./Decision";
 import { useLiveRun } from "./flow";
 import { IconArrowLeft, IconBell, IconCheck, IconChevron, IconColumns, IconMore, IconStop, IconTrash } from "./icons";
 import { Moon, RunHead } from "./moon";
+import { HeldCard } from "./team";
 import { Empty, ErrorBox, useOutside, useToast } from "./ui";
 import { isActive, suggestWinner, useMedia, useNow, type User } from "./util";
 
@@ -93,6 +94,7 @@ export function Workspace({
       <div className="ws-body">
         <RunHeader api={api} run={run} now={now} go={go} wide={wide && run.agents.length > 1} split={split} setSide={setSide} watched={watched} onWatch={onWatch} onPlan={() => setPlanOpen(true)} />
         <PlanLine run={run} open={planOpen} setOpen={setPlanOpen} />
+        <HeldCard api={api} run={run} user={user} />
         {!split && run.agents.length > 1 ? (
           <div className="apills" role="tablist" aria-label="에이전트">
             {run.agents.map((a, i) => (

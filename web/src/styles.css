@@ -1095,3 +1095,20 @@ button.prow-t:hover { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
 }
+
+/* 팀 모드: 내가 맡을게요, 확인 뒤 이어서 작업, 내 러너 */
+.claim { flex-wrap: wrap; align-items: center; }
+.claim select { min-height: 36px; max-width: 220px; }
+.claim-hint { margin: 0; overflow-wrap: anywhere; }
+.held { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-card); background: var(--l1); min-width: 0; }
+.held-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.held-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.held-list li { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.held-text { color: var(--text2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-meta); }
+.held-turn .mc-main { width: 100%; }
+.my-runners { display: flex; flex-direction: column; gap: var(--sp-1); margin: var(--sp-2) 0; }
+.my-runners p { margin: 0; overflow-wrap: anywhere; }
+.runner-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-1); }
+.runner-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.runner-list .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text4); flex: none; }
+.runner-list .dot.on { background: var(--ok); }

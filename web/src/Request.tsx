@@ -7,12 +7,13 @@
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, Screen, WorkSpec } from "./api";
-import { isVisual, TYPE_KO } from "../../src/server/request-state";
+import { isVisual, takenOver, TYPE_KO, waitsForClaim } from "../../src/server/request-state";
 import { CheckPanel } from "./Check";
 import { ReviewActions } from "./Decision";
 import { useLiveRequest, useLiveRun } from "./flow";
 import { IconCheck, IconChevron } from "./icons";
 import { Moon, runPhase, type Phase } from "./moon";
+import { ClaimButton, useTeam, waitingForClaim } from "./team";
 import { AiText, Avatar, ErrorBox, LinkChip, Spinner, Working, useToast } from "./ui";
 import { fmtCost, relTime, type User } from "./util";
 
@@ -39,7 +40,7 @@ export function reqStage(req: Request, deployTracked = true): { at: number; stop
   }
   let at = AT[req.status];
   if (req.status === "merged" && !deployTracked) at = REQ_STEPS.length;
-  if (req.assignee && req.status === "closed") at = REQ_STEPS.length;
+  if (takenOver(req) && req.status === "closed") at = REQ_STEPS.length;
   const complete = at >= REQ_STEPS.length;
   return { at, complete, phase: complete ? "merged" : STEP_PHASE[at] };
 }
@@ -62,18 +63,23 @@ export function myTurn(req: Request, user: User): boolean {
   // 요청자 확인: the requester's move
   if (req.status === "preview") return user.name === req.requester;
   if (!isDev(user)) return false;
+  // 팀 모드: 맡을 사람 기다리는 요청은 개발자 모두의 차례, 맡은 뒤 제안 확인은 맡은 사람의 차례
+  if (waitingForClaim(req)) return true;
+  if (req.status === "proposed" && req.assignee) return req.assignee === user.name;
   if (req.status === "proposed" || req.status === "code_review") return !req.reviewer || req.reviewer === user.name;
   return false;
 }
 
 export function reqProgress(req: Request, user: User, deployTracked = true): Progress {
   const { at, stopped, complete } = reqStage(req, deployTracked);
-  if (complete) return { phase: 4, fill: 1, word: req.assignee ? "끝남" : deployTracked ? "배포됨" : "병합됨", state: "done" };
+  if (complete) return { phase: 4, fill: 1, word: takenOver(req) ? "끝남" : deployTracked ? "배포됨" : "병합됨", state: "done" };
+  // 팀 모드: 정리보다 앞, 아무도 맡지 않아 달이 비어 있다
+  if (waitsForClaim(req)) return { phase: 0, fill: 0, word: "맡을 사람 기다리는 중", mine: myTurn(req, user) };
   const phase = Math.max(0, PHASES.findIndex((p) => p.steps.includes(at)));
   const steps = PHASES[phase].steps;
   const fill = (steps.indexOf(at) + 1) / (steps.length + 1);
   if (stopped) return { phase, fill, word: stopped === "declined" ? "거절됨" : "취소됨", state: "stop" };
-  const word = at === 5 && req.assignee ? "직접 작업" : at === 10 && !deployTracked ? "병합" : REQ_STEPS[at];
+  const word = at === 5 && takenOver(req) ? "직접 작업" : at === 10 && !deployTracked ? "병합" : REQ_STEPS[at];
   return { phase, fill, word, mine: myTurn(req, user) };
 }
 
@@ -148,11 +154,11 @@ export function reqHeadline(req: Request, user: User): string {
   const dev = req.reviewer ?? "개발자";
   if (!isDev(user)) {
     switch (req.status) {
-      case "draft": return "받았어요. 정리하는 중";
+      case "draft": return waitsForClaim(req) ? "받았어요. 맡을 사람 기다리는 중" : "받았어요. 정리하는 중";
       case "clarifying": return req.questions.every((q) => q.answer) ? "답 받았어요. 정리하는 중" : "확인할 게 있어요";
       case "spec_ready": return "어떻게 만들지 살펴보는 중";
-      case "proposed": return `개발자가 제안을 보고 있어요 (${dev})`;
-      case "approved": return req.assignee ? `${req.assignee}님이 직접 맡았어요` : "작업 시작해요";
+      case "proposed": return req.unclaimed ? "정리했어요. 맡을 사람 기다리는 중" : `개발자가 제안을 보고 있어요 (${req.assignee ?? dev})`;
+      case "approved": return takenOver(req) ? `${req.assignee}님이 직접 맡았어요` : "작업 시작해요";
       case "building": return "만드는 중";
       case "verifying": return "테스트로 확인하는 중";
       case "preview": return user.name === req.requester ? "확인해 주세요" : `${req.requester}님이 화면을 확인하는 중`;
@@ -165,11 +171,15 @@ export function reqHeadline(req: Request, user: User): string {
     }
   }
   switch (req.status) {
-    case "draft": return "정리 중";
+    case "draft": return waitsForClaim(req) ? "맡을 사람 기다리는 중" : req.assignee ? `${req.assignee}의 러너가 정리 중` : "정리 중";
     case "clarifying": return "요청자 답 기다리는 중";
     case "spec_ready": return "저장소 읽고 제안 만드는 중";
-    case "proposed": return req.reviewer && req.reviewer !== user.name ? `제안 확인 대기 (${req.reviewer})` : "확인할 제안이 있어요";
-    case "approved": return req.assignee ? `직접 작업 (${req.assignee})` : "작업 시작";
+    case "proposed": {
+      if (req.unclaimed) return "맡을 사람 기다리는 중";
+      const who = req.assignee ?? req.reviewer;
+      return who && who !== user.name ? `제안 확인 대기 (${who})` : "확인할 제안이 있어요";
+    }
+    case "approved": return takenOver(req) ? `직접 작업 (${req.assignee})` : "작업 시작";
     case "building": return "작업 중";
     case "verifying": return "검증 중";
     case "preview": return `요청자 확인 대기 (${req.requester})`;
@@ -183,11 +193,11 @@ export function reqHeadline(req: Request, user: User): string {
 }
 
 const WHAT_KO: Record<DecisionEntry["what"], string> = {
-  answer: "답했어요", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡았어요", decline: "거절", cancel: "취소", close: "닫았어요",
+  answer: "답했어요", claim: "맡았어요", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡았어요", decline: "거절", cancel: "취소", close: "닫았어요",
   approve_result: "결과 승인", reject_result: "결과 반려",
   preview_ok: "화면 확인: 의도대로예요", preview_changes: "화면 확인: 다시 봐 주세요", preview_skip: "요청자 확인 건너뜀",
 };
-const working = (req: Request) => req.status === "draft" || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
+const working = (req: Request) => (req.status === "draft" && !waitsForClaim(req)) || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
 /** 요청자 확인이 지금 일인가: 확인 차례이거나, 다시 봐 달라고 한 뒤 고치는 중 */
 const checkNow = (req: Request) =>
   !!req.checks?.length && (req.status === "preview" || ((req.status === "building" || req.status === "verifying") && req.checks.at(-1)!.status === "changes"));
@@ -590,9 +600,11 @@ function RunReview({ api, runId, user }: { api: Api; runId: string; user: User }
 
 export function RequestView({ api, req, user, deployTracked = true, now = Date.now(), timeline }: { api: Api; req: Request; user: User; deployTracked?: boolean; now?: number; timeline?: boolean }) {
   const dev = isDev(user);
+  const team = useTeam().on;
   const p = reqProgress(req, user, deployTracked);
   const understood = req.spec ? (dev ? req.spec.summary.forDeveloper : req.spec.summary.forRequester) : dev ? req.understood?.forDeveloper : req.understood?.forRequester;
-  const decide = dev && req.status === "proposed" ? <DecideBar api={api} req={req} user={user} /> : null;
+  // 팀 모드: 제안 확인은 맡은 개발자만
+  const decide = dev && req.status === "proposed" && (!team || req.assignee === user.name) ? <DecideBar api={api} req={req} user={user} /> : null;
   return (
     <div className="rq">
       <div className="rq-head">
@@ -601,6 +613,7 @@ export function RequestView({ api, req, user, deployTracked = true, now = Date.n
       </div>
       <PhaseTrack p={p} />
       <p className="rq-status">{reqHeadline(req, user)}</p>
+      <ClaimButton api={api} req={req} user={user} />
       {understood ? (
         <AiText read={!dev} original={req.text}>
           {understood}
@@ -672,6 +685,7 @@ function EmbedBody({ api, req, user, deployTracked = true, onThread, threaded }:
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const dev = isDev(user);
+  const team = useTeam().on;
   const p = reqProgress(req, user, deployTracked);
   const summary = req.spec ? (dev ? req.spec.summary.forDeveloper : req.spec.summary.forRequester) : dev ? req.understood?.forDeveloper : req.understood?.forRequester;
   const proceed = async () => {
@@ -722,7 +736,8 @@ function EmbedBody({ api, req, user, deployTracked = true, onThread, threaded }:
       {working(req) ? <Working text={req.status === "spec_ready" ? "저장소 읽는 중" : "정리하는 중"} /> : null}
       {req.status === "clarifying" && !dev ? <Clarify api={api} req={req} user={user} /> : null}
       {checkNow(req) ? <CheckPanel api={api} req={req} user={user} compact /> : null}
-      {dev && req.status === "proposed" ? (
+      <ClaimButton api={api} req={req} user={user} />
+      {dev && req.status === "proposed" && (!team || req.assignee === user.name) ? (
         <div className="row-btns">
           <button className="btn m" disabled={busy} onClick={proceed}>
             {busy ? <Spinner size={12} /> : null}진행
@@ -799,6 +814,12 @@ export function RequestPage({ api, id, user, deployTracked }: { api: Api; id: st
                   <>
                     <dt>담당</dt>
                     <dd>{req.assignee}</dd>
+                  </>
+                ) : null}
+                {req.runnerId ? (
+                  <>
+                    <dt>러너</dt>
+                    <dd className="mono">{req.runnerId}</dd>
                   </>
                 ) : null}
                 <dt>받은 때</dt>

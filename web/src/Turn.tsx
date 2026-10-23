@@ -6,6 +6,7 @@ import { TestChips, useDecide } from "./Decision";
 import { AgentMark, IconPlus } from "./icons";
 import { Moon, PHASE_FILL, isDone, runPhase, type Phase } from "./moon";
 import { ProposalTurnCard } from "./Request";
+import { ClaimButton, HeldCard, useTeam, waitingForClaim } from "./team";
 import { Avatar, ErrorBox, Spinner } from "./ui";
 import { adapterName, fmtDuration, isActive, relTime, runElapsed, suggestWinner, testSummary, useNow, winnerReason, type User } from "./util";
 
@@ -30,8 +31,12 @@ export function Turn({ api, user, agents, runs, requests, error, reload, go, onN
   const turn = rows.filter((x) => x.phase === "turn").sort((a, b) => b.run.createdAt - a.run.createdAt);
   const rising = rows.filter((x) => !isDone(x.phase) && x.phase !== "turn");
   const done = rows.filter((x) => isDone(x.phase)).sort((a, b) => doneAt(b.run) - doneAt(a.run));
-  const proposals = (requests ?? []).filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).sort((a, b) => a.updatedAt - b.updatedAt);
-  const waiting = turn.length + proposals.length;
+  const team = useTeam().on;
+  // 팀 모드: 제안은 맡은 사람에게만, 맡을 사람 기다리는 요청은 개발자 모두에게
+  const proposals = (requests ?? []).filter((r) => r.status === "proposed" && (team ? r.assignee === user.name : !r.reviewer || r.reviewer === user.name)).sort((a, b) => a.updatedAt - b.updatedAt);
+  const open = team ? (requests ?? []).filter(waitingForClaim).sort((a, b) => a.createdAt - b.createdAt) : [];
+  const held = team ? (runs ?? []).filter((r) => r.held?.length && r.runnerOwner === user.name) : [];
+  const waiting = turn.length + proposals.length + open.length + held.length;
   const fullest: Phase = rising.reduce<Phase>((best, x) => (PHASE_FILL[x.phase] > PHASE_FILL[best] ? x.phase : best), "new");
 
   return (
@@ -52,7 +57,7 @@ export function Turn({ api, user, agents, runs, requests, error, reload, go, onN
           </div>
         ) : null}
 
-        {runs && !runs.length && !proposals.length ? (
+        {runs && !runs.length && !proposals.length && !open.length ? (
           <section className="turn-empty first">
             <Moon phase="new" size={64} />
             <p>한 줄로 맡겨 보세요</p>
@@ -64,6 +69,50 @@ export function Turn({ api, user, agents, runs, requests, error, reload, go, onN
                 </button>
               ))}
             </div>
+          </section>
+        ) : null}
+
+        {open.length ? (
+          <section className="mcards" aria-label="맡을 사람 기다리는 요청">
+            <h2 className="sec-h">맡을 사람 기다리는 요청</h2>
+            {open.map((r) => (
+              <article key={r.id} className="mcard" onClick={() => go(`/requests/${r.id}`)}>
+                <Moon phase="new" size={28} />
+                <div className="mc-main">
+                  <h2>
+                    <a href={`#/requests/${r.id}`} onClick={(e) => e.stopPropagation()}>
+                      {r.title}
+                    </a>
+                  </h2>
+                  <div className="mc-meta">
+                    <span>#{r.channel}</span>
+                    <Avatar name={r.requester} size={16} src={r.requesterAvatar} />
+                    <span>{r.requester}</span>
+                    <span>{relTime(r.createdAt, now)}</span>
+                  </div>
+                  {r.proposal ? <div className="mc-rec"><span>{r.proposal.summary}</span></div> : <p className="t-meta">맡으면 내 러너가 되묻기, 명세, 제안을 만들어요</p>}
+                </div>
+                <div className="mc-act">
+                  <ClaimButton api={api} req={r} user={user} />
+                </div>
+              </article>
+            ))}
+          </section>
+        ) : null}
+
+        {held.length ? (
+          <section className="mcards" aria-label="확인 뒤 이어서 작업">
+            <h2 className="sec-h">내 러너에서 확인을 기다리는 작업</h2>
+            {held.map((r) => (
+              <article key={r.id} className="mcard held-turn">
+                <div className="mc-main">
+                  <h2>
+                    <a href={`#/runs/${r.id}`}>{title(r)}</a>
+                  </h2>
+                  <HeldCard api={api} run={r} user={user} />
+                </div>
+              </article>
+            ))}
           </section>
         ) : null}
 

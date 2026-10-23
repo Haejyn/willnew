@@ -30,11 +30,27 @@ import type {
   ShotPair,
   Feedback,
   Screen,
+  HeldWork,
 } from "../../src/server/types";
 
 export type { Ship, AgentEvent, AgentRun, AgentSpec, AgentStatus, Channel, ChatMessage, CheckStatus, CreateRunInput, FileStat, Preflight, Preview, Review, ReviewComment, Run, RunUpdate, Template, Triage };
 export type { Bodies, ClarifyQuestion, DecisionEntry, Proposal, Request, RequestStatus, RequestUpdate, WorkSpec };
-export type { ThreadSummary, RequesterCheck, ShotPair, Feedback, Screen };
+export type { ThreadSummary, RequesterCheck, ShotPair, Feedback, Screen, HeldWork };
+
+/** team mode: one runner as /api/runners reports it */
+export interface RunnerInfo {
+  runnerId: string;
+  owner: string;
+  connected: boolean;
+  auth?: "subscription" | "api";
+  claim?: "manual" | "auto";
+  slots: number;
+  used: number;
+  version?: string;
+  connectedAt?: number;
+  lastSeen: number;
+  problem?: string;
+}
 
 /** 요청자 확인: 의도대로예요 / 다시 봐 주세요 (boxes) / 건너뛰기 (developer, with a reason) */
 export interface RequesterCheckInput {
@@ -111,6 +127,8 @@ export interface TimelineRow {
   checkStatus: string;
   costUsd: number | null;
   tokens: number;
+  /** team mode: ran on a personal subscription runner (no cost) */
+  subscription?: boolean;
 }
 export interface Metrics {
   runs: number;
@@ -122,6 +140,8 @@ export interface Metrics {
     pendingReview: number;
     estHoursSaved: number;
     costUsd: number;
+    /** team mode: runs on personal subscription runners, counted apart (no cost) */
+    subscription?: { runs: number; tokens: number };
   };
   byTeam: Record<string, TeamMetrics>;
   byTemplate: Record<string, TemplateMetrics>;
@@ -171,6 +191,12 @@ export interface Api {
   config(): Promise<ServerConfig>;
   /** team mode only: who this token belongs to */
   me?(): Promise<TeamMe>;
+  /** team mode only: the runners connected to the hub (and the ones that were) */
+  runners?(): Promise<RunnerInfo[]>;
+  /** team mode only: 내가 맡을게요, with one of my runners */
+  claim?(requestId: string, runnerId: string): Promise<Request>;
+  /** team mode only: the runner owner lets held follow-ups go (이어서 실행) */
+  releaseHeld?(runId: string): Promise<void>;
   agents(): Promise<AgentInfo[]>;
   channels(): Promise<Channel[]>;
   messages(channel: string): Promise<ChatMessage[]>;
@@ -302,6 +328,9 @@ const A = (id: string, aid: string) => `/api/runs/${enc(id)}/agents/${enc(aid)}`
 export const httpApi: Api = {
   config: () => get("/api/config").then((r) => json<ServerConfig>(r)),
   me: () => get("/api/me").then((r) => json<TeamMe>(r)),
+  runners: () => get("/api/runners").then((r) => json<RunnerInfo[]>(r)),
+  claim: (id, runnerId) => post(`/api/requests/${enc(id)}/claim`, { runnerId }).then((r) => json<Request>(r)),
+  releaseHeld: (id) => post(`/api/runs/${enc(id)}/held/release`, {}).then((r) => json<void>(r)),
   agents: () => get("/api/agents").then((r) => json<AgentInfo[]>(r)),
   channels: () => get("/api/channels").then((r) => json<Channel[]>(r)),
   messages: (ch) => get(`/api/channels/${enc(ch)}/messages`).then((r) => json<ChatMessage[]>(r)),
