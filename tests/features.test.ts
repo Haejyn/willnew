@@ -224,7 +224,9 @@ describe("http api", () => {
     const pf = await (await fetch(`http://${base}/api/runs/${run.id}/agents/${aid}/preflight`)).json();
     expect(pf).toMatchObject({ checkPassed: true, testsTouched: [], conflicts: false });
 
-    const ws = new WebSocket(`ws://${base}/api/runs/${run.id}/agents/${aid}/terminal`);
+    // Node 20 has no global WebSocket; the ws package stands in there
+    const WS = globalThis.WebSocket ?? ((await import("ws")).WebSocket as unknown as typeof WebSocket);
+    const ws = new WS(`ws://${base}/api/runs/${run.id}/agents/${aid}/terminal`);
     let out = "";
     ws.onmessage = (e) => { out += String(e.data); };
     await new Promise((r) => (ws.onopen = r));
