@@ -2,7 +2,7 @@
 
 고객 문의를 받은 비개발자가 팀 채널에 `@willnew` 로 한 줄 남기면, AI 에이전트가 고치고, willnew 가 테스트로 확인하고, 담당 개발자는 승인만 하고, 요청자는 쉬운 말로 된 답을 받습니다. 에이전트는 기본 하나이고, 둘을 겨루게 하는 건 선택입니다.
 
-![tests](https://img.shields.io/badge/tests-42%20passed-16a34a)
+[![ci](https://github.com/Haejyn/willnew/actions/workflows/ci.yml/badge.svg)](https://github.com/Haejyn/willnew/actions/workflows/ci.yml)
 ![node](https://img.shields.io/badge/node-%E2%89%A520-339933)
 ![agents](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-111111)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -213,7 +213,7 @@ WILLNEW_THEME_DIR=../my-theme pnpm build
 ## 개발
 
 ```bash
-pnpm test        # 42개: 오프라인 에이전트와 가짜 gh로 실행, 이어서 지시, 줄 댓글, 검증 관문, 충돌, 미리보기, 웹소켓 터미널, 단일 에이전트 기본, 요청자에게 줄 파서, 검토자 멘션, 요청자 답글, PR → CI → 배포
+pnpm test        # 오프라인 에이전트와 가짜 gh로 실행, 이어서 지시, 줄 댓글, 검증 관문, 충돌, 미리보기, 웹소켓 터미널, 단일 에이전트 기본, 요청자에게 줄 파서, 검토자 멘션, 요청자 답글, PR → CI → 배포
 pnpm typecheck   # 서버 + 웹
 ```
 

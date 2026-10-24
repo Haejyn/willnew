@@ -1,0 +1,57 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+  facts:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --no-frozen-lockfile
+      - run: node scripts/facts.mjs --out facts.json
+      - run: cat facts.json
+      - name: facts-latest 릴리스에 올리기
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view facts-latest || gh release create facts-latest --prerelease --title facts-latest --notes "CI 가 만든 숫자. 손으로 고치지 않는다"
+          gh release upload facts-latest facts.json --clobber
+      - name: 포트폴리오 저장소에 알리기
+        env:
+          GH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "PORTFOLIO_DISPATCH_TOKEN 이 없어 포트폴리오 알림은 건너뜀"
+            exit 0
+          fi
+          gh api repos/Haejyn/Haejyn.github.io/dispatches -f event_type=facts-updated -f "client_payload[project]=willnew"
