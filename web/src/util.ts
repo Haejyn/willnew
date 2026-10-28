@@ -162,10 +162,13 @@ export function shortenPaths(text: string, worktree?: string): string {
 /**
  * Suggested winner: among finished agents whose check passed, the fastest; cost breaks near-ties
  * (within 10% of the fastest time, the cheaper one wins). Results that left the tests alone come first.
+ * Only when none passed, the same among those whose check was skipped (no check command).
  */
 export function suggestWinner(run: Run): string | null {
   if (run.review?.agentId && run.review.status !== "none") return run.review.agentId;
-  const passed = run.agents.filter((a) => a.status === "done" && a.check?.status !== "failed" && (a.diff?.files ?? 0) > 0);
+  const done = run.agents.filter((a) => a.status === "done" && (a.diff?.files ?? 0) > 0);
+  const checked = done.filter((a) => a.check?.status === "passed");
+  const passed = checked.length ? checked : done.filter((a) => a.check?.status === "skipped");
   const clean = passed.filter((a) => !a.diff?.testsTouched?.length);
   const ok = clean.length ? clean : passed;
   if (!ok.length) return null;
@@ -184,16 +187,21 @@ export function suggestWinner(run: Run): string | null {
 export function winnerReason(run: Run, winnerId: string | null): string {
   const w = run.agents.find((a) => a.id === winnerId);
   if (!w) return "검증을 통과한 결과가 없어요.";
-  const others = run.agents.filter((a) => a.id !== w.id && a.status === "done" && a.check.status !== "failed");
-  const bent = run.agents.filter((a) => a.diff?.testsTouched?.length);
+  if (w.check?.status === "failed") return "이 결과는 검증에 실패했어요.";
+  if (!w.check) return "검증 기록이 없어요.";
+  const skipped = w.check?.status === "skipped";
+  // compared only with results checked the same way, so an unchecked one is never counted as passed
+  const others = run.agents.filter((a) => a.id !== w.id && a.status === "done" && a.check?.status === w.check.status);
+  const bent = others.filter((a) => (a.diff?.files ?? 0) > 0 && a.diff?.testsTouched?.length);
   const bits: string[] = [];
-  if (!others.length) bits.push(run.agents.length > 1 ? "검증을 통과한 건 이 결과뿐이에요." : "검증을 통과했어요.");
+  const unchecked = "검증 명령이 없어 테스트로 확인하지 않았어요. 변경을 직접 확인해 주세요.";
+  if (!others.length) bits.push(skipped ? unchecked : run.agents.length > 1 ? "검증을 통과한 건 이 결과뿐이에요." : "검증을 통과했어요.");
   else {
     const o = others[0];
     const speed = o.durationMs && w.durationMs ? o.durationMs / w.durationMs : 1;
-    bits.push(`둘 다 통과했어요. ${w.label} 이 ${speed >= 1.5 ? `${speed.toFixed(1)}배 빠르고` : "비슷하게 빠르고"}${(w.diff?.insertions ?? 0) + (w.diff?.deletions ?? 0) <= (o.diff?.insertions ?? 0) + (o.diff?.deletions ?? 0) ? " 변경이 더 작아요." : " 비용이 낮아요."}`);
+    bits.push(`${skipped ? unchecked : "둘 다 통과했어요."} ${w.label} 이 ${speed >= 1.5 ? `${speed.toFixed(1)}배 빠르고` : "비슷하게 빠르고"}${(w.diff?.insertions ?? 0) + (w.diff?.deletions ?? 0) <= (o.diff?.insertions ?? 0) + (o.diff?.deletions ?? 0) ? " 변경이 더 작아요." : " 비용이 낮아요."}`);
   }
-  if (bent.length && !bent.includes(w)) bits.push(`${bent.map((a) => a.label).join(", ")} 은 테스트를 고쳐서 뒤로 뺐어요.`);
+  if (bent.length && !w.diff?.testsTouched?.length) bits.push(`${bent.map((a) => a.label).join(", ")} 은 테스트를 고쳐서 뒤로 뺐어요.`);
   return bits.join(" ");
 }
 /** "7/7" from the check output of the common test runners (node:test, jest, vitest, pytest); null when it can't be read. */

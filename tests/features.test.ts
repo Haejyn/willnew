@@ -138,6 +138,45 @@ describe("merge gate: added tests vs edited tests", () => {
     const run = { agents: [agent("bender", { testsTouched: ["math.test.js"], testsAdded: [] }, 10), agent("adder", { testsTouched: [], testsAdded: ["math.zero.test.js"] }, 40)] } as never;
     expect(suggestWinner(run)?.id).toBe("adder");
   });
+
+  /** a finished result with one changed file; "skipped" is what a run without a check command leaves */
+  const result = (id: string, check: "passed" | "skipped" | "failed", durationMs: number) =>
+    ({ id, label: id, status: "done", check: { status: check, exitCode: null, output: "" }, diff: { files: 1, insertions: 1, deletions: 0, patch: "", testsTouched: [], testsAdded: [] }, durationMs, usage: { costUsd: 0.1 } }) as never;
+  const runOf = (...agents: never[]) => ({ agents, review: { status: "none" } }) as never;
+
+  it("the recommendation prefers a passed check over a faster skipped one", async () => {
+    const { suggestWinner } = await import("../src/server/runs.js");
+    const web = await import("../web/src/util.ts");
+    const run = runOf(result("unchecked", "skipped", 10), result("checked", "passed", 40));
+    expect(suggestWinner(run)?.id).toBe("checked");
+    expect(web.suggestWinner(run)).toBe("checked");
+    expect(web.winnerReason(run, "checked")).toBe("검증을 통과한 건 이 결과뿐이에요.");
+  });
+
+  it("with only skipped checks the recommendation picks among them", async () => {
+    const { suggestWinner } = await import("../src/server/runs.js");
+    const web = await import("../web/src/util.ts");
+    const run = runOf(result("slow", "skipped", 40), result("fast", "skipped", 10));
+    expect(suggestWinner(run)?.id).toBe("fast");
+    expect(web.suggestWinner(run)).toBe("fast");
+  });
+
+  it("with failed and skipped checks the recommendation is the skipped one", async () => {
+    const { suggestWinner } = await import("../src/server/runs.js");
+    const web = await import("../web/src/util.ts");
+    const run = runOf(result("broken", "failed", 10), result("unchecked", "skipped", 40));
+    expect(suggestWinner(run)?.id).toBe("unchecked");
+    expect(web.suggestWinner(run)).toBe("unchecked");
+  });
+
+  it("the web reason for a skipped recommendation does not call it passed", async () => {
+    const { winnerReason } = await import("../web/src/util.ts");
+    const solo = runOf(result("unchecked", "skipped", 10));
+    expect(winnerReason(solo, "unchecked")).toContain("검증 명령이 없어");
+    expect(winnerReason(solo, "unchecked")).not.toContain("통과");
+    const race = runOf(result("slow", "skipped", 40), result("fast", "skipped", 10), result("broken", "failed", 5));
+    expect(winnerReason(race, "fast")).not.toContain("통과");
+  });
 });
 
 describe("merge gate", () => {
