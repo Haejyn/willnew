@@ -28,16 +28,24 @@ const taskPrompt = (run: Run) => `${run.task}\n\n${USER_NOTE_RULE}`;
 const id = (n = 6) => Math.random().toString(36).slice(2, 2 + n);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "agent";
 
-/** Among agents whose check passed: the fastest; within 10 % time, the cheaper one. Results that left the tests alone come first. */
+/** Among agents whose check passed: the fastest; within 10 % time, the cheaper one. Results that left the tests alone come first.
+ * Only when none passed, the same among those whose check was skipped (no check command). */
 export function suggestWinner(run: Run): AgentRun | undefined {
-  const ok = run.agents.filter((a) => a.status === "done" && a.check.status !== "failed" && a.diff.files > 0);
+  const done = run.agents.filter((a) => a.status === "done" && a.diff.files > 0);
+  const passed = done.filter((a) => a.check?.status === "passed");
+  const ok = passed.length ? passed : done.filter((a) => a.check?.status === "skipped");
   if (!ok.length) return undefined;
   const clean = ok.filter((a) => !a.diff.testsTouched?.length);
-  return (clean.length ? clean : ok).reduce((best, a) => {
-    const bt = best.durationMs ?? Infinity, at = a.durationMs ?? Infinity;
-    if (Math.abs(at - bt) <= 0.1 * Math.min(at, bt)) return (a.usage.costUsd ?? Infinity) < (best.usage.costUsd ?? Infinity) ? a : best;
-    return at < bt ? a : best;
+  const candidates = clean.length ? clean : ok;
+  const dur = (a: AgentRun) => a.durationMs ?? Number.MAX_SAFE_INTEGER;
+  const fastest = Math.min(...candidates.map(dur));
+  const near = candidates.filter((a) => dur(a) <= fastest * 1.1);
+  near.sort((a, b) => {
+    const ca = a.usage?.costUsd ?? Number.MAX_VALUE;
+    const cb = b.usage?.costUsd ?? Number.MAX_VALUE;
+    return ca - cb || dur(a) - dur(b);
   });
+  return near[0];
 }
 
 export class RunManager {

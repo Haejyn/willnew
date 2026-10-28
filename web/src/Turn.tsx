@@ -159,6 +159,7 @@ function MoonCard({ api, user, run, now, go }: { api: Api; user: User; run: Run;
               {test ? ` · 테스트 ${test}` : ""}
             </span>
             <TestChips diff={winner.diff} />
+            {winner.check.status === "skipped" ? <span className="st warn">검증 없음</span> : null}
           </div>
         ) : null}
       </div>
