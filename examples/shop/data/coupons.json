@@ -1,0 +1,4 @@
+[
+  { "code": "WELCOME5000", "name": "첫 주문 5,000원 할인", "type": "fixed", "value": 5000 },
+  { "code": "SALE10", "name": "가을 10% 할인", "type": "percent", "value": 10 }
+]
