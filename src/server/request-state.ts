@@ -1,25 +1,36 @@
 /**
  * Request state machine and the pure helpers around it. No node imports: the web app and the demo use this file too.
  *
- *   draft → clarifying → spec_ready → proposed → approved → building → verifying → [preview] → code_review → merged → deployed → closed
- *   (any open state → declined | cancelled)
+ *   draft → clarifying ⇄ waiting_customer, clarifying → spec_ready
+ *   ticket:  spec_ready → open → assigned → in_progress ⇄ waiting_requester, in_progress → [preview] → code_review → merged
+ *   AI 에게 맡기기 (B1, B2): spec_ready | assigned → proposed → approved → building → verifying → [preview] → code_review → merged
+ *   merged → deployed → closed · (any open state → declined | cancelled) · ended → reopen()
  *
  * preview (요청자 확인) only for requests the requester should look at: type ui or copy, or the planner set needsVisualCheck.
  */
-import type { Bodies, Feedback, Request, RequestAttachment, RequestStatus, RequestType, Run, Screen, WorkSpec } from "./types.js";
+import type { Bodies, DecisionEntry, Feedback, Request, RequestAttachment, RequestStatus, RequestType, Run, Screen, WorkSpec } from "./types.js";
 
-/** Allowed moves. Run-driven moves (building ⇄ verifying, code_review → building on a follow-up) are listed too. */
+/** Allowed moves (docs/design/ticket-plan.md 10절). Run-driven moves (building ⇄ verifying, code_review → building on a follow-up) are listed too. */
 const NEXT: Record<RequestStatus, RequestStatus[]> = {
   draft: ["clarifying", "spec_ready"],
-  clarifying: ["spec_ready"],
-  spec_ready: ["proposed"],
+  // waiting_customer: CS took the open questions to the customer
+  clarifying: ["waiting_customer", "spec_ready"],
+  waiting_customer: ["clarifying"],
+  // spec_ready → clarifying: CS edits it or the stand-in review asks · → open: CS sends it · → proposed: the B1 flow
+  spec_ready: ["clarifying", "open", "proposed"],
+  open: ["assigned"],
+  // assigned → proposed: AI 에게 맡기기
+  assigned: ["in_progress", "proposed"],
+  // in_progress → preview: done, the screen needs a look · → code_review: done, a PR was seen
+  in_progress: ["waiting_requester", "preview", "code_review"],
+  waiting_requester: ["in_progress"],
   proposed: ["approved"],
   // approved → closed: 직접 할게 (the developer finished it outside the AI flow)
   approved: ["building", "closed"],
   building: ["verifying", "preview", "code_review"],
   verifying: ["building", "preview", "code_review"],
-  // preview → code_review: 의도대로예요 (or the developer skipped it with a reason) · preview → building: 다시 봐 주세요
-  preview: ["building", "code_review"],
+  // preview → code_review: 의도대로예요 (or the developer skipped it with a reason) · preview → building | in_progress: 다시 봐 주세요
+  preview: ["building", "in_progress", "code_review"],
   code_review: ["building", "merged"],
   merged: ["deployed", "closed"],
   deployed: ["closed"],
@@ -66,24 +77,70 @@ export function statusFromRun(run: Run): RequestStatus | null {
   return null;
 }
 
-const ORDER: RequestStatus[] = ["draft", "clarifying", "spec_ready", "proposed", "approved", "building", "verifying", "preview", "code_review", "merged", "deployed", "closed"];
+/** Every status, in the order a request usually goes through them. moveTo only walks forward in this order. */
+export const REQUEST_STATUSES: RequestStatus[] = [
+  "draft", "clarifying", "waiting_customer", "spec_ready", "open", "assigned", "in_progress", "waiting_requester",
+  "proposed", "approved", "building", "verifying", "preview", "code_review", "merged", "deployed", "closed", "declined", "cancelled",
+];
+const ORDER = REQUEST_STATUSES.slice(0, REQUEST_STATUSES.indexOf("closed") + 1);
 
-/** Walk forward to `to` through allowed steps (code_review → merged → deployed in one go). */
+/**
+ * Walk forward to `to` through allowed steps (code_review → merged → deployed in one go). Takes the shortest forward
+ * path, so spec_ready → building goes through proposed and approved, not through the ticket path.
+ */
 export function moveTo(req: Request, to: RequestStatus, now = Date.now()): boolean {
   if (req.status === to) return false;
   if (canTransition(req.status, to)) {
     transition(req, to, now);
     return true;
   }
-  let moved = false;
-  for (let guard = 0; guard < ORDER.length && req.status !== to; guard++) {
-    const step = NEXT[req.status].find((s) => ORDER.indexOf(s) > ORDER.indexOf(req.status) && ORDER.indexOf(s) <= ORDER.indexOf(to));
-    if (!step) break;
-    transition(req, step, now);
-    moved = true;
+  const rank = (s: RequestStatus) => ORDER.indexOf(s);
+  if (rank(req.status) < 0 || rank(to) < 0) return false;
+  const prev = new Map<RequestStatus, RequestStatus>();
+  const queue: RequestStatus[] = [req.status];
+  while (queue.length && !prev.has(to)) {
+    const at = queue.shift()!;
+    for (const s of NEXT[at]) {
+      if (rank(s) <= rank(at) || rank(s) > rank(to) || prev.has(s) || s === req.status) continue;
+      prev.set(s, at);
+      queue.push(s);
+    }
   }
-  return moved;
+  if (!prev.has(to)) return false;
+  const path: RequestStatus[] = [];
+  for (let s: RequestStatus = to; s !== req.status; s = prev.get(s)!) path.unshift(s);
+  for (const s of path) transition(req, s, now);
+  return true;
 }
+
+/** Ended requests can be opened again: merged or later, declined, cancelled. */
+export const canReopen = (s: RequestStatus) => !isOpenRequest(s);
+
+const INTAKE = new Set<RequestStatus>(["draft", "clarifying", "waiting_customer", "spec_ready"]);
+
+/**
+ * Opens an ended request again. One stopped before it was sent goes back to where it stopped; anything else goes back
+ * to open so a person picks it up again. Returns the decision entry the caller adds to the log (G3 counts them).
+ */
+export function reopen(req: Request, who: string, why?: string, now = Date.now()): DecisionEntry {
+  if (!canReopen(req.status)) throw new Error(`열려 있는 요청은 다시 열 수 없어요 (${req.status})`);
+  const from = req.status;
+  const stopped = from === "declined" || from === "cancelled" ? req.stoppedFrom : undefined;
+  const to: RequestStatus = stopped && INTAKE.has(stopped) ? stopped : "open";
+  req.status = to;
+  delete req.stoppedFrom;
+  req.updatedAt = now;
+  const note = `${from} → ${to}`;
+  return { who, when: now, what: "reopen", why: why?.trim() ? `${note}: ${why.trim()}` : note };
+}
+
+/** Short Korean label for each status (badges, filters, the demo). */
+export const STATUS_KO: Record<RequestStatus, string> = {
+  draft: "정리 중", clarifying: "되묻는 중", waiting_customer: "고객 답 기다림", spec_ready: "명세 완료", open: "보냄",
+  assigned: "담당자 정해짐", in_progress: "작업 중", waiting_requester: "CS 답 기다림", proposed: "제안", approved: "확인됨",
+  building: "만드는 중", verifying: "검증 중", preview: "화면 확인", code_review: "코드 검토", merged: "병합됨",
+  deployed: "배포됨", closed: "닫힘", declined: "거절됨", cancelled: "취소됨",
+};
 
 // ---------------------------------------------------------------------------------------------- 요청자 확인 (B2)
 
@@ -206,8 +263,18 @@ export function cardBodies(req: Request): Bodies {
       const left = req.questions.filter((q) => !q.answer).length;
       return { forRequester: `${req.understood?.forRequester ?? t} 확인할 게 ${left}개 있어요`, forDeveloper: `되묻는 중 · ${left}/${req.questions.length} 남음 · ${t}` };
     }
+    case "waiting_customer":
+      return { forRequester: "고객에게 물어볼 게 있어요. 답을 받으면 붙여 주세요", forDeveloper: `고객 답 기다림 · ${t}` };
     case "spec_ready":
       return { forRequester: "정리했어요. 어떻게 만들지 살펴보는 중", forDeveloper: `명세 완료 · 저장소를 읽고 제안 만드는 중 · ${t}` };
+    case "open":
+      return { forRequester: "개발팀에 보냈어요. 담당자를 정하는 중", forDeveloper: `담당자 없음 · ${t}` };
+    case "assigned":
+      return { forRequester: `${req.assignee ?? dev}님이 맡았어요`, forDeveloper: `담당 ${req.assignee ?? "미정"} · ${t}` };
+    case "in_progress":
+      return { forRequester: `${req.assignee ?? dev}님이 작업하고 있어요`, forDeveloper: `작업 중 (${req.assignee ?? "담당 미정"}) · ${t}` };
+    case "waiting_requester":
+      return { forRequester: "개발자가 물어본 게 있어요", forDeveloper: `${req.requester}님 답 기다림 · ${t}` };
     case "proposed":
       return { forRequester: `개발자가 제안을 보고 있어요 (${dev})`, forDeveloper: `제안: ${req.proposal?.summary ?? t}` };
     case "approved":

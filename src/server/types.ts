@@ -240,7 +240,9 @@ export type RequestStatus =
   | "draft" | "clarifying" | "spec_ready" | "proposed" | "approved" | "building" | "verifying"
   // preview = 요청자 확인 (B2): the requester checks the result on screen before the developer reviews the code
   | "preview" | "code_review" | "merged" | "deployed" | "closed"
-  | "declined" | "cancelled";
+  | "declined" | "cancelled"
+  // ticket path (docs/design/ticket-plan.md 10절): CS waits on the customer, sends the ticket, a person builds it
+  | "waiting_customer" | "open" | "assigned" | "in_progress" | "waiting_requester";
 
 export type RequestType = "bug" | "ui" | "copy" | "data" | "other";
 
@@ -278,6 +280,44 @@ export interface WorkSpec {
   needsVisualCheck?: boolean;
   /** pages to capture before/after (planner fills them, the developer can edit) */
   screens?: Screen[];
+  // ticket fields (ticket-plan.md 11절). Typed now, filled from M1
+  reproSteps?: string[];
+  actual?: string;
+  /** what CS already tried */
+  alreadyRuledOut?: string[];
+  environment?: { browser?: string; os?: string; appVersion?: string; deployedSha?: string };
+  impact?: { customers: number; note?: string };
+  /** where each field came from and how sure the AI is */
+  fields?: Record<string, { sources: Source[]; confidence: "low" | "medium" | "high" | "unknown"; confirmedBy?: string }>;
+  /** questions CS has to take to the customer */
+  askCustomer?: { field: string; question: string; answer?: string }[];
+}
+
+/** Where a ticket field came from. */
+export type Source =
+  | { kind: "utterance"; index: number; speaker: "customer" | "agent" | "cs" }
+  | { kind: "ticket"; key: string }
+  | { kind: "doc"; path: string; heading?: string }
+  | { kind: "evidence"; adapter: string; ref: string }
+  | { kind: "screen"; route: string; shot: string };
+
+/** Something a context adapter attached (a log line, an error event, a screenshot). The shape firms up with F11. */
+export interface Evidence {
+  adapter: string;
+  ref: string;
+  summary?: string;
+}
+
+/** One model call, for cost and digest tracking. */
+export interface LlmCall {
+  task: string;
+  provider: string;
+  model: string;
+  digest: string;
+  tokens: number;
+  costUsd: number | null;
+  ms: number;
+  promptVersion: string;
 }
 
 /** One page of the app to look at: a name the requester knows and the path on the dev server. */
@@ -359,7 +399,9 @@ export interface Proposal {
 export type DecisionKind =
   | "answer" | "proceed" | "proceed_with_changes" | "take_over" | "decline" | "cancel" | "close"
   | "approve_result" | "reject_result"
-  | "preview_ok" | "preview_changes" | "preview_skip";
+  | "preview_ok" | "preview_changes" | "preview_skip"
+  // an ended request opened again (counted for G3)
+  | "reopen";
 
 /** Who decided what, when, and why. Every proposal decision lands here. */
 export interface DecisionEntry {
@@ -410,6 +452,27 @@ export interface Request {
   /** 요청자 확인 rounds, oldest first. A new round starts each time a passing result reaches preview */
   checks?: RequesterCheck[];
   planner?: { by: "llm" | "fallback"; note?: string; costUsd?: number | null };
+  /** ticket key, "T-42". The store hands out the next number */
+  key?: string;
+  // ticket fields (ticket-plan.md 11절). Typed now, filled from M1
+  category?: "question" | "known" | "new_bug" | "new_request";
+  /** people set it, never the AI */
+  priority?: "P0" | "P1" | "P2" | "P3";
+  duplicateOf?: string;
+  /** reports merged into this ticket */
+  affected?: { who: string; at: number; ref?: string }[];
+  evidence?: Evidence[];
+  redactionsRef?: string;
+  injectionFlags?: { pattern: string; excerpt: string }[];
+  /** instruction-like sentences that only came from the customer's text */
+  customerClaims?: string[];
+  /** questions the stand-in developer review left */
+  reviewQuestions?: string[];
+  edits?: { by: string; at: number; field: string; before: string; after: string }[];
+  llm?: LlmCall[];
+  branch?: string;
+  prUrl?: string;
+  external?: { system: "jira" | "linear"; id: string; url: string };
   createdAt: number;
   updatedAt: number;
 }

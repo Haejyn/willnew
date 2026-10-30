@@ -119,7 +119,7 @@ export function App() {
   // 내 차례: 확인할 제안 + 승인할 결과
   const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
   // 내 요청: 내가 답할 되묻기, 내가 볼 화면(요청자 확인)
-  const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
+  const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || r.status === "waiting_requester" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
   // 요청자 확인 중인 결과는 아직 개발자 차례가 아니다
   const checking = new Set(requests?.filter((r) => r.status === "preview").flatMap((r) => r.runIds) ?? []);
   const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending" && !checking.has(r.id)).length ?? 0) + proposalsN;
