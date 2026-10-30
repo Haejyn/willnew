@@ -13,18 +13,21 @@
  * AI only translates and organises. Scope, priority and approval are decided by people through decide().
  */
 import { EventEmitter } from "node:events";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPlanner, fallbackProposal, type Planner } from "./brief.js";
 import { defaultProposalAgent, propose, type ProposalAgent } from "./proposal.js";
-import { buildRunTask, feedbackConstraints, followUpTask, isOpenRequest, isVisual, moveTo, parseAttachments, routeAfterVerify, screensFromFiles, statusFromRun, TEMPLATE_FOR_TYPE, transition, wantsMobile, withConstraint } from "./request-state.js";
+import { buildRunTask, canReopen, feedbackConstraints, followUpTask, isOpenRequest, isVisual, moveTo, parseAttachments, reopen, routeAfterVerify, screensFromFiles, statusFromRun, TEMPLATE_FOR_TYPE, transition, wantsMobile, withConstraint } from "./request-state.js";
 import { HOME, suggestWinner, type RunManager } from "./runs.js";
 import { flagUnverified } from "./spec-check.js";
+import { migrateLegacyRequests } from "./store/legacy-json.js";
+import { openTicketStore } from "./store/sqlite.js";
+import type { TicketStore } from "./store/ticket-store.js";
 import { templateById } from "./templates.js";
 import { defaultVisualCheck, type VisualCheck } from "./visual.js";
 import type { AgentSpec, DecisionEntry, DecisionKind, Feedback, Request, RequesterCheck, RequestUpdate, Run, RunUpdate, Screen } from "./types.js";
 
-const REQUESTS_DIR = join(HOME, "requests");
+/** before the SQLite store: one JSON file per request */
+const LEGACY_DIR = join(HOME, "requests");
 const rid = () => `q${new Date().toISOString().slice(2, 10).replace(/-/g, "")}-${Math.random().toString(36).slice(2, 6)}`;
 
 export interface CreateRequestInput {
@@ -73,21 +76,27 @@ export class RequestManager {
   private agents?: AgentSpec[];
   private visual: VisualCheck | null;
 
-  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[]; visual?: VisualCheck | null } = {}) {
+  /** where requests are kept. The Map above is the working copy; every change is written through */
+  readonly store: TicketStore;
+  /** how many decision log entries of each request are already in the store's events */
+  private logged = new Map<string, number>();
+
+  constructor(private runs: Runs, deps: { planner?: Planner; proposer?: ProposalAgent | null; agents?: AgentSpec[]; visual?: VisualCheck | null; store?: TicketStore; legacyDir?: string } = {}) {
     this.planner = deps.planner ?? createPlanner();
     this.proposer = deps.proposer !== undefined ? deps.proposer : defaultProposalAgent();
     this.agents = deps.agents;
     this.visual = deps.visual !== undefined ? deps.visual : runs.startBasePreview ? defaultVisualCheck(runs as RunManager, HOME) : null;
     this.bus.setMaxListeners(200);
-    mkdirSync(REQUESTS_DIR, { recursive: true });
-    for (const f of readdirSync(REQUESTS_DIR).filter((f) => f.endsWith(".json"))) {
-      try {
-        const r: Request = JSON.parse(readFileSync(join(REQUESTS_DIR, f), "utf8"));
-        r.threadId ??= `req-${r.id}`;   // before threads existed, the card was already where every reply belonged
-        for (const c of r.checks ?? []) if (c.capture === "running") Object.assign(c, { capture: "skipped", note: "서버가 다시 시작돼서 스크린샷을 마치지 못했어요" });
-        this.reqs.set(r.id, r);
-        for (const id of r.runIds) this.byRun.set(id, r.id);
-      } catch { /* skip corrupt file */ }
+    this.store = deps.store ?? openTicketStore();
+    // requests/<id>.json from before the store: copied in once, the files stay
+    const moved = migrateLegacyRequests(this.store, deps.legacyDir ?? LEGACY_DIR);
+    if (moved.ran && (moved.moved || moved.broken.length)) console.log(`요청 ${moved.moved}개를 저장소로 옮겼어요${moved.broken.length ? `, 읽지 못한 파일 ${moved.broken.length}개` : ""}`);
+    for (const r of this.store.list()) {
+      r.threadId ??= `req-${r.id}`;   // before threads existed, the card was already where every reply belonged
+      for (const c of r.checks ?? []) if (c.capture === "running") Object.assign(c, { capture: "skipped", note: "서버가 다시 시작돼서 스크린샷을 마치지 못했어요" });
+      this.reqs.set(r.id, r);
+      this.logged.set(r.id, r.decisions.length);
+      for (const id of r.runIds) this.byRun.set(id, r.id);
     }
     runs.bus.on("any", (u: RunUpdate) => this.onRun(u.runId));
     runs.bus.on("reviewed", (run: Run) => this.onReviewed(run));
@@ -119,7 +128,7 @@ export class RequestManager {
     const now = Date.now();
     const id = rid();
     const req: Request = {
-      id, threadId: `req-${id}`, channel: input.channel, repo: input.repo, check: input.check, team: input.team,
+      id, key: this.store.nextKey(), threadId: `req-${id}`, channel: input.channel, repo: input.repo, check: input.check, team: input.team,
       requester: input.requester, requesterTitle: input.requesterTitle, requesterAvatar: input.requesterAvatar,
       text, attachments: parseAttachments(text), status: "draft", title: text.replace(/@willnew\b/gi, "").trim().split("\n")[0].slice(0, 40),
       questions: [], decisions: [], reviewer: input.reviewer, runIds: [], createdAt: now, updatedAt: now,
@@ -264,6 +273,16 @@ export class RequestManager {
     this.log(req, by, "cancel", why);
     transition(req, "cancelled");
     this.changed(req);
+    return req;
+  }
+
+  /** An ended request comes back (the fix did not hold, the decline was wrong). Logged as reopen. */
+  reopen(id: string, by: string, why?: string): Request {
+    const req = this.need(id);
+    if (!canReopen(req.status)) throw new Error("열려 있는 요청이에요");
+    req.decisions.push(reopen(req, by, why));
+    this.changed(req);
+    this.bus.emit("reopened", req, by);
     return req;
   }
 
@@ -433,7 +452,12 @@ export class RequestManager {
 
   private changed(req: Request) {
     req.updatedAt = Date.now();
-    writeFileSync(join(REQUESTS_DIR, `${req.id}.json`), JSON.stringify(req));
+    this.store.transaction(() => {
+      this.store.put(req);
+      const done = this.logged.get(req.id) ?? 0;
+      for (const e of req.decisions.slice(done)) this.store.appendDecision(req.id, e);
+      this.logged.set(req.id, req.decisions.length);
+    });
     const u: RequestUpdate = { requestId: req.id, request: req };
     this.bus.emit(`request:${req.id}`, u);
     this.bus.emit("changed", req);

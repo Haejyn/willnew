@@ -16,7 +16,36 @@ if (cmd === "invite" || cmd === "runner-token") {
   const { membersCli } = await import("./members-cli.js");
   process.exit(membersCli(cmd, argv.slice(1)));
 }
+// the request store: ~/.willnew/willnew.sqlite (src/server/store/)
+if (cmd === "backup" || cmd === "export" || cmd === "restore") {
+  const { openTicketStore } = await import("./store/sqlite.js");
+  const { backup, exportJson, restore } = await import("./store/backup.js");
+  const store = openTicketStore();
+  try {
+    if (cmd === "backup") {
+      const r = backup(store, { out: flag("out") });
+      console.log(`백업했어요: ${r.file}${r.pruned.length ? ` (오래된 백업 ${r.pruned.length}개 지움)` : ""}`);
+    } else if (cmd === "export") {
+      const out = flag("out");
+      if (!out) throw new Error("--out <file.json> 이 필요해요");
+      const r = exportJson(store, out);
+      console.log(`요청 ${r.requests}개를 내보냈어요: ${r.file}`);
+    } else {
+      const file = argv[1];
+      if (!file || file.startsWith("--")) throw new Error("되살릴 파일이 필요해요. 예: willnew restore ~/.willnew/backups/willnew-2026-10-30.sqlite");
+      const r = restore(store, resolve(file));
+      console.log(`요청 ${r.requests}개로 되살렸어요. 전에 있던 것은 ${r.before} 에 있어요. 서버가 켜져 있었다면 다시 시작해 주세요`);
+    }
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exitCode = 1;
+  } finally {
+    store.close();
+  }
+  process.exit();
+}
 if (cmd !== "serve") {
+  console.log(`usage: willnew backup [--out <path>] · willnew export --out <file.json> · willnew restore <file>`);
   console.log(`usage: willnew serve [--repo <path>] [--check "<cmd>"] [--preview "<dev server cmd, {port}>"] [--preview-base-url "http://my-host:{port}"] [--reviewers "name,name"] [--ship merge|pr] [--deploy-check "<cmd with {sha}>"] [--deploy-env production] [--port 7777] [--host 127.0.0.1] [--slack --slack-channel C0123:backend --slack-members people.json --slack-web-url http://my-host:7777]`);
   process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
 }
@@ -50,6 +79,17 @@ const server = serve({ fetch: app.fetch, port, hostname: host }, () => {
   console.log(`open ${url}`);
 });
 injectWebSocket(server);
+
+// a copy of the request store once a day, newest 7 kept
+{
+  const { scheduleDailyBackup } = await import("./store/backup.js");
+  const { SqliteTicketStore } = await import("./store/sqlite.js");
+  if (requests.store instanceof SqliteTicketStore)
+    scheduleDailyBackup(requests.store, {
+      onDone: (file) => console.log(`backup · ${file}`),
+      onError: (e) => console.warn(`자동 백업을 못 했어요: ${e.message}`),
+    });
+}
 
 // Slack app (Socket Mode). Loaded only with --slack. Tokens come from the environment, never from flags
 if (argv.includes("--slack")) {

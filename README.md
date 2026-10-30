@@ -156,7 +156,9 @@ node dist/server/cli.js serve --repo ../willnew-demo --check "npm test" --review
 - `--ship pr` 은 `git` 의 `origin` 과 로그인된 `gh` 가 필요합니다
 - `--preview` 는 에이전트 워크트리마다 띄울 개발 서버 명령. `{port}` 와 `PORT` 에 빈 포트가 들어가 서로 겹치지 않습니다
 - 서버 없이 화면만 보려면 `/?demo`
-- 필요: Node 20+, git, `claude` 또는 `codex` 로그인
+- 필요: Node 22.13+(내장 `node:sqlite`), git, `claude` 또는 `codex` 로그인
+- 요청은 `~/.willnew/willnew.sqlite` 에 저장합니다. 예전 `requests/*.json` 은 처음 켤 때 한 번 옮기고 원본은 그대로 둡니다
+- 백업: `willnew backup [--out <path>]`(기본 `~/.willnew/backups/`, 최근 7개), `willnew export --out <file.json>`, `willnew restore <file>`(서버를 끄고). `serve` 는 하루 한 번 자동 백업
 - 외부 접속 `--host 0.0.0.0` 은 토큰 필수(터미널이 열리므로)
 
 ## 단축키
