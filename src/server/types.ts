@@ -309,7 +309,7 @@ export interface Evidence {
 }
 
 /** One model call, for cost and digest tracking. */
-export interface LlmCall {
+export interface LlmRecord {
   task: string;
   provider: string;
   model: string;
@@ -469,7 +469,7 @@ export interface Request {
   /** questions the stand-in developer review left */
   reviewQuestions?: string[];
   edits?: { by: string; at: number; field: string; before: string; after: string }[];
-  llm?: LlmCall[];
+  llm?: LlmRecord[];
   branch?: string;
   prUrl?: string;
   external?: { system: "jira" | "linear"; id: string; url: string };
