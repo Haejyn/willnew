@@ -1,15 +1,39 @@
 willnew
+Copyright (C) 2026 Haejyn (https://github.com/Haejyn/willnew)
 
-The source code in this repository is licensed under the MIT License (see LICENSE).
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+See LICENSE for the full text.
 
-Not covered by that license:
+Earlier versions
+- Versions up to and including commit 9c94357 (2026-10-28) were released under the
+  MIT License. Those copies stay under MIT. Everything after that commit is under
+  AGPL-3.0-or-later with the additional terms below.
+
+Additional terms under section 7 of the GNU AGPL v3
+1. Attribution (section 7(b)). Any copy, modified version, or network service based on
+   this program must keep the following notice in its "About" screen, its README or
+   equivalent documentation, and the startup output of its command line tool where the
+   original shows one:
+       Based on willnew by Haejyn (https://github.com/Haejyn/willnew)
+2. No trademark rights (section 7(e)). This license does not grant rights to use the
+   name "willnew" or its logo. A modified version must not use the name "willnew" as
+   its own product name, and must not suggest that it is the original or is endorsed
+   by the author.
+
+Not covered by the license
 - The name "willnew" and its logo.
 - The private theme shown in the screenshots and GIF under docs/ (colors, typography,
   icon artwork). It is not included in this repository.
 
-Third-party:
+Third-party
 - web/src/theme/public/icons.ts contains icon paths from Lucide (https://lucide.dev),
   ISC License, Copyright (c) Lucide Icons and Contributors.
 - web/src/icons.tsx contains the Claude and Codex marks as packaged by lobe-icons
   (https://github.com/lobehub/lobe-icons, MIT). The marks themselves are trademarks of
   Anthropic and OpenAI; they are shown only to identify which agent produced a result.
+
+Commercial licensing
+- If AGPL does not fit your use, contact the author through GitHub to discuss a
+  separate license.
