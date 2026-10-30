@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "팀 AI 에이전트 플랫폼. 채널에서 맡기면 에이전트가 격리된 워크트리에서 고치고 테스트로 확인하고, 담당 개발자가 승인해 반영하고, 요청자에게 쉬운 말로 답한다. 겨루기(에이전트 2개)는 선택. 팀별 사용 지표까지.",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "bin": {
     "willnew": "dist/server/cli.js"
   },

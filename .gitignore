@@ -2,3 +2,10 @@ node_modules/
 dist/
 *.log
 .tmp/
+
+# secrets: real keys live in ~/.willnew/keys.env
+.env
+.env.*
+keys.env
+
+.claude/
