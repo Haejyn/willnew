@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { orderComplete } from "../../src/views.js";
 import { calculateTotals } from "../../src/pricing.js";
-import { line } from "../helpers.js";
+import { line } from "../../test/helpers.js";
 
 test("주문 완료 화면 제목은 '주문이 완료되었습니다'", () => {
   const lines = [line(1, 1)];

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { calculateTotals, SHIPPING_FEE } from "../../src/pricing.js";
-import { coupon, line } from "../helpers.js";
+import { coupon, line } from "../../test/helpers.js";
 
 test("상품 금액이 정확히 30,000원이면 배송비 무료", () => {
   const totals = calculateTotals([line(2, 2)], null);

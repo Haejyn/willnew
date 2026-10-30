@@ -9,7 +9,7 @@
 - 문의: `inquiries/01-coupon-total.md`
 - 증상: `WELCOME5000` 을 넣으면 결제 화면의 할인 줄은 `-5,000원` 인데 최종 결제 금액은 할인 전 그대로. `SALE10` 은 맞다. 서버도 같은 함수로 주문 금액을 저장해서 주문 완료와 내 주문 금액도 틀린다
 - 위치: `src/pricing.js` 의 `calculateTotals` 가 최종 금액을 `applyCoupon(subtotal, coupon) + shipping` 으로 구한다. `applyCoupon` 은 정률 쿠폰만 처리하고 나머지는 상품 금액을 그대로 돌려준다. 할인 줄은 두 종류를 다 처리하는 `getDiscount` 를 쓰므로 둘이 어긋난다
-- 재현 테스트: `test/bugs/coupon-total.test.js`
+- 재현 테스트: `.maintainers/bug-tests/coupon-total.test.js`
   - 정액 쿠폰을 적용하면 최종 결제 금액이 할인만큼 줄어든다
   - 최종 결제 금액은 상품 금액 - 할인 + 배송비
 - 정답 수정
@@ -29,7 +29,7 @@ const total = subtotal - discount + shipping;
 - 위치: `src/pricing.js`
   - `getShippingFee` 의 `amount > FREE_SHIPPING_MIN`
   - `calculateTotals` 의 `getShippingFee(subtotal)`
-- 재현 테스트: `test/bugs/shipping.test.js`
+- 재현 테스트: `.maintainers/bug-tests/shipping.test.js`
   - 상품 금액이 정확히 30,000원이면 배송비 무료
   - 배송비는 할인 후 금액으로 판단한다
 - 정답 수정
@@ -47,7 +47,7 @@ const shipping = getShippingFee(subtotal - discount);
 - 문의: `inquiries/03-sold-out.md`
 - 증상: 재고 0인 캔버스 에코백(id 3)이 목록에서는 품절로 보이는데 상세 화면의 장바구니 담기 버튼이 눌리고 주문까지 된다
 - 위치: `src/views.js` 의 `productDetail` 이 `product.soldOut` 으로 버튼을 막는다. 상품 데이터에는 `soldOut` 필드가 없고 `stock` 만 있다. 목록(`productList`)은 `isSoldOut(product)` 를 쓴다
-- 재현 테스트: `test/bugs/sold-out.test.js`
+- 재현 테스트: `.maintainers/bug-tests/sold-out.test.js`
   - 재고 0 상품 상세에서는 장바구니 담기 버튼이 눌리지 않는다
 - 정답 수정
 
@@ -62,7 +62,7 @@ const shipping = getShippingFee(subtotal - discount);
 - 문의: `inquiries/04-order-complete-text.md`
 - 증상: 주문 완료 화면 제목이 "주문이 완료되었읍니다"
 - 위치: `src/views.js` 의 `orderComplete`
-- 재현 테스트: `test/bugs/order-complete-text.test.js`
+- 재현 테스트: `.maintainers/bug-tests/order-complete-text.test.js`
   - 주문 완료 화면 제목은 '주문이 완료되었습니다'
 - 정답 수정: "주문이 완료되었습니다"
 - 요청자 확인 흐름(전후 스크린샷, "의도대로예요")을 시험하는 용도

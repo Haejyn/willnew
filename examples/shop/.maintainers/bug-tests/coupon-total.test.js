@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { calculateTotals } from "../../src/pricing.js";
-import { coupon, line } from "../helpers.js";
+import { coupon, line } from "../../test/helpers.js";
 
 test("정액 쿠폰을 적용하면 최종 결제 금액이 할인만큼 줄어든다", () => {
   const totals = calculateTotals([line(5, 2)], coupon("WELCOME5000"));

@@ -60,7 +60,6 @@ API
 
 ```sh
 npm test            # 기본 테스트
-npm run test:bugs   # test/bugs/ 아래 테스트
 ```
 
 ## 문의 원문
