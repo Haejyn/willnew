@@ -1,0 +1,31 @@
+# willnew Slack 앱 매니페스트. api.slack.com/apps → Create New App → From a manifest 에 붙여 넣는다.
+# Socket Mode 라 공개 URL 이 없다. 허브가 Slack 으로 웹소켓을 연다.
+display_information:
+  name: willnew
+  description: 채널 요청을 작업 명세와 구현 제안으로 정리하고, 개발자 확인 뒤 반영과 답장까지 스레드에서 잇는다
+  background_color: "#1f2328"
+features:
+  bot_user:
+    display_name: willnew
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      # @willnew 멘션을 받는다 (app_mention 이벤트)
+      - app_mentions:read
+      # 카드와 스레드 답글을 올리고 고친다, 권한 안내는 본인에게만 보이게 (chat.postMessage, chat.update, chat.postEphemeral)
+      - chat:write
+      # 전후 스크린샷을 스레드에 올린다 (files.uploadV2)
+      - files:write
+      # 되묻기에 스레드 답글로 직접 쓴 답을 읽는다 (message.channels 이벤트)
+      - channels:history
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

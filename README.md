@@ -5,7 +5,7 @@
 [![ci](https://github.com/Haejyn/willnew/actions/workflows/ci.yml/badge.svg)](https://github.com/Haejyn/willnew/actions/workflows/ci.yml)
 ![node](https://img.shields.io/badge/node-%E2%89%A520-339933)
 ![agents](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-111111)
-![license](https://img.shields.io/badge/license-MIT-blue)
+![license](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 ![willnew](docs/media/demo.gif)
 
@@ -156,7 +156,9 @@ node dist/server/cli.js serve --repo ../willnew-demo --check "npm test" --review
 - `--ship pr` 은 `git` 의 `origin` 과 로그인된 `gh` 가 필요합니다
 - `--preview` 는 에이전트 워크트리마다 띄울 개발 서버 명령. `{port}` 와 `PORT` 에 빈 포트가 들어가 서로 겹치지 않습니다
 - 서버 없이 화면만 보려면 `/?demo`
-- 필요: Node 20+, git, `claude` 또는 `codex` 로그인
+- 필요: Node 22.13+(내장 `node:sqlite`), git, `claude` 또는 `codex` 로그인
+- 요청은 `~/.willnew/willnew.sqlite` 에 저장합니다. 예전 `requests/*.json` 은 처음 켤 때 한 번 옮기고 원본은 그대로 둡니다
+- 백업: `willnew backup [--out <path>]`(기본 `~/.willnew/backups/`, 최근 7개), `willnew export --out <file.json>`, `willnew restore <file>`(서버를 끄고). `serve` 는 하루 한 번 자동 백업
 - 외부 접속 `--host 0.0.0.0` 은 토큰 필수(터미널이 열리므로)
 
 ## 단축키
@@ -234,4 +236,13 @@ pnpm typecheck   # 서버 + 웹
 - 에이전트는 서버를 띄운 PC 의 Claude, Codex 로그인으로 돕니다. 한 사람의 구독으로 팀원 요청을 처리하는 것은 Anthropic 이용 조건에 맞지 않으므로, 지금은 혼자 또는 각자 자기 서버로 쓰는 용도입니다. 팀원마다 자기 PC 에서 자기 구독으로 실행하는 구조(허브와 러너)를 설계 중입니다
 - 미구현: Slack 앱 연동, 동시 실행 한도, 원격 실행기
 
-코드는 MIT. 이름, 로고, 스크린샷 속 개인 테마는 라이선스에 포함되지 않아요([NOTICE](NOTICE)).
+## 라이선스
+
+Copyright (C) 2026 Haejyn. 코드는 [GNU AGPL v3](LICENSE) 이상이에요.
+
+- 고쳐서 배포하거나 네트워크 서비스로 돌리면 고친 전체 코드를 같은 라이선스로 공개해야 해요
+- 가져다 쓴 곳에는 "Based on willnew by Haejyn (https://github.com/Haejyn/willnew)" 를 남겨야 해요(AGPL 7조 추가 조건)
+- 이름 "willnew", 로고, 스크린샷 속 개인 테마는 라이선스에 포함되지 않아요
+- 커밋 9c94357(2026-10-28)까지의 판은 MIT 로 공개됐고 그 판은 MIT 그대로예요
+
+자세한 내용은 [NOTICE](NOTICE).

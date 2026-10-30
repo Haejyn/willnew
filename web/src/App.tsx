@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import type { AgentInfo, Api, Channel, ServerConfig, Team } from "./api";
-import { httpApi, isDemo } from "./api";
+import type { AgentInfo, Api, Channel, ServerConfig, Team, TeamMe } from "./api";
+import { httpApi, isDemo, onUnauthorized } from "./api";
 import type { PaneTab } from "./AgentPane";
 import { Chat } from "./Chat";
 import { Compose } from "./Compose";
@@ -92,6 +92,14 @@ export function App() {
   const { requests } = useRequests(api);
   const { watched, toggle } = useWatch(runs);
   const offline = !!runsError || agentsDown;
+  // 팀 모드: 이름, 직함, 역할은 허브가 토큰으로 정한다. 토큰이 없거나 모르는 토큰이면 초대 화면
+  const team = !demo && !!config?.team;
+  const [locked, setLocked] = useState(false);
+  useEffect(() => (demo ? undefined : onUnauthorized(() => setLocked(true))), [demo]);
+  useEffect(() => {
+    if (!team || !api.me) return;
+    api.me().then((m: TeamMe) => setUser((u) => ({ ...u, name: m.name, title: m.title ?? "", avatar: m.avatar || undefined, role: m.role === "developer" ? "dev" : "requester" }))).catch(() => undefined);
+  }, [team, api]);
 
   useEffect(() => {
     api.agents().then((a) => { setAgents(a.filter((x) => x.id !== "script")); setAgentsDown(false); }).catch(() => setAgentsDown(true));
@@ -111,7 +119,7 @@ export function App() {
   // 내 차례: 확인할 제안 + 승인할 결과
   const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
   // 내 요청: 내가 답할 되묻기, 내가 볼 화면(요청자 확인)
-  const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
+  const mineN = requests?.filter((r) => r.requester === user.name && (r.status === "preview" || r.status === "waiting_requester" || (r.status === "clarifying" && r.questions.some((q) => !q.answer)))).length ?? 0;
   // 요청자 확인 중인 결과는 아직 개발자 차례가 아니다
   const checking = new Set(requests?.filter((r) => r.status === "preview").flatMap((r) => r.runIds) ?? []);
   const pendingN = requester ? 0 : (runs?.filter((r) => r.review.status === "pending" && !checking.has(r.id)).length ?? 0) + proposalsN;
@@ -139,9 +147,20 @@ export function App() {
 
   const changeUser = (u: User) => {
     setUser(u);
-    saveUser(u);
+    // 팀 모드의 사람 값은 이 브라우저에 저장하지 않는다 (혼자 모드 프로필을 덮지 않게)
+    if (!team) saveUser(u);
   };
-  const me = <Settings user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} dense={dense} onDense={(on) => { setDense(on); saveDense(on); }} />;
+  const me = <Settings team={team} user={user} teams={teams} onChange={changeUser} config={config} agents={agents} demo={demo} onHelp={() => setHelp(true)} dense={dense} onDense={(on) => { setDense(on); saveDense(on); }} />;
+
+  if (locked)
+    return (
+      <div className="app">
+        <div className="sky" aria-hidden />
+        <main className="main">
+          <Empty title="초대 링크로 들어와 주세요">받은 초대 링크를 이 브라우저에서 열면 이어서 쓸 수 있어요.</Empty>
+        </main>
+      </div>
+    );
 
   let page;
   if (route.page === "metrics") page = <Metrics api={api} />;
@@ -255,7 +274,7 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
 }
 
 /** 아바타 팝오버 — 이름 · 팀, 저장소, 에이전트, 검증 명령. 위쪽 바에 있던 정보가 전부 여기로 왔다. */
-function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, onDense }: { user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void; dense: boolean; onDense: (on: boolean) => void }) {
+function Settings({ team, user, teams, onChange, config, agents, demo, onHelp, dense, onDense }: { team: boolean; user: User; teams: Team[]; onChange: (u: User) => void; config: ServerConfig | null; agents: AgentInfo[] | null; demo: boolean; onHelp: () => void; dense: boolean; onDense: (on: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(user.name);
   const [title, setTitle] = useState(user.title);
@@ -283,10 +302,17 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, 
               setOpen(false);
             }}
           >
-            <label className="field">
-              <span>이름</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} />
-            </label>
+            {team ? (
+              <p className="pop-note">
+                {user.name}
+                {user.title ? ` (${user.title})` : ""}, {ROLE_KO[user.role]}
+              </p>
+            ) : (
+              <label className="field">
+                <span>이름</span>
+                <input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+            )}
             <label className="field">
               <span>팀</span>
               <select value={user.team} onChange={(e) => onChange({ ...user, team: e.target.value })}>
@@ -297,23 +323,27 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, 
                 ))}
               </select>
             </label>
-            <label className="field">
-              <span>직함 (자유롭게)</span>
-              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="CS, 백엔드, PM" maxLength={12} />
-            </label>
-            <label className="field">
-              <span>프로필 이미지 주소 (선택)</span>
-              <input value={avatar} onChange={(e) => setAvatar(e.target.value)} placeholder="https://…" inputMode="url" />
-            </label>
-            <fieldset className="role-opts">
-              <legend>역할</legend>
-              {(Object.keys(ROLE_KO) as Role[]).map((r) => (
-                <label key={r}>
-                  <input type="radio" name="role" checked={user.role === r} onChange={() => onChange({ ...user, role: r })} />
-                  {ROLE_KO[r]}
+            {team ? null : (
+              <>
+                <label className="field">
+                  <span>직함 (자유롭게)</span>
+                  <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="CS, 백엔드, PM" maxLength={12} />
                 </label>
-              ))}
-            </fieldset>
+                <label className="field">
+                  <span>프로필 이미지 주소 (선택)</span>
+                  <input value={avatar} onChange={(e) => setAvatar(e.target.value)} placeholder="https://…" inputMode="url" />
+                </label>
+                <fieldset className="role-opts">
+                  <legend>역할</legend>
+                  {(Object.keys(ROLE_KO) as Role[]).map((r) => (
+                    <label key={r}>
+                      <input type="radio" name="role" checked={user.role === r} onChange={() => onChange({ ...user, role: r })} />
+                      {ROLE_KO[r]}
+                    </label>
+                  ))}
+                </fieldset>
+              </>
+            )}
             <label className="toggle-row">
               <input type="checkbox" checked={dense} onChange={(e) => onDense(e.target.checked)} />
               촘촘하게 (목록 한 줄을 낮게)
@@ -321,7 +351,7 @@ function Settings({ user, teams, onChange, config, agents, demo, onHelp, dense, 
             <button className="btn w sm" type="submit">
               저장
             </button>
-            <p className="pop-note">계정 없이 이 브라우저에만 저장돼요. 역할은 직접 고르는 값이라 권한을 막지는 않아요.</p>
+            <p className="pop-note">{team ? "초대받은 계정이에요. 이름과 역할은 허브에서 정해요." : "계정 없이 이 브라우저에만 저장돼요. 역할은 직접 고르는 값이라 권한을 막지는 않아요."}</p>
           </form>
           <dl className="pop-info">
             <dt>저장소</dt>

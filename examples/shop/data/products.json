@@ -1,0 +1,8 @@
+[
+  { "id": 1, "name": "도자기 머그컵", "price": 12000, "stock": 20, "description": "350ml 머그컵. 식기세척기에 넣어도 됩니다." },
+  { "id": 2, "name": "스테인리스 텀블러", "price": 15000, "stock": 8, "description": "보온 6시간, 보냉 12시간. 뚜껑까지 분리 세척할 수 있어요." },
+  { "id": 3, "name": "캔버스 에코백", "price": 9000, "stock": 0, "description": "A4 파일이 들어가는 크기. 안쪽 주머니 1개." },
+  { "id": 4, "name": "무지 노트 세트", "price": 6000, "stock": 30, "description": "A5 무지 노트 3권 묶음." },
+  { "id": 5, "name": "무선 마우스", "price": 25000, "stock": 5, "description": "저소음 클릭, AA 건전지 1개로 약 12개월." },
+  { "id": 6, "name": "데스크 매트", "price": 18000, "stock": 12, "description": "80 x 40cm, 방수 PU 소재." }
+]

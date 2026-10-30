@@ -155,10 +155,22 @@ export interface ServerConfig {
   previewBaseUrl?: string;
   /** preview links only open on the machine running willnew */
   previewLocalOnly?: boolean;
+  /** team mode: people come from the hub (members.json), not from this browser */
+  team?: boolean;
+}
+
+/** /api/me in team mode */
+export interface TeamMe {
+  name: string;
+  title: string;
+  role: "developer" | "requester";
+  avatar?: string;
 }
 
 export interface Api {
   config(): Promise<ServerConfig>;
+  /** team mode only: who this token belongs to */
+  me?(): Promise<TeamMe>;
   agents(): Promise<AgentInfo[]>;
   channels(): Promise<Channel[]>;
   messages(channel: string): Promise<ChatMessage[]>;
@@ -209,26 +221,49 @@ export interface Api {
   previewUrl(port: number): string;
 }
 
-/** `--host 0.0.0.0` prints a link with ?token=…; keep it for this browser and send it with every call. */
+/**
+ * `--host 0.0.0.0` prints a link with ?token=…; keep it for this browser and send it with every call.
+ * Team mode: an invite link `/?invite=<token>` carries the person token. It is kept the same way and taken out of the address.
+ */
 const TOKEN_KEY = "willnew.token";
 function readToken(): string {
+  const q = new URLSearchParams(window.location.search);
+  const invite = q.get("invite");
+  if (invite) {
+    q.delete("invite");
+    try {
+      window.history.replaceState(null, "", `${window.location.pathname}${q.toString() ? `?${q}` : ""}${window.location.hash}`);
+    } catch {
+      /* address stays as it is */
+    }
+  }
+  const t = invite || q.get("token");
   try {
-    const t = new URLSearchParams(window.location.search).get("token");
     if (t) localStorage.setItem(TOKEN_KEY, t);
     return t ?? localStorage.getItem(TOKEN_KEY) ?? "";
   } catch {
-    return new URLSearchParams(window.location.search).get("token") ?? "";
+    return t ?? "";
   }
 }
 const TOKEN = typeof window === "undefined" ? "" : readToken();
+/** query token: EventSource, WebSocket and <img> cannot send headers */
 const withToken = (url: string) => (TOKEN ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}` : url);
-const get = (url: string, init?: RequestInit) => fetch(withToken(url), init);
+const get = (url: string, init?: RequestInit) =>
+  fetch(url, TOKEN ? { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), authorization: `Bearer ${TOKEN}` } } : init);
+
+/** Team mode answers 401 with { team: true } when the token is missing or unknown; the app shows the invite screen. */
+const unauthorized = new Set<() => void>();
+export function onUnauthorized(cb: () => void): () => void {
+  unauthorized.add(cb);
+  return () => unauthorized.delete(cb);
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
+      if (res.status === 401 && body?.team) for (const cb of unauthorized) cb();
       if (body?.error) msg = String(body.error);
       else if (body?.message) msg = String(body.message);
     } catch {
@@ -266,6 +301,7 @@ const A = (id: string, aid: string) => `/api/runs/${enc(id)}/agents/${enc(aid)}`
 
 export const httpApi: Api = {
   config: () => get("/api/config").then((r) => json<ServerConfig>(r)),
+  me: () => get("/api/me").then((r) => json<TeamMe>(r)),
   agents: () => get("/api/agents").then((r) => json<AgentInfo[]>(r)),
   channels: () => get("/api/channels").then((r) => json<Channel[]>(r)),
   messages: (ch) => get(`/api/channels/${enc(ch)}/messages`).then((r) => json<ChatMessage[]>(r)),

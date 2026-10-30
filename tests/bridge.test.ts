@@ -874,6 +874,7 @@ describe("threads in the chat API", () => {
     ];
     mkdirSync(join(HOME, "chat"), { recursive: true });
     writeFileSync(join(HOME, "chat", "data.json"), JSON.stringify(old));
+    mkdirSync(join(HOME, "requests"), { recursive: true });   // a folder from before the SQLite store, migrated on load
     writeFileSync(join(HOME, "requests", "q-old.json"), JSON.stringify(req({ id: "q-old", channel: "data", status: "code_review" })));
     const requests = new RequestManager(runs as never, { planner: createPlanner(() => null), proposer: null, visual: null });
     const chat = new Chat(runs as never, makeRepo(), "npm test", [], requests);

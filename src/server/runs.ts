@@ -2,28 +2,28 @@
  * Run manager: one request → N worker agents, each in its own git worktree and branch.
  * Per agent: queued → running (CLI streams JSONL) → checking → (check failed and attempts left →) retrying with the
  * failure output → checking → done | failed | cancelled. When every agent has finished, the run waits for human review.
+ *
+ * RunManager owns the state (runs, saving, review, line comments, the review queue). Running the agents is the
+ * Executor's job (LocalExecutor by default); it reports back through an AgentSink.
  */
-import { spawn, type ChildProcess } from "node:child_process";
-import { createConnection, createServer } from "node:net";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ADAPTERS } from "./adapters.js";
-import { addWorktree, commitAll, diffSummary, git, mergeBranch, mergeConflicts, removeWorktree, repoInfo } from "./git.js";
-import { parseUserNote, USER_NOTE_RULE } from "./handoff.js";
+import { LocalExecutor, type AgentSink, type Executor } from "./executor.js";
+import { repoInfo } from "./git.js";
+import { HOME } from "./home.js";
 import { Shipper, type ShipOptions } from "./ship.js";
 import type { AgentEvent, AgentRun, CreateRunInput, Preflight, Preview, ReviewComment, Run, RunUpdate } from "./types.js";
 
-export const HOME = process.env.WILLNEW_HOME ?? join(homedir(), ".willnew");
+export { HOME } from "./home.js";
+export { runShell, LocalExecutor, type AgentSink, type Executor } from "./executor.js";
+
 const RUNS_DIR = join(HOME, "runs");
 const MAX_EVENTS = 500;
-const CHECK_TIMEOUT_MS = 5 * 60_000;
 const FINISHED = new Set(["done", "failed", "cancelled"]);
-const PREVIEW_READY_MS = 90_000;
-
-/** What the worker agent is asked to do: the task plus the rule for the closing line to the requester. */
-const taskPrompt = (run: Run) => `${run.task}\n\n${USER_NOTE_RULE}`;
+/** a preview whose process is still up */
+const live = (p?: Preview) => p?.status === "starting" || p?.status === "ready";
 
 const id = (n = 6) => Math.random().toString(36).slice(2, 2 + n);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "agent";
@@ -51,17 +51,16 @@ export function suggestWinner(run: Run): AgentRun | undefined {
 export class RunManager {
   readonly bus = new EventEmitter();
   private runs = new Map<string, Run>();
-  private procs = new Map<string, ChildProcess>();
   private saveTimers = new Map<string, NodeJS.Timeout>();
-  /** follow-up instructions waiting for the agent's current turn to stop */
-  private pending = new Map<string, string[]>();
-  private interrupted = new Set<string>();
-  private previews = new Map<string, ChildProcess>();
+  /** agents a human cancelled: later executor patches cannot move them out of "cancelled" (a steer reopens them) */
+  private cancelled = new Set<string>();
 
   readonly shipper: Shipper;
+  readonly executor: Executor;
 
-  constructor(private opts: { preview?: string; previewBaseUrl?: string; ship?: ShipOptions } = {}) {
+  constructor(private opts: { preview?: string; previewBaseUrl?: string; ship?: ShipOptions; executor?: Executor } = {}) {
     this.shipper = new Shipper(opts.ship ?? { mode: "merge" });
+    this.executor = opts.executor ?? new LocalExecutor({ preview: opts.preview });
     mkdirSync(RUNS_DIR, { recursive: true });
     for (const f of readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json"))) {
       try {
@@ -117,7 +116,7 @@ export class RunManager {
     };
     this.runs.set(runId, run);
     this.save(run, true);
-    for (const a of agents) void this.start(run, a);
+    for (const a of agents) this.executor.start(run, a, this.sink(run, a));
     return run;
   }
 
@@ -135,146 +134,18 @@ export class RunManager {
     this.save(run);
   }
 
-  private note(run: Run, agent: AgentRun, kind: AgentEvent["kind"], text: string) {
-    this.emit(run, agent, {}, { ts: Date.now(), kind, text });
-  }
-
-  private async start(run: Run, agent: AgentRun) {
-    try {
-      mkdirSync(join(agent.worktree, ".."), { recursive: true });
-      await addWorktree(run.repo, agent.worktree, agent.branch, run.baseRef);
-    } catch (e) {
-      this.emit(run, agent, { status: "failed" }, { ts: Date.now(), kind: "error", text: `worktree: ${(e as Error).message}` });
-      this.afterAgent(run);
-      return;
-    }
-    const startedAt = Date.now();
-    this.emit(run, agent, { status: "running", startedAt }, { ts: startedAt, kind: "status", text: `작업 시작 · ${agent.worktree}` });
-    const early = this.take(agent.id);
-    await this.attempt(run, agent, early.length ? `${taskPrompt(run)}\n\nAdditional instructions from the requester:\n${early.map((t) => `- ${t}`).join("\n")}` : taskPrompt(run));
-  }
-
-  private take(agentId: string): string[] {
-    const list = this.pending.get(agentId) ?? [];
-    this.pending.delete(agentId);
-    return list;
-  }
-
-  private followUp(run: Run, agent: AgentRun, texts: string[]): { prompt: string; resume: boolean } {
-    const ask = texts.map((t) => `- ${t.replace(/\n/g, "\n  ")}`).join("\n");
-    const check = run.checkCmd ? ` Make sure \`${run.checkCmd}\` still passes (do not edit or weaken tests unless asked).` : "";
-    if (agent.sessionId && ADAPTERS[agent.adapter].resume)
-      return { prompt: `Follow-up from the reviewer — apply it in this working tree:\n${ask}\n${check}`, resume: true };
-    return { prompt: `${taskPrompt(run)}\n\nYour earlier work is already applied in this working tree. Follow-up from the reviewer:\n${ask}\n${check}`, resume: false };
-  }
-
-  /** One pass of the agent CLI, then commit + diff + check; retries once with the failing output. */
-  private async attempt(run: Run, agent: AgentRun, prompt: string, resume = false): Promise<void> {
-    let exit = await this.runCli(run, agent, prompt, resume);
-    // a human sent an instruction mid-turn: the turn was stopped; continue the same session with it
-    while (this.pending.get(agent.id)?.length && agent.status !== "cancelled") {
-      const f = this.followUp(run, agent, this.take(agent.id));
-      this.emit(run, agent, { status: "running" }, { ts: Date.now(), kind: "plan", text: "추가 지시를 반영해 이어서 작업" });
-      exit = await this.runCli(run, agent, f.prompt, f.resume);
-    }
-    if (agent.status === "cancelled") return this.afterAgent(run);
-    try {
-      await commitAll(agent.worktree, `willnew: ${agent.label} (attempt ${agent.attempt})\n\n${run.title}`);
-      this.emit(run, agent, { diff: await diffSummary(agent.worktree, run.baseRef) });
-    } catch (e) {
-      this.note(run, agent, "error", `diff: ${(e as Error).message}`);
-    }
-    const endedAt = Date.now();
-    if (!exit.ok) {
-      this.emit(run, agent, { status: "failed", endedAt, durationMs: endedAt - (agent.startedAt ?? endedAt) },
-        { ts: endedAt, kind: "status", text: `종료 코드 ${exit.code}` });
-      return this.afterAgent(run);
-    }
-    if (!run.checkCmd) {
-      this.emit(run, agent, { status: "done", endedAt, durationMs: endedAt - (agent.startedAt ?? endedAt) });
-      return this.afterAgent(run);
-    }
-    this.emit(run, agent, { status: "checking" }, { ts: Date.now(), kind: "check", text: `$ ${run.checkCmd}` });
-    const t0 = Date.now();
-    const res = await runShell(run.checkCmd, agent.worktree, CHECK_TIMEOUT_MS);
-    const check = { status: res.code === 0 ? "passed" as const : "failed" as const, exitCode: res.code,
-      output: res.output.slice(-6000), durationMs: Date.now() - t0 };
-    this.emit(run, agent, { check }, { ts: Date.now(), kind: "check",
-      text: `검증 ${check.status === "passed" ? "통과" : "실패"} (exit ${res.code}, ${(check.durationMs / 1000).toFixed(1)} s)` });
-    if (this.pending.get(agent.id)?.length && (agent.status as string) !== "cancelled") {   // instruction arrived during the check
-      const f = this.followUp(run, agent, this.take(agent.id));
-      this.emit(run, agent, { status: "running" }, { ts: Date.now(), kind: "plan", text: "추가 지시를 반영해 이어서 작업" });
-      return this.attempt(run, agent, f.prompt, f.resume);
-    }
-
-    if (check.status === "failed" && agent.attempt < run.maxAttempts && (agent.status as string) !== "cancelled") {
-      // self-correction: hand the verifier's output back to the same agent in the same worktree
-      this.emit(run, agent, { status: "retrying", attempt: agent.attempt + 1 },
-        { ts: Date.now(), kind: "plan", text: `검증 실패 → 실패 로그를 돌려주고 다시 시도 (${agent.attempt + 1}/${run.maxAttempts})` });
-      const retry = `${taskPrompt(run)}\n\nYour previous attempt is already applied in this working tree, but the verification command \`${run.checkCmd}\` failed:\n\n${check.output.slice(-3000)}\n\nFix the remaining problems (do not edit or weaken tests) and make the verification pass.`;
-      return this.attempt(run, agent, retry);
-    }
-    const end = Date.now();
-    this.emit(run, agent, { status: "done", endedAt: end, durationMs: end - (agent.startedAt ?? end) });
-    this.afterAgent(run);
-  }
-
-  private runCli(run: Run, agent: AgentRun, prompt: string, resume = false): Promise<{ ok: boolean; code: number | null }> {
-    const adapter = ADAPTERS[agent.adapter];
-    if (agent.status === "retrying") this.emit(run, agent, { status: "running" });
-    const opts = { model: agent.model, cwd: agent.worktree };
-    const { cmd, args } = resume && agent.sessionId && adapter.resume ? adapter.resume(agent.sessionId, prompt, opts) : adapter.command(prompt, opts);
-    // no shell: the task text goes to the CLI untouched by cmd.exe / sh quoting
-    const child = spawn(cmd, args, { cwd: agent.worktree, windowsHide: true, shell: false, detached: process.platform !== "win32",
-      stdio: [adapter.stdinPrompt ? "pipe" : "ignore", "pipe", "pipe"], env: { ...process.env, WILLNEW: "1" } });
-    if (adapter.stdinPrompt) child.stdin?.end(prompt);
-    this.procs.set(agent.id, child);
-    const base = { ...agent.usage }, baseTurns = agent.turns;   // accumulate across attempts
-    let buf = "", failed = false, stderr = "";
-    const onLine = (line: string) => {
-      const p = adapter.parse(line);
-      const patch: Partial<AgentRun> = {};
-      if (p.usage) {
-        const u = { ...agent.usage };
-        if (agent.adapter === "codex") {   // codex reports per turn → add up
-          u.inputTokens += p.usage.inputTokens ?? 0; u.outputTokens += p.usage.outputTokens ?? 0; u.cachedTokens += p.usage.cachedTokens ?? 0;
-        } else {                            // claude reports totals for this invocation → add to earlier attempts
-          u.inputTokens = base.inputTokens + (p.usage.inputTokens ?? 0);
-          u.outputTokens = base.outputTokens + (p.usage.outputTokens ?? 0);
-          u.cachedTokens = base.cachedTokens + (p.usage.cachedTokens ?? 0);
-          u.costUsd = p.usage.costUsd == null ? base.costUsd : (base.costUsd ?? 0) + p.usage.costUsd;
+  /** What the executor writes one agent's progress into. */
+  private sink(run: Run, agent: AgentRun): AgentSink {
+    return {
+      patch: (p, event) => {
+        if (this.cancelled.has(agent.id) && p.status && p.status !== "cancelled") {
+          const { status: _s, endedAt: _e, durationMs: _d, ...rest } = p;
+          p = rest;
         }
-        patch.usage = u;
-      }
-      if (p.turns) patch.turns = agent.adapter === "codex" ? agent.turns + p.turns : baseTurns + p.turns;
-      if (p.summary) {
-        const parsed = parseUserNote(p.summary);
-        patch.summary = parsed.summary;
-        if (parsed.userNote) patch.userNote = parsed.userNote;
-      }
-      if (p.sessionId && p.sessionId !== agent.sessionId) patch.sessionId = p.sessionId;
-      if (p.failed) failed = true;
-      if (!p.events.length && Object.keys(patch).length) this.emit(run, agent, patch);
-      p.events.forEach((e, i) => this.emit(run, agent, i === 0 ? patch : {}, e));
+        this.emit(run, agent, p, event);
+      },
+      finished: () => this.afterAgent(run),
     };
-    child.stdout?.on("data", (d: Buffer) => {
-      buf += d.toString("utf8");
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
-    });
-    child.stderr?.on("data", (d: Buffer) => { stderr = (stderr + d.toString("utf8")).slice(-4000); });
-    return new Promise((resolve) => {
-      child.on("error", (e) => this.note(run, agent, "error", `${cmd} 실행 실패: ${e.message}`));
-      child.on("close", (code) => {
-        if (buf.trim()) onLine(buf);
-        this.procs.delete(agent.id);
-        const ok = code === 0 && !failed;
-        if (this.interrupted.delete(agent.id)) return resolve({ ok, code });   // stopped on purpose for a follow-up
-        if (!ok && agent.status !== "cancelled" && stderr.trim())
-          this.note(run, agent, "error", stderr.trim().split("\n").slice(-6).join("\n"));
-        resolve({ ok, code });
-      });
-    });
   }
 
   /** When the last agent finishes, the run goes to human review (if anything is worth merging). */
@@ -290,13 +161,11 @@ export class RunManager {
     const run = this.runs.get(runId);
     const agent = run?.agents.find((a) => a.id === agentId);
     if (!run || !agent) throw new Error("not found");
-    const child = this.procs.get(agentId);
     const endedAt = Date.now();
     this.emit(run, agent, { status: "cancelled", endedAt, durationMs: agent.startedAt ? endedAt - agent.startedAt : undefined },
       { ts: endedAt, kind: "status", text: "취소됨" });
-    this.pending.delete(agentId);
-    if (child?.pid) killTree(child);
-    else this.afterAgent(run);
+    this.cancelled.add(agent.id);
+    this.executor.cancel(run, agent, this.sink(run, agent));
   }
 
   /**
@@ -312,22 +181,10 @@ export class RunManager {
     if (run.review.status === "approved") throw new Error("이미 병합된 요청입니다");
     const at = Date.now();
     this.emit(run, agent, { steers: [...(agent.steers ?? []), { text: t, by, at }] }, { ts: at, kind: "steer", text: `${by}: ${t}` });
-    this.pending.set(agentId, [...(this.pending.get(agentId) ?? []), t]);
-    if (agent.status === "running" || agent.status === "retrying") {
-      const child = this.procs.get(agentId);
-      if (child?.pid) {
-        this.interrupted.add(agentId);
-        killTree(child);
-      }
-      return;
-    }
-    if (agent.status === "queued" || agent.status === "checking") return;
-    // finished: reopen in the same worktree
-    const f = this.followUp(run, agent, this.take(agentId));
-    const startedAt = Date.now() - (agent.durationMs ?? 0);   // keep working time, not idle time
-    this.emit(run, agent, { status: "running", startedAt, endedAt: undefined, merged: false },
-      { ts: Date.now(), kind: "plan", text: "추가 지시로 다시 작업" }, run.review.status === "pending" ? { review: { status: "none" } } : undefined);
-    void this.attempt(run, agent, f.prompt, f.resume);
+    // finished: the agent reopens, so the run is back at work rather than waiting on a human
+    if (FINISHED.has(agent.status) && run.review.status === "pending") this.emit(run, undefined, {}, undefined, { review: { status: "none" } });
+    if (FINISHED.has(agent.status)) this.cancelled.delete(agent.id);   // reopening a cancelled agent is allowed
+    this.executor.steer(run, agent, t, this.sink(run, agent));
   }
 
   addComment(runId: string, input: { agentId: string; file: string; line: number; text: string; by: string }): ReviewComment {
@@ -376,7 +233,7 @@ export class RunManager {
       checkSkipped: agent.check.status === "skipped",
       testsTouched: agent.diff.testsTouched ?? [],
       testsAdded: agent.diff.testsAdded ?? [],
-      conflicts: agent.merged ? false : await mergeConflicts(run.repo, agent.branch),
+      conflicts: agent.merged ? false : await this.executor.conflicts(run, agent),
       files: (agent.diff.fileStats ?? []).map((f) => f.path),
       reviewed: run.reviewed?.[agentId] ?? [],
     };
@@ -403,101 +260,34 @@ export class RunManager {
     return { url, localOnly: !host || host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]" };
   }
 
-  /**
-   * Start the preview command in `cwd` on a free port and wait until the port answers. `get` and `set` read and write
-   * the Preview on whatever owns it (an agent, or the run for the base preview).
-   */
-  private async launchPreview(key: string, cwd: string, get: () => Preview | undefined, set: (p: Preview) => void, onExit?: (code: number | null) => void): Promise<Preview> {
-    if (!this.opts.preview) throw new Error("미리보기 명령이 없어요. serve --preview \"npm run dev -- --port {port}\" 처럼 띄워 주세요");
-    const cur = get();
-    if (this.previews.get(key) && cur && cur.status !== "stopped" && cur.status !== "failed") return cur;
-    const port = await freePort();
-    const cmd = this.opts.preview.replaceAll("{port}", String(port));
-    set({ status: "starting", port, log: `$ ${cmd}\n`, startedAt: Date.now() });
-    const child = spawn(cmd, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32",
-      env: { ...process.env, PORT: String(port), BROWSER: "none" } });
-    this.previews.set(key, child);
-    let log = get()!.log;
-    const add = (d: Buffer) => {
-      log = (log + d.toString("utf8")).slice(-8000);
-    };
-    child.stdout?.on("data", add);
-    child.stderr?.on("data", add);
-    const patch = (p: Partial<Preview>) => {
-      const now = get();
-      if (now) set({ ...now, ...p, log });
-    };
-    child.on("close", (code) => {
-      if (this.previews.get(key) !== child) return;
-      this.previews.delete(key);
-      patch({ status: get()?.status === "stopped" ? "stopped" : "failed" });
-      if (get()?.status === "failed") onExit?.(code);
-    });
-    const deadline = Date.now() + PREVIEW_READY_MS;
-    while (Date.now() < deadline && this.previews.get(key) === child) {
-      if (await portOpen(port)) {
-        patch({ status: "ready" });
-        return get()!;
-      }
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    if (this.previews.get(key) === child) {
-      killTree(child);
-      patch({ status: "failed" });
-    }
-    return get()!;
-  }
-
   /** Start the configured dev server inside one agent's worktree on a free port. */
   async startPreview(runId: string, agentId: string): Promise<Preview> {
     const run = this.runs.get(runId);
     const agent = run?.agents.find((a) => a.id === agentId);
     if (!run || !agent) throw new Error("not found");
-    let first = true;
-    return this.launchPreview(agentId, agent.worktree, () => agent.preview, (preview) => {
-      this.emit(run, agent, { preview }, first ? { ts: Date.now(), kind: "status", text: `미리보기 시작 · :${preview.port}` } : undefined);
-      first = false;
-    }, (code) => {
-      if (code) this.note(run, agent, "error", `미리보기 종료 (exit ${code})`);
-    });
+    return this.executor.startPreview(run, agent, this.sink(run, agent));
   }
 
   stopPreview(runId: string, agentId: string) {
     const run = this.runs.get(runId);
     const agent = run?.agents.find((a) => a.id === agentId);
     if (!run || !agent) throw new Error("not found");
-    const child = this.previews.get(agentId);
     if (agent.preview) this.emit(run, agent, { preview: { ...agent.preview, status: "stopped" } });
-    if (child) killTree(child);
+    this.executor.stopPreview(run, agent);
   }
 
-  /** Where the base worktree for a run's "before" preview lives. */
-  private baseWorktree(run: Run) {
-    return join(HOME, "worktrees", `${basename(run.repo)}-${run.id}`, "_base");
-  }
-
-  /**
-   * The same dev server on a detached worktree of the run's base commit (main as it was when the run started), so the
-   * "before" screenshots come from the same kind of server as the "after" ones.
-   */
+  /** The dev server on the run's base commit, for the "before" screenshots. */
   async startBasePreview(runId: string): Promise<Preview> {
     const run = this.runs.get(runId);
     if (!run) throw new Error("not found");
-    if (!this.opts.preview) throw new Error("미리보기 명령이 없어요");
-    const wt = this.baseWorktree(run);
-    if (!existsSync(wt)) {
-      mkdirSync(join(wt, ".."), { recursive: true });
-      await git(run.repo, "worktree", "add", "--detach", wt, run.baseRef);
-    }
-    return this.launchPreview(`base:${run.id}`, wt, () => run.basePreview, (basePreview) => this.emit(run, undefined, {}, undefined, { basePreview }));
+    return this.executor.startBasePreview(run, (basePreview) => this.emit(run, undefined, {}, undefined, { basePreview }));
   }
 
   stopBasePreview(runId: string) {
     const run = this.runs.get(runId);
     if (!run) return;
-    const child = this.previews.get(`base:${runId}`);
     if (run.basePreview) this.emit(run, undefined, {}, undefined, { basePreview: { ...run.basePreview, status: "stopped" } });
-    if (child) killTree(child);
+    this.executor.stopBasePreview(run);
   }
 
   async merge(runId: string, agentId: string): Promise<string> {
@@ -505,7 +295,8 @@ export class RunManager {
     const agent = run?.agents.find((a) => a.id === agentId);
     if (!run || !agent) throw new Error("not found");
     if (agent.status !== "done") throw new Error("끝난 에이전트만 반영할 수 있습니다");
-    const out = await mergeBranch(run.repo, agent.branch, agent.label);
+    if (!this.executor.merge) throw new Error("이 실행 환경에서는 바로 반영할 수 없어요. PR 로 반영해 주세요");
+    const out = await this.executor.merge(run, agent);
     this.emit(run, agent, { merged: true }, { ts: Date.now(), kind: "status", text: `${run.baseBranch}에 반영됨` });
     return out.trim() || "merged";
   }
@@ -550,65 +341,26 @@ export class RunManager {
     const run = this.runs.get(runId);
     if (!run) return;
     for (const a of run.agents) {
-      if (this.procs.has(a.id)) this.cancel(runId, a.id);
-      if (this.previews.has(a.id)) this.stopPreview(runId, a.id);
+      if (this.executor.busy(a)) this.cancel(runId, a.id);
+      if (live(a.preview)) this.stopPreview(runId, a.id);
       this.bus.emit("worktree-removed", a.id);
-      await removeWorktree(run.repo, a.worktree, a.branch);
     }
-    if (this.previews.has(`base:${runId}`)) this.stopBasePreview(runId);
-    if (existsSync(this.baseWorktree(run))) await git(run.repo, "worktree", "remove", "--force", this.baseWorktree(run)).catch(() => undefined);
+    if (live(run.basePreview)) this.stopBasePreview(runId);
+    await this.executor.remove(run);
     this.runs.delete(runId);
+    clearTimeout(this.saveTimers.get(runId));
+    this.saveTimers.delete(runId);
+    for (const a of run.agents) this.cancelled.delete(a.id);
     rmSync(join(RUNS_DIR, `${runId}.json`), { force: true });
   }
 
   private save(run: Run, now = false) {
-    const write = () => { this.saveTimers.delete(run.id); writeFileSync(join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run)); };
+    const write = () => {
+      this.saveTimers.delete(run.id);
+      if (this.runs.get(run.id) !== run) return;   // removed: do not bring the file back
+      writeFileSync(join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run));
+    };
     if (now) return write();
     if (!this.saveTimers.has(run.id)) this.saveTimers.set(run.id, setTimeout(write, 400));
   }
-}
-
-export function runShell(cmd: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, { cwd, shell: true, windowsHide: true, env: { ...process.env, CI: "1" } });
-    let output = "";
-    const add = (d: Buffer) => { output = (output + d.toString("utf8")).slice(-20000); };
-    child.stdout.on("data", add);
-    child.stderr.on("data", add);
-    const timer = setTimeout(() => { output += `\n[timed out after ${timeoutMs / 1000}s]`; child.kill(); }, timeoutMs);
-    child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 1, output }); });
-    child.on("error", (e) => { clearTimeout(timer); resolve({ code: 1, output: String(e) }); });
-  });
-}
-
-function killTree(child: ChildProcess) {
-  if (!child.pid) return;
-  if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
-  else {
-    try {
-      process.kill(-child.pid, "SIGTERM");   // detached children own a process group
-    } catch {
-      child.kill("SIGTERM");
-    }
-  }
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.unref();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const port = (srv.address() as { port: number }).port;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-function portOpen(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = createConnection({ port, host: "127.0.0.1" });
-    sock.once("connect", () => { sock.destroy(); resolve(true); });
-    sock.once("error", () => resolve(false));
-  });
 }

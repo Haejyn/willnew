@@ -7,7 +7,7 @@
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, Screen, WorkSpec } from "./api";
-import { isVisual, TYPE_KO } from "../../src/server/request-state";
+import { isVisual, STATUS_KO, TYPE_KO } from "../../src/server/request-state";
 import { CheckPanel } from "./Check";
 import { ReviewActions } from "./Decision";
 import { useLiveRequest, useLiveRun } from "./flow";
@@ -27,9 +27,11 @@ export const PHASES: { name: string; steps: number[] }[] = [
   { name: "반영", steps: [9, 10] },
 ];
 const AT: Record<Request["status"], number> = {
-  draft: 0, clarifying: 1, spec_ready: 3, proposed: 4, approved: 5, building: 5, verifying: 6, preview: 7, code_review: 8, merged: 10, deployed: 11, closed: 11, declined: -1, cancelled: -1,
+  draft: 0, clarifying: 1, waiting_customer: 1, spec_ready: 3, open: 4, assigned: 4, in_progress: 5, waiting_requester: 5, proposed: 4, approved: 5, building: 5, verifying: 6, preview: 7, code_review: 8, merged: 10, deployed: 11, closed: 11, declined: -1, cancelled: -1,
 };
-const STEP_PHASE: Phase[] = ["new", "plan", "plan", "plan", "turn", "run", "check", "turn", "turn", "check", "check"];
+/** 티켓 경로의 상태는 칸 낱말 대신 상태 이름을 쓴다 */
+const TICKET = new Set<Request["status"]>(["waiting_customer", "open", "assigned", "in_progress", "waiting_requester"]);
+const STEP_PHASE: Phase[] =["new", "plan", "plan", "plan", "turn", "run", "check", "turn", "turn", "check", "check"];
 
 /** 지금 몇 번째 칸인지. at = REQ_STEPS.length 이면 모두 끝. 병합만 추적하면(배포 확인 없음) 병합에서 끝난다. */
 export function reqStage(req: Request, deployTracked = true): { at: number; stopped?: "declined" | "cancelled"; complete: boolean; phase: Phase } {
@@ -61,6 +63,8 @@ export function myTurn(req: Request, user: User): boolean {
   if (req.status === "clarifying") return user.name === req.requester && req.questions.some((q) => !q.answer);
   // 요청자 확인: the requester's move
   if (req.status === "preview") return user.name === req.requester;
+  // the developer asked CS something, or CS has to ask the customer
+  if (req.status === "waiting_requester" || req.status === "waiting_customer") return user.name === req.requester;
   if (!isDev(user)) return false;
   if (req.status === "proposed" || req.status === "code_review") return !req.reviewer || req.reviewer === user.name;
   return false;
@@ -73,7 +77,7 @@ export function reqProgress(req: Request, user: User, deployTracked = true): Pro
   const steps = PHASES[phase].steps;
   const fill = (steps.indexOf(at) + 1) / (steps.length + 1);
   if (stopped) return { phase, fill, word: stopped === "declined" ? "거절됨" : "취소됨", state: "stop" };
-  const word = at === 5 && req.assignee ? "직접 작업" : at === 10 && !deployTracked ? "병합" : REQ_STEPS[at];
+  const word = TICKET.has(req.status) ? STATUS_KO[req.status] : at === 5 && req.assignee ? "직접 작업" : at === 10 && !deployTracked ? "병합" : REQ_STEPS[at];
   return { phase, fill, word, mine: myTurn(req, user) };
 }
 
@@ -150,7 +154,12 @@ export function reqHeadline(req: Request, user: User): string {
     switch (req.status) {
       case "draft": return "받았어요. 정리하는 중";
       case "clarifying": return req.questions.every((q) => q.answer) ? "답 받았어요. 정리하는 중" : "확인할 게 있어요";
+      case "waiting_customer": return "고객 답 기다리는 중";
       case "spec_ready": return "어떻게 만들지 살펴보는 중";
+      case "open": return "개발팀에 보냈어요";
+      case "assigned": return `${req.assignee ?? "담당자"}님이 맡았어요`;
+      case "in_progress": return `${req.assignee ?? "개발자"}님이 작업하고 있어요`;
+      case "waiting_requester": return user.name === req.requester ? "개발자가 물어본 게 있어요" : `${req.requester}님 답 기다리는 중`;
       case "proposed": return `개발자가 제안을 보고 있어요 (${dev})`;
       case "approved": return req.assignee ? `${req.assignee}님이 직접 맡았어요` : "작업 시작해요";
       case "building": return "만드는 중";
@@ -167,7 +176,12 @@ export function reqHeadline(req: Request, user: User): string {
   switch (req.status) {
     case "draft": return "정리 중";
     case "clarifying": return "요청자 답 기다리는 중";
+    case "waiting_customer": return "고객 답 기다림";
     case "spec_ready": return "저장소 읽고 제안 만드는 중";
+    case "open": return "담당자 없음";
+    case "assigned": return `담당자 정해짐 (${req.assignee ?? "미정"})`;
+    case "in_progress": return `작업 중 (${req.assignee ?? "담당 미정"})`;
+    case "waiting_requester": return `CS 답 기다림 (${req.requester})`;
     case "proposed": return req.reviewer && req.reviewer !== user.name ? `제안 확인 대기 (${req.reviewer})` : "확인할 제안이 있어요";
     case "approved": return req.assignee ? `직접 작업 (${req.assignee})` : "작업 시작";
     case "building": return "작업 중";
@@ -186,6 +200,7 @@ const WHAT_KO: Record<DecisionEntry["what"], string> = {
   answer: "답했어요", proceed: "진행", proceed_with_changes: "고쳐서 진행", take_over: "직접 맡았어요", decline: "거절", cancel: "취소", close: "닫았어요",
   approve_result: "결과 승인", reject_result: "결과 반려",
   preview_ok: "화면 확인: 의도대로예요", preview_changes: "화면 확인: 다시 봐 주세요", preview_skip: "요청자 확인 건너뜀",
+  reopen: "다시 열었어요",
 };
 const working = (req: Request) => req.status === "draft" || req.status === "spec_ready" || (req.status === "clarifying" && req.questions.every((q) => q.answer));
 /** 요청자 확인이 지금 일인가: 확인 차례이거나, 다시 봐 달라고 한 뒤 고치는 중 */
