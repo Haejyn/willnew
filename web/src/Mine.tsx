@@ -4,7 +4,7 @@ import type { Api, Channel, Request, Run, ServerConfig } from "./api";
 import { pickReviewer } from "../../src/server/handoff";
 import { IconChat } from "./icons";
 import { Moon, runPhase } from "./moon";
-import { PhaseTrack, RequestMineCard, phaseBar, runProgress } from "./Request";
+import { PhaseTrack, RequestMineCard, runProgress } from "./Request";
 import { ErrorBox } from "./ui";
 import { fmtDuration, isActive, relTime, runElapsed, useNow, type User } from "./util";
 
@@ -109,7 +109,7 @@ function MineCard({ run, channel, now }: { run: Run; channel?: Channel; config: 
     : "";
 
   return (
-    <article className="mine-card embed" style={phaseBar(p)}>
+    <article className="mine-card embed">
       <div className="mine-top">
         <h2>{title(run)}</h2>
         <span className="t-meta">

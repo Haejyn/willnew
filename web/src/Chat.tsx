@@ -10,7 +10,7 @@ import { ReviewActions } from "./Decision";
 import { useLiveRequest, useLiveRun } from "./flow";
 import { AgentMark, IconChevron, IconExternal, IconLink, IconList, IconMore, IconPlus, IconSend, IconSmile, IconThread, IconUsers, IconX, Logo } from "./icons";
 import { DEMO_DESIGN_REQUEST, DEMO_REQUEST } from "./demo";
-import { RequestEmbed, RequestView, phaseBar, reqHeadline, runProgress, PhaseTrack } from "./Request";
+import { RequestEmbed, RequestView, reqHeadline, runProgress, PhaseTrack } from "./Request";
 import { Moon, runPhase } from "./moon";
 import { groupOrder, nameColor, roleFamily } from "./people";
 import { ShipRow } from "./Ship";
@@ -1186,7 +1186,7 @@ function RunCardBody({ api, run, user, go, now }: { api: Api; run: Run; user: Us
   const phase = runPhase(run, now);
   const p = runProgress(run, now);
   return (
-    <article className="embed run-embed slide-in" style={phaseBar({ ...p, mine: run.review.status === "pending" && user.role !== "requester" })}>
+    <article className="embed run-embed slide-in">
       <div className="embed-head">
         <Moon phase={phase.phase} size={16} />
         <b className="t-title">{run.triage?.title ?? run.title}</b>

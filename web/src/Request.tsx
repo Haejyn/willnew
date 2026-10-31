@@ -5,7 +5,7 @@
  *
  * 채널 본문에는 짧은 embed(RequestEmbed), 스레드와 요청 화면에는 전체(RequestView). 결정 기록은 요청 화면 오른쪽 맥락 칸에.
  */
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Api, ClarifyQuestion, DecideInput, DecisionEntry, Proposal, Request, Run, Screen, WorkSpec } from "./api";
 import { isVisual, STATUS_KO, TYPE_KO } from "../../src/server/request-state";
 import { CheckPanel } from "./Check";
@@ -137,12 +137,6 @@ export function PhaseTrack({ p, who }: { p: Progress; who?: string }) {
       </span>
     </div>
   );
-}
-
-/** 단계별 왼쪽 띠 색. 액센트는 쓰지 않는다(주 버튼과 지금 단계 달이 맡는다). */
-export function phaseBar(p: Progress): CSSProperties {
-  const c = p.state === "stop" ? "var(--text4)" : p.state === "done" ? "var(--phase-4)" : `var(--phase-${Math.min(p.phase, 3) + 1})`;
-  return { "--bar": c } as CSSProperties;
 }
 
 // ---------------------------------------------------------------------------------------------- words
@@ -702,7 +696,7 @@ function EmbedBody({ api, req, user, deployTracked = true, onThread, threaded }:
   };
   const flagged = req.spec?.needsCheck?.length ?? 0;
   return (
-    <article className="embed slide-in" style={phaseBar(p)} aria-label={`요청: ${req.title}`}>
+    <article className="embed slide-in" aria-label={`요청: ${req.title}`}>
       <div className="embed-head">
         <b className="t-title">{req.title}</b>
         {req.type ? <span className="t-meta">{TYPE_KO[req.type]}</span> : null}
@@ -897,7 +891,7 @@ export function RequestMineCard({ api, req, user, now, note, deployTracked = tru
   const p = reqProgress(req, user, deployTracked);
   const summary = req.spec?.summary.forRequester ?? req.understood?.forRequester;
   return (
-    <article className="mine-card embed" style={phaseBar(p)}>
+    <article className="mine-card embed">
       <div className="mine-top">
         <h2>{req.title}</h2>
         <span className="t-meta">
