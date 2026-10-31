@@ -141,6 +141,7 @@ export function datamark(text: string): string;
 | `POST /api/tickets/:key/note` | `{ text }` | `Ticket` |
 | `POST /api/tickets/:key/decline` | `{ reason, alt? }` | `Ticket` |
 | `POST /api/tickets/:key/done` | `{ prUrl?, summary? }` | `Ticket` |
+| `POST /api/tickets/:key/check` | `{ verdict: "ok"\|"changes", note? }` (requester, preview 일 때) | `Ticket` (ok 면 `code_review`, changes 면 `in_progress`) |
 | `POST /api/git/sync` | `{ branch?, prUrl?, prTitle?, merged?: boolean, sha? }` | `{ key?, status? }` |
 | `POST /api/git/events` | GitHub 웹훅 본문 | `{ ok }` |
 | `GET /api/ai/status` | | `AiStatus` = `AiHealth & { enabled, queue: number, routing }` |
