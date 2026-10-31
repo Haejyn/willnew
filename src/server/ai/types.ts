@@ -5,6 +5,9 @@
 import type { EventEmitter } from "node:events";
 import type { ZodType } from "zod";
 import type { LlmRecord } from "../types.js";
+import type { AiPace } from "./pace.js";
+
+export type { AiPace };
 
 export type { LlmRecord };
 
@@ -22,6 +25,9 @@ export interface ChatRequest {
   /** JSON schema the reply must follow (Ollama `format`) */
   schema?: object;
   stream?: boolean;
+  /** Ollama `num_predict`; the default cap is 2048 with a schema, 4096 without */
+  maxTokens?: number;
+  /** without one, Ollama calls stop after 180 s */
   signal?: AbortSignal;
 }
 
@@ -50,14 +56,38 @@ export interface AiConfig {
   concurrency?: number;
   /** false turns AI off (form mode) even when Ollama is ready */
   enabled?: boolean;
+  /** local Ollama calls: "gentle" rests as long as each call worked (default), "fast" never rests */
+  pace?: AiPace;
 }
 
 /** `GET /api/ai/status`. `routing` is what each task resolves to right now (null: no model for it). Never holds key values. */
-export type AiStatus = AiHealth & { enabled: boolean; queue: number; routing: Record<LlmTask, AiRoute | null> };
+export type AiStatus = AiHealth & {
+  enabled: boolean;
+  queue: number;
+  routing: Record<LlmTask, AiRoute | null>;
+  pace: AiPace;
+  /** the queue is resting after a local call, or waiting for a hot GPU to cool */
+  resting: boolean;
+  /** the GPU was hot at the last reading (80°C or more) */
+  hot: boolean;
+  /** only when it could be read */
+  gpuTempC?: number;
+};
+
+/** What the queue's pacing has done so far. */
+export interface PaceStats {
+  resting: boolean;
+  hot: boolean;
+  /** rest finished so far, including waiting for a hot GPU */
+  restedMs: number;
+  /** highest GPU temperature read, when any was read */
+  maxGpuC?: number;
+}
 
 export interface AiQueue extends EventEmitter {
-  /** jobs waiting plus jobs running */
+  /** jobs waiting plus jobs running (a slot held only for rest is not counted) */
   size(): number;
+  pacing?(): PaceStats;
 }
 
 export interface Ai {

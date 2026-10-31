@@ -6,6 +6,8 @@
  *   since the first model is usually a chat model.
  * - Every call waits in one queue. structured() turns the zod schema into Ollama `format`, checks the reply with zod
  *   again and retries once with the error; then null. text() streams through onDelta. No AI: null, never a throw.
+ * - Calls to Ollama on this machine are paced (pace.ts, queue.ts): in "gentle" the queue rests after each one as long
+ *   as it worked, and waits while the GPU is hot. Cloud providers and a remote Ollama never rest.
  * - On the first ready health check the digest of each task's model is compared with ai-state.json; a change shows
  *   in status().note for the rest of this process.
  */
@@ -14,8 +16,10 @@ import { UnsupportedProvider, notSupported } from "./cloud.js";
 import { loadAiConfig, loadAiState, saveAiState } from "./config.js";
 import { extractJson } from "./json.js";
 import { loadKeys } from "./keys.js";
-import { OllamaProvider } from "./ollama.js";
-import { Queue } from "./queue.js";
+import { DEFAULT_OLLAMA_HOST, isLocal, OllamaProvider } from "./ollama.js";
+import { currentPace } from "./pace.js";
+import { Queue, type QueuePacing } from "./queue.js";
+import { gpuTempC, HOT_C } from "./thermal.js";
 import { LLM_TASKS, type Ai, type AiConfig, type AiHealth, type AiRoute, type AiStatus, type LlmRecord, type LlmTask, type Msg, type Provider, type ProviderId } from "./types.js";
 
 export * from "./types.js";
@@ -23,7 +27,9 @@ export { extractJson, stripThink } from "./json.js";
 export { loadKeys } from "./keys.js";
 export { loadAiConfig } from "./config.js";
 export { OllamaProvider, findOllama, ollamaBaseUrl } from "./ollama.js";
-export { Queue } from "./queue.js";
+export { Queue, type QueuePacing } from "./queue.js";
+export { currentPace, holdWhileHot, planRest } from "./pace.js";
+export { gpuTempC, restFactor } from "./thermal.js";
 export { UnsupportedProvider } from "./cloud.js";
 
 /** How long a health check is reused by calls (status() always checks again). */
@@ -56,7 +62,7 @@ function visible(acc: string): string {
   return end < 0 ? "" : s.slice(end + "</think>".length).trimStart();
 }
 
-export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<ProviderId, Provider>> } = {}): Ai {
+export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<ProviderId, Provider>>; pacing?: Partial<QueuePacing> } = {}): Ai {
   const loaded = opts.config ? { config: opts.config } : loadAiConfig();
   const config = loaded.config;
   const problem = "problem" in loaded ? loaded.problem : undefined;
@@ -67,7 +73,12 @@ export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<P
     openai: opts.providers?.openai ?? new UnsupportedProvider("openai"),
     gemini: opts.providers?.gemini ?? new UnsupportedProvider("gemini"),
   };
-  const queue = new Queue(config.concurrency ?? 1);
+  const pacing: QueuePacing = { pace: () => currentPace(config), ...opts.pacing };
+  const readTemp = pacing.read ?? gpuTempC;
+  const queue = new Queue(config.concurrency ?? 1, pacing);
+  const ollamaBase = (providers.ollama as { baseUrl?: string }).baseUrl ?? DEFAULT_OLLAMA_HOST;
+  /** Only a call to Ollama on this machine heats this GPU. */
+  const isLocalRoute = (r: AiRoute) => r.provider === "ollama" && isLocal(ollamaBase);
   let cached: { at: number; health: AiHealth } | undefined;
   let digestChecked = false;
   let digestNote: string | undefined;
@@ -191,7 +202,7 @@ export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<P
         }
         record.ms = Date.now() - t0;
         return { value, record };
-      });
+      }, { local: isLocalRoute(route) });
     },
 
     async text(task: LlmTask, messages: Msg[], o?: { requestId?: string; promptVersion: string; onDelta?: (s: string) => void }) {
@@ -219,7 +230,7 @@ export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<P
         record.ms = Date.now() - t0;
         const text = visible(acc);
         return { text: ok && text.trim() ? text : null, record };
-      });
+      }, { local: isLocalRoute(route) });
     },
 
     async status(): Promise<AiStatus> {
@@ -241,7 +252,19 @@ export function createAi(opts: { config?: AiConfig; providers?: Partial<Record<P
         ...[...cloud].map(notSupported),
         digestNote,
       ].filter((n): n is string => !!n);
-      return { state: h.state, models: h.models, ...(notes.length ? { note: notes.join("\n") } : {}), enabled: on(h), queue: queue.size(), routing };
+      const pace = await pacing.pace();
+      // the GPU is read only when local calls are paced, so a cloud setup or "fast" never runs nvidia-smi
+      let temp: number | undefined;
+      if (pace === "gentle" && LLM_TASKS.some((t) => routing[t] && isLocalRoute(routing[t]!))) {
+        try {
+          temp = await readTemp();
+        } catch { /* unknown */ }
+      }
+      const p = queue.pacing();
+      return {
+        state: h.state, models: h.models, ...(notes.length ? { note: notes.join("\n") } : {}), enabled: on(h), queue: queue.size(), routing,
+        pace, resting: p.resting, hot: p.hot || (temp !== undefined && temp >= HOT_C), ...(temp !== undefined ? { gpuTempC: temp } : {}),
+      };
     },
 
     async enabled() {

@@ -1,6 +1,10 @@
 /**
  * Ollama over its HTTP API: /api/chat (streamed NDJSON, `format` = JSON schema), /api/embed, /api/tags (names and
  * digests). When the server does not answer, the executable decides between "stopped" and "not_installed".
+ *
+ * Chat always sends `think: false`: thinking models (qwen3.5) otherwise spend the whole budget on thinking and return
+ * empty content even with `format`. Models that do not think accept false too. Output is capped and a call without
+ * its own signal stops after CHAT_TIMEOUT_MS.
  */
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -8,6 +12,10 @@ import type { AiHealth, ChatChunk, ChatRequest, Provider } from "./types.js";
 
 export const DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434";
 export const OLLAMA_DOWNLOAD = "https://ollama.com/download";
+/** `num_predict` when the request sets none */
+export const MAX_TOKENS_SCHEMA = 2048;
+export const MAX_TOKENS_TEXT = 4096;
+export const CHAT_TIMEOUT_MS = 180_000;
 
 /**
  * `OLLAMA_HOST` read the way Ollama reads it: without a scheme it is http and the port defaults to 11434
@@ -33,7 +41,8 @@ export function findOllama(env: NodeJS.ProcessEnv = process.env, platform = proc
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
-const isLocal = (base: string) => ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(base).hostname);
+/** Ollama on this machine. Only these calls heat this GPU and get paced. */
+export const isLocal = (base: string) => ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(base).hostname);
 
 async function failure(res: Response): Promise<Error> {
   let why = "";
@@ -76,9 +85,11 @@ export class OllamaProvider implements Provider {
 
   async *chat(req: ChatRequest): AsyncIterable<ChatChunk> {
     const stream = req.stream ?? false;
-    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream };
+    const numPredict = req.maxTokens ?? (req.schema ? MAX_TOKENS_SCHEMA : MAX_TOKENS_TEXT);
+    const body: Record<string, unknown> = { model: req.model, messages: req.messages, stream, think: false, options: { num_predict: numPredict } };
     if (req.schema) body.format = req.schema;
-    const res = await fetch(`${this.baseUrl}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: req.signal });
+    const signal = req.signal ?? AbortSignal.timeout(CHAT_TIMEOUT_MS);
+    const res = await fetch(`${this.baseUrl}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
     if (!res.ok) throw await failure(res);
     if (!stream || !res.body) {
       yield toChunk(JSON.parse(await res.text()) as OllamaLine);

@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { LLM_TASKS, PROVIDER_IDS, type AiConfig, type LlmTask } from "./types.js";
 
+const PACES = ["gentle", "fast"] as const;
+
 export const willnewHome = () => process.env.WILLNEW_HOME ?? join(homedir(), ".willnew");
 
 const Route = z.object({ provider: z.enum(PROVIDER_IDS), model: z.string().trim().min(1) });
@@ -15,6 +17,7 @@ const AiSection = z.object({
   routing: z.partialRecord(z.enum(LLM_TASKS), Route).optional(),
   concurrency: z.number().int().min(1).max(32).optional(),
   enabled: z.boolean().optional(),
+  pace: z.enum(PACES).optional(),
 });
 
 /** The config, and a reason in Korean when the file or the section could not be used (the defaults apply then). */

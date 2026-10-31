@@ -13,6 +13,8 @@ const real = resolve(join(homedir(), ".willnew")).toLowerCase();
 process.env.WILLNEW_HOME = mkdtempSync(join(tmpdir(), "willnew-test-home-"));
 // a stray API key from the shell must not change how the code under test plans
 delete process.env.ANTHROPIC_API_KEY;
+// local AI calls go to fake Ollama servers on 127.0.0.1: no resting and no nvidia-smi. Pacing tests inject their own.
+process.env.WILLNEW_AI_PACE = "fast";
 
 const check = () => {
   const h = process.env.WILLNEW_HOME;

@@ -154,6 +154,20 @@ describe("createAi", () => {
     expect(r.record).toMatchObject({ task: "relay", provider: "ollama", model: "qwen3:8b", digest: "sha-1", tokens: 10, costUsd: 0, promptVersion: "relay@1" });
   });
 
+  it("chat turns thinking off and caps the output (2048 with a schema, 4096 without, or maxTokens)", async () => {
+    const fake = await fakeOllama();
+    fake.replies = ['{"ok":true}'];
+    const ai = createAi({ config: {}, providers: { ollama: provider(fake.url) } });
+    await ai.structured("classify", z.object({ ok: z.boolean() }), user("x"), { promptVersion: "v" });
+    await ai.text("relay", user("y"), { promptVersion: "v" });
+    for await (const _ of provider(fake.url).chat({ model: "qwen3:8b", messages: user("z"), maxTokens: 64 })) { /* drain */ }
+    expect(fake.chats.map((c) => [c.think, c.options])).toEqual([
+      [false, { num_predict: 2048 }],
+      [false, { num_predict: 4096 }],
+      [false, { num_predict: 64 }],
+    ]);
+  });
+
   it("text hides a leading think block from the stream", async () => {
     const fake = await fakeOllama();
     fake.replies = [["<thi", "nk>생각 중</think>", "\n답이에요"]];
@@ -338,6 +352,58 @@ describe("queue", () => {
     expect(events.filter(([, n]) => n === 1)).toHaveLength(1);   // the second one waited behind the first
     expect(events.filter(([, n]) => n === 0)).toHaveLength(2);
     expect(events.at(-1)?.[1]).toBe(0);
+  });
+});
+
+describe("pacing in createAi", () => {
+  const gate = () => {
+    let open!: () => void;
+    const p = new Promise<void>((r) => (open = r));
+    return { p, open };
+  };
+
+  it("a local Ollama call returns at once; the next waits while the queue rests, and status says so", async () => {
+    const fake = await fakeOllama();
+    fake.replies = ['{"ok":true}'];
+    const rest = gate();
+    const rests: number[] = [];
+    const ai = createAi({ config: {}, providers: { ollama: provider(fake.url) }, pacing: { pace: () => "gentle", read: async () => 72, sleep: (ms) => (rests.push(ms), rest.p) } });
+    const S = z.object({ ok: z.boolean() });
+    expect((await ai.structured("classify", S, user("1"), { promptVersion: "v" })).value).toEqual({ ok: true });
+    const second = ai.structured("classify", S, user("2"), { promptVersion: "v" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rests).toHaveLength(1);
+    expect(fake.chats).toHaveLength(1);
+    expect(await ai.status()).toMatchObject({ pace: "gentle", resting: true, hot: false, gpuTempC: 72 });
+    rest.open();
+    expect((await second).value).toEqual({ ok: true });
+    expect(fake.chats).toHaveLength(2);
+  });
+
+  it("cloud calls never rest and never read the GPU", async () => {
+    const fake = await fakeOllama();
+    const cloud = { id: "anthropic" as const, health: async () => ({ state: "ready" as const, models: [] }), async *chat() { yield { text: "답", done: true, usage: { input: 1, output: 1 } }; } };
+    let touched = 0;
+    const fail = async () => { touched++; return undefined; };
+    const ai = createAi({
+      config: { routing: { relay: { provider: "anthropic", model: "m" }, ask: { provider: "anthropic", model: "m" } } },
+      providers: { ollama: provider(fake.url), anthropic: cloud },
+      pacing: { pace: () => "gentle", read: fail, sleep: fail },
+    });
+    expect((await ai.text("relay", user("x"), { promptVersion: "v" })).text).toBe("답");
+    expect((await ai.text("relay", user("y"), { promptVersion: "v" })).text).toBe("답");
+    expect(touched).toBe(0);
+    expect(await ai.status()).toMatchObject({ pace: "gentle", resting: false });
+  });
+
+  it("status in fast pace does not read the GPU", async () => {
+    const fake = await fakeOllama();
+    let reads = 0;
+    const ai = createAi({ config: { pace: "fast" }, providers: { ollama: provider(fake.url) }, pacing: { read: async () => (reads++, 90) } });
+    const s = await ai.status();
+    expect(s).toMatchObject({ pace: "fast", resting: false, hot: false });
+    expect(s.gpuTempC).toBeUndefined();
+    expect(reads).toBe(0);
   });
 });
 

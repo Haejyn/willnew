@@ -57,5 +57,16 @@ describe("골든 세트", () => {
     expect(md).toContain("신뢰구간이 넓다");
     expect(md).toContain("## 비교");
     expect(md).toContain("95% 구간 (Wilson)");
+    expect(md).not.toContain("걸린 시간 (초)");
+  });
+
+  it("ollama 결과에는 pace, 걸린 시간, 쉰 시간 합, 최고 GPU 온도가 붙는다", async () => {
+    const fake = await runEval({ mode: "fake", cases: cases.slice(0, 1), root });
+    const md = reportMarkdown([{ ...fake, mode: "ollama", timing: { pace: "gentle", seconds: 61.24, restSeconds: 30.5, maxGpuC: 78 } }], "2026-10-31");
+    expect(md).toContain("pace `gentle`.");
+    expect(md).toContain("| 걸린 시간 (초) | 61.2 | |");
+    expect(md).toContain("| 쉰 시간 합 (초) | 30.5 | |");
+    expect(md).toContain("| 최고 GPU 온도 | 78°C | |");
+    expect(reportMarkdown([{ ...fake, mode: "ollama", timing: { pace: "fast", seconds: 1, restSeconds: 0 } }], "d")).toContain("| 최고 GPU 온도 | 못 읽음 | |");
   });
 });

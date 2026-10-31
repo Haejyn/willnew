@@ -57,6 +57,7 @@ export function AiStatusInfo({ open }: { open: boolean }) {
         <dt>대기열</dt>
         <dd className="mono">{ai.queue ? `${ai.queue}건` : "비어 있음"}</dd>
       </dl>
+      {ai.resting ? <p className="pop-note">GPU 식히는 중{ai.gpuTempC !== undefined ? ` (${ai.gpuTempC}°C)` : ""}</p> : null}
       <p className="pop-note">{GUIDE[ai.state]}{ai.enabled ? "" : " 그동안은 정해진 질문으로 물어요."}</p>
       {ai.note ? <p className="pop-note st warn">{ai.note}</p> : null}
     </section>

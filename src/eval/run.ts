@@ -3,14 +3,14 @@
  *
  *   none    AI 없음. 필수 칸 양식만 (비교군)
  *   fake    골든의 정해진 응답을 주는 가짜 Ai. 흐름이 모델 출력을 어떻게 쓰는지 보는 것이지 모델 성능이 아니다
- *   ollama  실제 로컬 Ollama
+ *   ollama  실제 로컬 Ollama. 걸린 시간, 쉰 시간, 최고 GPU 온도도 적는다 (쉬는 방식은 pace)
  *
  * CS 는 가짜다. 질문받은 칸을 골든의 정답 칸에서 골라 답한다: answer 가 있으면 답, customer 가 있으면 "고객에게 물을 것"
  * 뒤에 고객 답을 붙이고, 둘 다 없으면 "모름". 대리 검토 질문은 reviewAnswer 로 첫 질문만 답하고 나머지는 모름.
  * 실제 HTTP 라우트(app.request)로 돌린다. 저장은 부른 쪽이 정한 WILLNEW_HOME 에 한다.
  */
 import { EventEmitter } from "node:events";
-import type { Ai, LlmRecord, LlmTask, Msg } from "../server/ai/index.js";
+import type { Ai, AiPace, LlmRecord, LlmTask, Msg } from "../server/ai/index.js";
 import { residualPii } from "../server/safety/index.js";
 import { DEFAULT_CHOICES, FIELD_KO, fieldText, isRequired, type RequiredField } from "../server/tickets/fields.js";
 import type { WorkSpec } from "../server/types.js";
@@ -40,6 +40,8 @@ export interface CaseResult {
   schemaCalls: number;
   schemaPassed: number;
   missed: string[];
+  /** 이 건에 걸린 시간 (쉬는 시간 포함) */
+  seconds: number;
 }
 
 export interface EvalRun {
@@ -49,6 +51,8 @@ export interface EvalRun {
   cases: CaseResult[];
   /** 127.0.0.1, localhost 말고 다른 곳으로 나간 fetch */
   outside: string[];
+  /** ollama 모드만. 걸린 시간, 큐가 쉰 시간 합, 읽은 GPU 온도 중 최고 */
+  timing?: { pace: AiPace; seconds: number; restSeconds: number; maxGpuC?: number };
 }
 
 // ---------------------------------------------------------------------------------------------- 가짜 Ai
@@ -77,7 +81,7 @@ export function noAi(): Ai {
   return {
     queue: quietQueue(),
     enabled: async () => false,
-    status: async () => ({ state: "not_installed", models: [], enabled: false, queue: 0, routing: {} as never }),
+    status: async () => ({ state: "not_installed", models: [], enabled: false, queue: 0, routing: {} as never, pace: "fast", resting: false, hot: false }),
     structured: async (task, _s, _m, o) => ({ value: null, record: none(task, o?.promptVersion) }),
     text: async (task, _m, o) => ({ text: null, record: none(task, o?.promptVersion) }),
   };
@@ -106,7 +110,7 @@ export function scriptedAi(current: () => GoldenCase): Ai {
   return {
     queue: quietQueue(),
     enabled: async () => true,
-    status: async () => ({ state: "ready", models: [{ name: "golden-fake", digest: "sha256:golden" }], enabled: true, queue: 0, routing: {} as never }),
+    status: async () => ({ state: "ready", models: [{ name: "golden-fake", digest: "sha256:golden" }], enabled: true, queue: 0, routing: {} as never, pace: "fast", resting: false, hot: false }),
     async structured(task, schema, messages, o) {
       const raw = reply(task, messages);
       const p = raw === undefined ? null : schema.safeParse(raw);
@@ -146,7 +150,7 @@ function strings(x: unknown, out: string[] = []): string[] {
   return out;
 }
 
-function score(c: GoldenCase, t: any, schema: { calls: number; passed: number }): CaseResult {
+function score(c: GoldenCase, t: any, schema: { calls: number; passed: number }, seconds: number): CaseResult {
   const spec: WorkSpec = t.spec;
   let filled = 0;
   let keywordHit = 0;
@@ -170,6 +174,7 @@ function score(c: GoldenCase, t: any, schema: { calls: number; passed: number })
     reviewQuestions: (t.reviewQuestions ?? []).length, unconfirmed: (t.unconfirmed ?? []).length, residualPii: residual,
     injectionExpected: c.injection, injectionFlagged: (t.injectionFlags ?? []).length > 0,
     categoryExpected: c.category, category: String(t.category ?? ""), schemaCalls: schema.calls, schemaPassed: schema.passed, missed,
+    seconds,
   };
 }
 
@@ -193,6 +198,9 @@ export async function runEval(o: RunOptions): Promise<EvalRun> {
   if (!base) throw new Error("ollama 모드에는 Ai 가 필요해요");
   const { ai, n } = counting(base);
   const { app } = createApp({ repo: o.root, check: "", ai });
+  const pace = o.mode === "ollama" ? (await base.status()).pace : undefined;
+  const restedBefore = base.queue.pacing?.().restedMs ?? 0;
+  const runStart = Date.now();
 
   const outside: string[] = [];
   const realFetch = globalThis.fetch;
@@ -213,6 +221,7 @@ export async function runEval(o: RunOptions): Promise<EvalRun> {
   try {
     for (const c of o.cases) {
       current = c;
+      const caseStart = Date.now();
       n.calls = 0;
       n.passed = 0;
       let t = await call("POST", "/api/intake", { text: caseText(c, o.root), user });
@@ -244,12 +253,17 @@ export async function runEval(o: RunOptions): Promise<EvalRun> {
         }
         break;
       }
-      results.push(score(c, t, n));
+      results.push(score(c, t, n, (Date.now() - caseStart) / 1000));
     }
   } finally {
     globalThis.fetch = realFetch;
   }
-  return { mode: o.mode, model: o.mode === "fake" ? "golden-fake" : o.model, promptVersion, cases: results, outside };
+  const run: EvalRun = { mode: o.mode, model: o.mode === "fake" ? "golden-fake" : o.model, promptVersion, cases: results, outside };
+  if (pace) {
+    const p = base.queue.pacing?.();
+    run.timing = { pace, seconds: (Date.now() - runStart) / 1000, restSeconds: ((p?.restedMs ?? 0) - restedBefore) / 1000, ...(p?.maxGpuC !== undefined ? { maxGpuC: p.maxGpuC } : {}) };
+  }
+  return run;
 }
 
 // ---------------------------------------------------------------------------------------------- 표
@@ -271,6 +285,7 @@ const interval = (k: number, n: number) => {
   return w ? `${pct(w[0])} ~ ${pct(w[1])}` : "";
 };
 const avg = (xs: number[]) => (xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2) : "0");
+const secs = (x: number) => x.toFixed(1);
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
 export function totals(cs: CaseResult[]) {
@@ -300,6 +315,7 @@ export const WIDE_NOTE = "골든 세트가 100건이 안 되어 신뢰구간이 
 /** 한 번 돌린 결과를 표로 */
 export function runMarkdown(r: EvalRun): string[] {
   const t = totals(r.cases);
+  const tm = r.timing;
   const shop = r.cases.filter((c) => c.source === "examples/shop");
   const syn = r.cases.filter((c) => c.source === "synthetic");
   const ts = totals(shop);
@@ -307,7 +323,7 @@ export function runMarkdown(r: EvalRun): string[] {
   const out = [
     `## --ai ${r.mode}${r.model ? ` (${r.model})` : ""}`,
     "",
-    `골든 ${t.n}건 (examples/shop ${shop.length}건, 직접 만든 것 ${syn.length}건). promptVersion \`${r.promptVersion}\`. 외부 호출 ${r.outside.length}건.`,
+    `골든 ${t.n}건 (examples/shop ${shop.length}건, 직접 만든 것 ${syn.length}건). promptVersion \`${r.promptVersion}\`. 외부 호출 ${r.outside.length}건.${tm ? ` pace \`${tm.pace}\`.` : ""}`,
     "",
     "| 지표 | 값 | 95% 구간 (Wilson) |",
     "|---|---|---|",
@@ -321,6 +337,13 @@ export function runMarkdown(r: EvalRun): string[] {
     `| 인젝션 표시 적중 | ${ratio(t.injectionRight, t.n)} (맞게 표시 ${t.injTp}, 놓침 ${t.injFn}, 잘못 표시 ${t.injFp}) | ${interval(t.injectionRight, t.n)} |`,
     `| 분류 일치 | ${ratio(t.categoryRight, t.n)} | ${interval(t.categoryRight, t.n)} |`,
     `| spec_ready 까지 간 건 | ${ratio(t.specReady, t.n)} | |`,
+    ...(tm
+      ? [
+          `| 걸린 시간 (초) | ${secs(tm.seconds)} | |`,
+          `| 쉰 시간 합 (초) | ${secs(tm.restSeconds)} | |`,
+          `| 최고 GPU 온도 | ${tm.maxGpuC !== undefined ? `${tm.maxGpuC}°C` : "못 읽음"} | |`,
+        ]
+      : []),
     "",
     "출처별 칸 채움률",
     "",
@@ -331,9 +354,9 @@ export function runMarkdown(r: EvalRun): string[] {
     "",
     "건별",
     "",
-    "| 건 | 출처 | 상태 | 채움 | 낱말 | 질문 | 검토 | 추정 칸 | 스키마 | PII 남음 | 인젝션 (정답/표시) | 분류 (정답/결과) | 낱말 못 맞춘 칸 |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...r.cases.map((c) => `| ${c.id} | ${c.source} | ${c.status} | ${c.filled}/${c.expected} | ${c.keywordHit}/${c.expected} | ${c.questions} | ${c.reviewQuestions} | ${c.unconfirmed} | ${c.schemaCalls ? `${c.schemaPassed}/${c.schemaCalls}` : "-"} | ${c.residualPii} | ${c.injectionExpected ? "예" : "아니오"}/${c.injectionFlagged ? "예" : "아니오"} | ${c.categoryExpected}/${c.category} | ${c.missed.join(", ") || "-"} |`),
+    `| 건 | 출처 | 상태 | 채움 | 낱말 | 질문 | 검토 | 추정 칸 | 스키마 | PII 남음 | 인젝션 (정답/표시) | 분류 (정답/결과) | 낱말 못 맞춘 칸 |${tm ? " 초 |" : ""}`,
+    `|---|---|---|---|---|---|---|---|---|---|---|---|---|${tm ? "---|" : ""}`,
+    ...r.cases.map((c) => `| ${c.id} | ${c.source} | ${c.status} | ${c.filled}/${c.expected} | ${c.keywordHit}/${c.expected} | ${c.questions} | ${c.reviewQuestions} | ${c.unconfirmed} | ${c.schemaCalls ? `${c.schemaPassed}/${c.schemaCalls}` : "-"} | ${c.residualPii} | ${c.injectionExpected ? "예" : "아니오"}/${c.injectionFlagged ? "예" : "아니오"} | ${c.categoryExpected}/${c.category} | ${c.missed.join(", ") || "-"} |${tm ? ` ${secs(c.seconds)} |` : ""}`),
   ];
   if (r.outside.length) out.push("", "외부 호출", "", ...r.outside.map((u) => `- ${u}`));
   return out;
@@ -345,6 +368,7 @@ const READING = [
   "CS 는 가짜다. 물어본 칸의 답을 골든의 정답 칸에서 고른다. 실제 CS 보다 답을 잘 안다.",
   "칸 채움률의 분모는 골든이 채워져야 한다고 적은 칸이다. 모름으로 둔 칸은 채운 것으로 세지 않는다.",
   "분류: M1 은 분류(F1)를 하지 않아 모든 티켓이 new_bug 로 접수된다. 분류 일치는 그 기준선이다.",
+  "ollama 의 걸린 시간에는 GPU 를 식히려고 쉰 시간이 들어 있다. pace gentle 은 일한 만큼 쉬어서 fast 의 약 2배 걸린다.",
   "인젝션 표시와 개인정보 가리기는 규칙(src/server/safety/)이라 AI 모드와 상관없이 같다. 개인정보 남은 수는 저장되는 글에 residualPii 를 다시 돌린 수이고 오탐도 센다.",
 ];
 

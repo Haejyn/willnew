@@ -49,8 +49,9 @@ export function createAi(opts?: { config?: AiConfig; providers?: Partial<Record<
 
 - 일마다 제공자와 모델: `~/.willnew/config.json` 의 `ai.routing` (`{ "ask": { "provider": "ollama", "model": "qwen3:8b" } }`), 없으면 `WILLNEW_LOCAL_MODEL`, 그것도 없으면 Ollama 에 있는 첫 모델
 - 키: `~/.willnew/keys.env` 를 읽고 환경변수가 우선(`loadKeys()`). 키 값은 로그와 응답에 넣지 않는다
-- Ollama: `OLLAMA_HOST`(기본 `http://127.0.0.1:11434`). `/api/chat`(`format` 에 JSON 스키마, `stream`), `/api/embed`, `/api/tags`(이름과 digest). 실행 파일 감지: Windows `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`, mac `/Applications/Ollama.app`, PATH 의 `ollama`
+- Ollama: `OLLAMA_HOST`(기본 `http://127.0.0.1:11434`). `/api/chat`(`format` 에 JSON 스키마, `stream`), `/api/embed`, `/api/tags`(이름과 digest). chat 은 늘 `think: false`, `num_predict` 상한(스키마 있으면 2048, 없으면 4096), 제한 시간 180초. 실행 파일 감지: Windows `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`, mac `/Applications/Ollama.app`, PATH 의 `ollama`
 - 대기열: 프로세스 하나에 하나. 동시 처리 수 기본 1(`ai.concurrency`). 순서 바뀔 때 이벤트
+- 쉬어 가며: 이 PC 의 Ollama 로 간 호출만. `WILLNEW_AI_PACE`, 없으면 `ai.pace`, 기본 `gentle`. gentle 은 GPU 가 80°C 이상이면 75°C 아래로 식을 때까지 기다렸다 부르고, 끝나면 일한 만큼(80°C 이상이면 2배) 큐 자리를 잡고 쉰다. 결과는 바로 돌려준다. 한 번에 30초(뜨거우면 60초)까지, 넘친 몫은 120초까지 다음으로 넘긴다. `fast` 와 클라우드는 쉬지 않는다
 - `LlmRecord` 는 `types.ts` 의 것을 쓴다: task, provider, model, digest, tokens, costUsd(ollama 는 0), ms, promptVersion
 - 시작할 때 쓰는 모델의 digest 가 지난번과 다르면 `status().note` 에 알린다
 
@@ -144,7 +145,7 @@ export function datamark(text: string): string;
 | `POST /api/tickets/:key/check` | `{ verdict: "ok"\|"changes", note? }` (requester, preview 일 때) | `Ticket` (ok 면 `code_review`, changes 면 `in_progress`) |
 | `POST /api/git/sync` | `{ branch?, prUrl?, prTitle?, merged?: boolean, sha? }` | `{ key?, status? }` |
 | `POST /api/git/events` | GitHub 웹훅 본문 | `{ ok }` |
-| `GET /api/ai/status` | | `AiStatus` = `AiHealth & { enabled, queue: number, routing }` |
+| `GET /api/ai/status` | | `AiStatus` = `AiHealth & { enabled, queue: number, routing, pace, resting, hot, gpuTempC? }` |
 
 ```ts
 interface Bundle {

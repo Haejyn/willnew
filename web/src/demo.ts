@@ -3805,10 +3805,11 @@ export function demoTicketApi(who: () => User): TicketApi {
       const models = [{ name: "qwen3:8b", digest: "sha256:500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41" }];
       const routing = { ask: { provider: "ollama", model: "qwen3:8b" }, extract: { provider: "ollama", model: "qwen3:8b" }, draft: { provider: "ollama", model: "qwen3:8b" } };
       const busy = [...tickets.values()].filter((t) => t.status === "clarifying" && !t.next).length;
-      if (m === "off") return later({ state: "not_installed" as const, models: [], enabled: false, queue: 0, routing: {} });
-      if (m === "stopped") return later({ state: "stopped" as const, models: [], enabled: false, queue: 0, routing });
-      if (m === "nomodel") return later({ state: "no_model" as const, models: [], enabled: false, queue: 0, routing });
-      return later({ state: "ready" as const, models, enabled: true, queue: busy, routing });
+      const pacing = { pace: "gentle" as const, resting: false, hot: false };
+      if (m === "off") return later({ state: "not_installed" as const, models: [], enabled: false, queue: 0, routing: {}, ...pacing });
+      if (m === "stopped") return later({ state: "stopped" as const, models: [], enabled: false, queue: 0, routing, ...pacing });
+      if (m === "nomodel") return later({ state: "no_model" as const, models: [], enabled: false, queue: 0, routing, ...pacing });
+      return later({ state: "ready" as const, models, enabled: true, queue: busy, routing, ...pacing });
     },
   };
 }

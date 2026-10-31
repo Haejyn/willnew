@@ -62,7 +62,16 @@ export interface AiHealth {
   models: { name: string; digest: string }[];
   note?: string;
 }
-export type AiStatus = AiHealth & { enabled: boolean; queue: number; routing: Record<string, { provider: string; model: string }> };
+export type AiStatus = AiHealth & {
+  enabled: boolean;
+  queue: number;
+  routing: Record<string, { provider: string; model: string }>;
+  pace: "gentle" | "fast";
+  /** 로컬 모델이 일한 만큼 쉬는 중이거나 GPU 가 식기를 기다리는 중 */
+  resting: boolean;
+  hot: boolean;
+  gpuTempC?: number;
+};
 
 export type AnswerKind = "answer" | "unknown" | "ask_customer";
 export type FieldName = "problem" | "reproSteps" | "expected" | "actual" | "environment" | "impact" | "alreadyRuledOut";
