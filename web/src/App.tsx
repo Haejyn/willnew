@@ -4,9 +4,9 @@ import { httpApi, isDemo, onUnauthorized } from "./api";
 import type { PaneTab } from "./AgentPane";
 import { Chat } from "./Chat";
 import { Compose } from "./Compose";
-import { DEMO_CAST, DEMO_CHANNEL, demoApi, demoStartUser } from "./demo";
+import { DEMO_CAST, DEMO_CHANNEL, demoApi, demoStartUser, demoTicketApi } from "./demo";
 import { useRequests, useRuns, useWatch } from "./flow";
-import { AgentMark, AppIcon, IconChart, IconChat, IconHelp, IconInbox, IconList, IconMoon, IconPlus } from "./icons";
+import { AgentMark, AppIcon, IconChart, IconChat, IconColumns, IconEdit, IconFile, IconHelp, IconInbox, IconList, IconMoon, IconPlus } from "./icons";
 import { Metrics } from "./Metrics";
 import { Mine } from "./Mine";
 import { RequestPage } from "./Request";
@@ -16,13 +16,17 @@ import { Turn } from "./Turn";
 import { Avatar, Empty, Kbd, ToastProvider, useOutside } from "./ui";
 import { ROLE_KO, TEAM_KO, adapterName, isActive, loadDense, loadUser, saveDense, saveUser, useMedia, type Role, type User } from "./util";
 import { Workspace } from "./Workspace";
+import { httpTicketApi, type TicketApi } from "./tickets/api";
+import { AiStatusInfo } from "./tickets/AiStatus";
+import { parseTicketRoute, TicketPages, type TicketRoute } from "./tickets/Page";
+import { TicketApiCtx } from "./tickets/parts";
 
 function readPath() {
   const h = window.location.hash.replace(/^#/, "");
   if (h.startsWith("/inbox")) {
-    // 옛 주소 — 내 차례가 첫 화면이 되었다
-    window.history.replaceState(null, "", "#/");
-    return "/";
+    // 옛 주소. 내 차례는 이제 #/turn (첫 화면은 티켓)
+    window.history.replaceState(null, "", "#/turn");
+    return "/turn";
   }
   return h.startsWith("/") ? h : "/";
 }
@@ -42,6 +46,8 @@ function useHashRoute() {
 
 type Route =
   | { page: "home" }
+  | { page: "turn" }
+  | { page: "tickets"; t: TicketRoute }
   | { page: "mine" }
   | { page: "runs" }
   | { page: "run"; id: string; agent?: string; tab?: PaneTab }
@@ -52,6 +58,9 @@ type Route =
 
 function parse(path: string): Route {
   let m;
+  const t = parseTicketRoute(path);
+  if (t) return { page: "tickets", t };
+  if (path.startsWith("/turn")) return { page: "turn" };
   if ((m = /^\/runs\/([^/]+)\/review(?:\/agent\/([^/]+))?/.exec(path))) return { page: "review", id: decodeURIComponent(m[1]), agent: m[2] };
   if ((m = /^\/runs\/([^/]+)(?:\/agent\/([^/]+)(?:\/(log|term|diff|preview))?)?/.exec(path)))
     return { page: "run", id: decodeURIComponent(m[1]), agent: m[2], tab: m[3] as PaneTab | undefined };
@@ -83,6 +92,10 @@ export function App() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [user, setUser] = useState<User>(() => (demo ? demoStartUser() : null) ?? loadUser());
+  // 티켓 API 는 사람을 본문(혼자 모드)이나 토큰(팀 모드)으로 알린다. 지금 보는 사람을 늘 최신으로
+  const userRef = useRef(user);
+  userRef.current = user;
+  const tapi: TicketApi = useMemo(() => (demo ? demoTicketApi(() => userRef.current) : httpTicketApi(() => userRef.current.name)), [demo]);
   const [channels, setChannels] = useState<Channel[]>([]);
   // 맡기기 창: true 는 역할대로, "request" 와 "direct" 는 채팅의 /요청, /바로맡기기
   const [compose, setCompose] = useState<boolean | "request" | "direct">(false);
@@ -116,6 +129,15 @@ export function App() {
   const home = useMemo(() => runs?.find((r) => r.review.status === "pending") ?? runs?.find((r) => r.agents.some(isActive)) ?? runs?.[0], [runs]);
   const openId = route.page === "run" || route.page === "review" ? route.id : route.page === "runs" && !phone ? home?.id : undefined;
   const requester = user.role === "requester";
+  // 내 티켓: 개발자가 물어본 것, 고객 답 기다리는 것
+  const [ticketN, setTicketN] = useState(0);
+  useEffect(() => {
+    if (!requester) return setTicketN(0);
+    const load = () => tapi.list({ mine: true, status: ["waiting_requester", "waiting_customer"] }).then((l) => setTicketN(l.length)).catch(() => undefined);
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [tapi, requester, user.name]);
   // 내 차례: 확인할 제안 + 승인할 결과
   const proposalsN = requester ? 0 : requests?.filter((r) => r.status === "proposed" && (!r.reviewer || r.reviewer === user.name)).length ?? 0;
   // 내 요청: 내가 답할 되묻기, 내가 볼 화면(요청자 확인)
@@ -126,7 +148,10 @@ export function App() {
 
   useEffect(() => {
     const run = runs?.find((r) => r.id === openId);
-    const t = route.page === "metrics" ? "지표" : route.page === "request" ? "요청" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" || (route.page === "home" && user.role === "requester") ? "내 요청" : route.page === "home" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
+    const tk = route.page === "tickets" ? route.t : route.page === "home" ? ({ view: "inbox" } as TicketRoute) : null;
+    const t = tk
+      ? tk.view === "new" ? "새 문의" : tk.view === "mine" || (tk.view === "inbox" && user.role === "requester") ? "내 티켓" : tk.view === "inbox" ? "티켓함" : tk.key
+      : route.page === "metrics" ? "지표" : route.page === "request" ? "요청" : route.page === "chat" ? `#${route.channel}` : route.page === "mine" ? "내 요청" : route.page === "turn" ? "내 차례" : run ? (run.triage?.title ?? run.title) : "작업";
     document.title = `${pendingN ? `(${pendingN}) ` : ""}${t} · willnew`;
   }, [route.page, openId, runs, route, pendingN, user.role]);
 
@@ -167,8 +192,9 @@ export function App() {
   else if (route.page === "request") page = <RequestPage key={route.id} api={api} id={route.id} user={user} deployTracked={config?.deploy !== false} />;
   else if (route.page === "chat") page = <Chat key={route.channel} api={api} user={user} channelId={route.channel} focus={route.focus} runs={runs} requests={requests} go={go} deployTracked={config?.deploy !== false} onCompose={(m) => setCompose(m)} me={me} />;
   else if (route.page === "review") page = <Review key={route.id} api={api} id={route.id} user={user} go={go} initialAgent={route.agent} watched={watched.has(route.id)} onWatch={() => toggle(route.id)} />;
-  else if (route.page === "mine" || (route.page === "home" && requester)) page = <Mine api={api} user={user} config={config} runs={runs} requests={requests} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
-  else if (route.page === "home") page = <Turn api={api} user={user} agents={agents} runs={runs} requests={requests} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "tickets" || route.page === "home") page = <TicketPages route={route.page === "tickets" ? route.t : { view: "inbox" }} api={api} user={user} go={go} me={me} />;
+  else if (route.page === "mine") page = <Mine api={api} user={user} config={config} runs={runs} requests={requests} error={runsError} reload={reload} onNew={() => setCompose(true)} me={me} />;
+  else if (route.page === "turn") page = <Turn api={api} user={user} agents={agents} runs={runs} requests={requests} error={runsError} reload={reload} go={go} onNew={() => setCompose(true)} me={me} />;
   else
     page = (
       <div className="runs-view">
@@ -193,8 +219,17 @@ export function App() {
     );
 
   const nav: { id: string; href: string; name: string; Icon: ComponentType<{ size?: number; filled?: boolean }>; on: boolean; badge?: number }[] = [
-    ...(requester ? [] : [{ id: "turn", href: "#/", name: "내 차례", Icon: IconMoon, on: route.page === "home", badge: pendingN }]),
-    { id: "mine", href: requester ? "#/" : "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request" || (requester && route.page === "home"), badge: mineN },
+    // 티켓: CS 는 새 문의와 내 티켓, 개발자는 티켓함이 첫 화면
+    ...(requester
+      ? [
+          { id: "new", href: "#/tickets/new", name: "새 문의", Icon: IconEdit, on: route.page === "tickets" && route.t.view === "new" },
+          { id: "tickets", href: "#/", name: "내 티켓", Icon: IconFile, on: route.page === "home" || (route.page === "tickets" && route.t.view !== "new"), badge: ticketN },
+        ]
+      : [
+          { id: "tickets", href: "#/", name: "티켓함", Icon: IconColumns, on: route.page === "home" || route.page === "tickets" },
+          { id: "turn", href: "#/turn", name: "내 차례", Icon: IconMoon, on: route.page === "turn", badge: pendingN },
+        ]),
+    { id: "mine", href: "#/mine", name: "내 요청", Icon: IconInbox, on: route.page === "mine" || route.page === "request", badge: mineN },
     { id: "runs", href: "#/runs", name: "작업", Icon: IconList, on: route.page === "runs" || route.page === "run" || route.page === "review" },
     { id: "chat", href: `#/chat/${channels.find((c) => c.team === user.team)?.id ?? DEMO_CHANNEL}`, name: "채널", Icon: IconChat, on: route.page === "chat" },
     { id: "metrics", href: "#/metrics", name: "지표", Icon: IconChart, on: route.page === "metrics" },
@@ -209,6 +244,7 @@ export function App() {
   );
 
   return (
+    <TicketApiCtx.Provider value={tapi}>
     <ToastProvider>
       <div className={`app p-${route.page} ${dense ? "dense" : ""}`}>
         <div className="sky" aria-hidden />
@@ -245,6 +281,7 @@ export function App() {
         {help ? <Shortcuts onClose={() => setHelp(false)} /> : null}
       </div>
     </ToastProvider>
+    </TicketApiCtx.Provider>
   );
 }
 
@@ -383,6 +420,7 @@ function Settings({ team, user, teams, onChange, config, agents, demo, onHelp, d
               </>
             ) : null}
           </dl>
+          <AiStatusInfo open={open} />
           <button className="btn q sm" onClick={() => { setOpen(false); onHelp(); }}>
             <IconHelp size={15} /> 단축키 <Kbd>?</Kbd>
           </button>

@@ -779,7 +779,7 @@ export function RequestPage({ api, id, user, deployTracked }: { api: Api; id: st
     <div className="turn-page">
       <div className="rq-layout">
         <div className="rq-main">
-          <a className="msg-link" href={user.role === "requester" ? "#/" : "#/mine"} onClick={(e) => { if (window.history.length > 1) { e.preventDefault(); window.history.back(); } }}>
+          <a className="msg-link" href="#/mine" onClick={(e) => { if (window.history.length > 1) { e.preventDefault(); window.history.back(); } }}>
             뒤로
           </a>
           {error && !req ? <ErrorBox error={`불러오기 실패 · ${error}`} onRetry={reload} /> : null}
