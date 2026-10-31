@@ -6,14 +6,14 @@ import { useMedia, useNow, type User } from "../util";
 import { age, type ListQuery, type Request, type RequestStatus, type TicketSummary } from "./api";
 import { Priority, StatusDot, useAct, useTicketApi, useTicketList } from "./parts";
 
-type Filter = "open" | "mine" | "unassigned" | "cs" | "customer" | "done";
+// 고객 답 대기(waiting_customer)는 보내기 전 티켓이라 개발자에게 보이지 않는다(서버도 주지 않는다)
+type Filter = "open" | "mine" | "unassigned" | "cs" | "done";
 const OPEN: RequestStatus[] = ["open", "assigned", "in_progress", "waiting_requester", "preview", "code_review"];
 const FILTERS: { id: Filter; name: string; q: ListQuery }[] = [
   { id: "open", name: "열린 티켓", q: { status: OPEN } },
   { id: "mine", name: "내 티켓", q: { assignee: "me", status: OPEN } },
   { id: "unassigned", name: "담당자 없음", q: { status: ["open"] } },
   { id: "cs", name: "CS 답 대기", q: { status: ["waiting_requester"] } },
-  { id: "customer", name: "고객 답 대기", q: { status: ["waiting_customer"] } },
   { id: "done", name: "끝난 티켓", q: { status: ["merged", "deployed", "closed", "declined"] } },
 ];
 const PRIORITIES: NonNullable<Request["priority"]>[] = ["P0", "P1", "P2", "P3"];
