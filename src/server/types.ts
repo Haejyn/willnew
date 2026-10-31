@@ -291,6 +291,8 @@ export interface WorkSpec {
   fields?: Record<string, { sources: Source[]; confidence: "low" | "medium" | "high" | "unknown"; confirmedBy?: string }>;
   /** questions CS has to take to the customer */
   askCustomer?: { field: string; question: string; answer?: string }[];
+  /** three English words for the branch name (t-42-coupon-total-stale), from the draft */
+  slug?: string;
 }
 
 /** Where a ticket field came from. */
@@ -403,6 +405,47 @@ export type DecisionKind =
   // an ended request opened again (counted for G3)
   | "reopen";
 
+/** What a person did on a ticket (ticket-plan.md F10 감사 기록). Kept apart from DecisionKind, which the web maps one to one */
+export type TicketActionKind = "send" | "assign" | "work" | "ask" | "answer" | "note" | "decline" | "done" | "confirm" | "edit";
+
+export interface TicketAction {
+  who: string;
+  when: number;
+  what: TicketActionKind;
+  why?: string;
+}
+
+/** One line of the intake text after it was split by speaker. CS answers and the customer's later answers are added at the end */
+export interface Utterance {
+  speaker: "customer" | "agent" | "cs";
+  /** redacted */
+  text: string;
+}
+
+/** A developer's question to CS while working (willnew ask) */
+export interface TicketAsk {
+  askId: string;
+  question: string;
+  /** the same question in CS words (relay) */
+  forRequester: string;
+  by: string;
+  at: number;
+  answer?: string;
+  answeredBy?: string;
+  answeredAt?: number;
+}
+
+/** A developer's note or done summary, with the CS version next to it */
+export interface TicketNote {
+  kind: "note" | "done";
+  by: string;
+  at: number;
+  text: string;
+  forRequester: string;
+  /** date promises and unbacked "fixed" in forRequester (checkPromises) */
+  warnings?: { phrase: string; reason: string }[];
+}
+
 /** Who decided what, when, and why. Every proposal decision lands here. */
 export interface DecisionEntry {
   who: string;
@@ -470,6 +513,16 @@ export interface Request {
   reviewQuestions?: string[];
   edits?: { by: string; at: number; field: string; before: string; after: string }[];
   llm?: LlmRecord[];
+  /** ticket path: the intake text split by speaker (redacted). Source indexes point here */
+  utterances?: Utterance[];
+  /** ticket path: developer questions to CS */
+  asks?: TicketAsk[];
+  /** ticket path: developer notes and the done summary */
+  notes?: TicketNote[];
+  /** ticket path: the done summary, the developer's words and the CS version (the CS screen shows it) */
+  report?: { forRequester: string; forDeveloper: string; prUrl?: string; at: number };
+  /** ticket path: what people did (send, assign, work, ...). Also written to the store's events */
+  actions?: TicketAction[];
   branch?: string;
   prUrl?: string;
   external?: { system: "jira" | "linear"; id: string; url: string };

@@ -139,6 +139,23 @@ export class RequestManager {
     return req;
   }
 
+  /**
+   * A request built outside this manager (the ticket path, tickets/flow.ts) joins the list and the store. No planning
+   * starts: TicketFlow drives it.
+   */
+  adopt(req: Request): Request {
+    if (this.reqs.has(req.id)) throw new Error("이미 있는 요청이에요");
+    this.reqs.set(req.id, req);
+    this.changed(req);
+    return req;
+  }
+
+  /** Write a request that someone else changed (TicketFlow) and tell the listeners. */
+  save(req: Request) {
+    if (this.reqs.get(req.id) !== req) throw new Error("요청을 찾을 수 없어요");
+    this.changed(req);
+  }
+
   /** The requester picked a choice (or wrote one under 기타). When the last one is in, the spec is written. */
   async answer(id: string, input: { questionId: string; answer: string; by: string }): Promise<Request> {
     const req = this.need(id);
