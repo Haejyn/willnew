@@ -5,7 +5,7 @@
  * do. Solo mode never installs this.
  *
  *   developer only    제안 확인(decide), 결과 승인과 반려(review, merge), 바로 맡기기(POST /api/runs, direct message),
- *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens)
+ *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens), AI 상태 보기(GET /api/ai/status)
  *   requester only    되묻기 답(answer): the request's requester
  *   requester or dev  요청자 확인 의도대로예요, 다시 봐 주세요: the request's requester, or any developer
  *   nobody            터미널 (팀 모드에서는 끈다)
@@ -44,6 +44,7 @@ function tokenOf(c: Context): string | undefined {
 export function denied(m: Member, method: string, path: string, body: Record<string, unknown>, o: Omit<TeamAuthOptions, "members">): string | null {
   let x: RegExpExecArray | null;
   if (/^\/api\/runs\/[^/]+\/agents\/[^/]+\/terminal$/.test(path)) return "팀 모드에서는 터미널을 쓸 수 없어요";
+  if (method === "GET" && path === "/api/ai/status") return dev(m) ? null : "AI 상태는 개발자만 볼 수 있어요";
   if (method === "GET") return null;
 
   if (method === "POST" && path === "/api/runs") return dev(m) ? null : "바로 맡기기는 개발자만 할 수 있어요";

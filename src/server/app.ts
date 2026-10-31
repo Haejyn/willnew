@@ -5,6 +5,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ADAPTERS, installed } from "./adapters.js";
+import { createAi, type Ai } from "./ai/index.js";
 import { Chat } from "./chat.js";
 import type { Members } from "./members.js";
 import { computeMetrics, computeTeamMetrics } from "./metrics.js";
@@ -40,10 +41,13 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
 
 export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager;
   /** team mode: people come from members.json, every /api call needs a person token */
-  members?: Members; noSelfApprove?: boolean }) {
+  members?: Members; noSelfApprove?: boolean;
+  /** the AI layer (ai/index.ts). Tests pass one with a fake Ollama */
+  ai?: Ai }) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview, previewBaseUrl: opts.previewBaseUrl, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const requests = opts.requests ?? new RequestManager(runs);
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
+  const ai = opts.ai ?? createAi();
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const terminals = new Terminals();
@@ -76,6 +80,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/agents", (c) => c.json(Object.values(ADAPTERS).map((a) => ({ id: a.id, name: a.name, installed: installed(a) }))));
   app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand, previewBaseUrl: runs.previewBaseUrl, previewLocalOnly: runs.previewLink(0).localOnly,
     ship: runs.shipper.mode, deploy: runs.shipper.tracksDeploy, deployEnv: runs.shipper.opts.deployEnv ?? "production", team: opts.members ? true : undefined }));
+  // Ollama state, models and digests, queue size, routing per task. Never key values. Developers only in team mode
+  app.get("/api/ai/status", async (c) => c.json(await ai.status()));
   app.get("/api/runs", (c) => c.json(runs.list().map(lite)));
   app.post("/api/runs", async (c) => {
     const body = (await c.req.json()) as CreateRunInput;
@@ -233,5 +239,5 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
   });
 
-  return { app, runs, requests, chat, injectWebSocket, terminals };
+  return { app, runs, requests, chat, injectWebSocket, terminals, ai };
 }
