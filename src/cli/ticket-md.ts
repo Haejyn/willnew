@@ -9,13 +9,24 @@ export const UNTRUSTED_TAG = "untrusted_customer_text";
 
 /**
  * 비신뢰 글 감싸기: 고정 태그 + 줄마다 "^ ".
- * 서버가 이미 감싸서 보냈더라도 CLI 에서 한 번 더 감싼다. 글 안에 같은 태그가 있으면 태그로 읽히지 않게 바꾼다.
- * src/server/safety/ 의 datamark 가 생기면 그것과 합친다 (지금은 다른 갈래가 만드는 중이라 여기 작게 둔다).
+ * 글 안에 같은 태그가 있으면 태그로 읽히지 않게 바꾼다. 서버(safety/datamark)가 이미 감싼 글은 alreadyMarked 로 알아보고
+ * 그대로 쓴다. 그 밖의 글은 여기서 감싼다.
  */
 export function datamark(text: string): string {
+  if (alreadyMarked(text)) return text.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
   const safe = text.replace(/\r\n?/g, "\n").replace(new RegExp(`<(/?)\\s*${UNTRUSTED_TAG}\\s*>`, "gi"), "[$1" + UNTRUSTED_TAG + "]");
   const lines = safe.split("\n").map((l) => `^ ${l}`);
   return `<${UNTRUSTED_TAG}>\n${lines.join("\n")}\n</${UNTRUSTED_TAG}>`;
+}
+
+/**
+ * 서버가 감싼 꼴 그대로인지: 첫 줄 여는 태그, 끝 줄 닫는 태그, 그 사이 모든 줄이 "^ " 로 시작하고 태그가 더 없다.
+ * 이 꼴이면 안의 글이 구역을 닫을 수 없으니 한 번 더 감싸지 않는다(두 번 감싸면 ^ ^ 로 읽기 어려워진다).
+ */
+export function alreadyMarked(text: string): boolean {
+  const lines = text.replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n");
+  if (lines.length < 3 || lines[0] !== `<${UNTRUSTED_TAG}>` || lines[lines.length - 1] !== `</${UNTRUSTED_TAG}>`) return false;
+  return lines.slice(1, -1).every((l) => l.startsWith("^ ") && !new RegExp(`<\\s*/?\\s*${UNTRUSTED_TAG}`, "i").test(l));
 }
 
 /** One line of customer text inside a list (warnings): no tag, but the same "^ " mark and no line breaks. */
