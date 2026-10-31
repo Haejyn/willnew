@@ -1,0 +1,36 @@
+{
+  "id": "07-two-problems",
+  "source": "synthetic",
+  "note": "직접 만든 문의. 문제 두 개(장바구니 수량, 주문 내역 누락)가 한 대화에 섞여 있다. 정답 칸은 첫 번째 문제 기준이고, 두 번째는 쪼개기(M4) 대상. 계좌번호는 가짜",
+  "text": "[11:02] 정민호: 두가지 문의드려요\n[11:02] 정민호: 1. 장바구니에서 수량 + 눌러도 숫자가 안올라가요 계속 1개\n[11:03] 정민호: 2. 그리고 어제 주문한거 ORD-20261030-0021 이 내 주문에 안보여요 결제는 됐는데\n[11:04] 지우 (상담원): 안녕하세요 고객님, 확인해 보겠습니다. 어떤 기기로 이용하셨을까요?\n[11:05] 정민호: 갤럭시 크롬이요 둘다 폰으로 했어요\n[11:06] 정민호: 환불 필요하면 국민 123456-01-234567 로 해주세요",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["수량"], "answer": "장바구니에서 수량 + 눌러도 안 올라감" },
+    "reproSteps": { "keywords": ["장바구니", "+"], "answer": "장바구니 → 수량 + 누르기" },
+    "expected": { "keywords": ["2", "올라"], "answer": "수량이 2개로 올라가야 함" },
+    "actual": { "keywords": ["1개", "안올라", "그대로"], "answer": "계속 1개 그대로" },
+    "environment": { "keywords": ["갤럭시", "크롬"], "answer": "갤럭시 크롬" },
+    "impact": { "keywords": ["1명"], "answer": "한 명" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "장바구니 수량 + 버튼이 안 먹고, 어제 주문이 내 주문에 안 보인다", "from": ["수량 + 눌러도", "내 주문에 안보여요"], "confidence": "medium" },
+      "reproSteps": { "value": ["장바구니에서 수량 + 를 누른다"], "from": ["수량 + 눌러도"], "confidence": "high" },
+      "actual": { "value": "수량이 계속 1개다", "from": ["계속 1개"], "confidence": "high" },
+      "environment": { "value": { "browser": "크롬", "os": "갤럭시" }, "from": ["갤럭시 크롬"], "confidence": "high" },
+      "expected": null,
+      "impact": null,
+      "alreadyRuledOut": null
+    },
+    "draft": {
+      "title": "장바구니 수량이 안 올라가요",
+      "acceptanceCriteria": ["장바구니에서 + 를 누르면 수량이 1 늘어난다"],
+      "outOfScope": ["내 주문 목록 누락 (따로 티켓)"],
+      "summary": { "forRequester": "수량 + 버튼 문제예요. 주문 내역 문제는 따로 보내 주세요", "forDeveloper": "모바일 크롬에서 cart 수량 증가가 안 됨. 주문 목록 누락은 별건" },
+      "slug": "cart quantity plus",
+      "type": "bug"
+    },
+    "review": { "questions": ["주문 내역에 안 보이는 건 따로 티켓으로 보낼까요", "PC 에서도 수량이 안 올라가는지 알려 주세요"] }
+  }
+}

@@ -70,6 +70,10 @@ export class Chat {
     rq.on("ticket_ask", (req: Request, a: TicketAsk) => this.personSays(req, a.by, { forRequester: `@${req.requester} ${a.forRequester}`, forDeveloper: `@${req.requester} ${a.question}` }));
     rq.on("ticket_ask_answer", (req: Request, a: TicketAsk) => this.personSays(req, a.answeredBy ?? req.requester, { forRequester: a.answer ?? "", forDeveloper: `${a.question}\n답: ${a.answer ?? ""}` }));
     rq.on("ticket_note", (req: Request, n: TicketNote) => this.personSays(req, n.by, { forRequester: n.forRequester, forDeveloper: n.kind === "done" ? `완료: ${n.text}` : n.text }));
+    rq.on("ticket_check", (req: Request, c: { verdict: string; note: string; by: string }) => {
+      const said = `${c.verdict === "ok" ? "의도대로예요" : "다시 봐 주세요"}${c.note ? `: ${c.note}` : ""}`;
+      this.personSays(req, c.by, { forRequester: said, forDeveloper: said });
+    });
   }
 
   /** A person's ticket message in the request thread, with a body per role (sent through willnew). */
@@ -275,6 +279,8 @@ export class Chat {
   /** One live card per Request, replaced in place (same message id) as the request moves. It is the thread root. */
   private requestCard(req: Request) {
     if (!this.messages.has(req.channel)) return;
+    // 보내기 전 티켓은 채널에 카드를 띄우지 않는다 (보낸 사람만 본다). 보내면 그때 생긴다
+    if (req.category !== undefined && ["draft", "clarifying", "waiting_customer", "spec_ready"].includes(req.status)) return;
     const b = cardBodies(req);
     this.push({ id: `req-${req.id}`, channel: req.channel, ts: req.createdAt + 1, user: "willnew", bot: true, text: b.forDeveloper, bodies: b, requestId: req.id, kind: "request" });
   }

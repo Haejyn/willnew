@@ -1,0 +1,36 @@
+{
+  "id": "04-order-complete-text",
+  "source": "examples/shop",
+  "textFile": "examples/shop/inquiries/04-order-complete-text.md",
+  "note": "데모 문의 원문 그대로. shop 의 심은 버그 4 (주문 완료 문구 맞춤법). 화면 문구라 요청자 확인 대상",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["문구", "읍니다"], "answer": "주문 완료 화면 문구가 '완료되었읍니다'" },
+    "reproSteps": { "keywords": ["주문"], "answer": "주문하기 → 주문 완료 화면" },
+    "expected": { "keywords": ["습니다"], "answer": "주문이 완료되었습니다" },
+    "actual": { "keywords": ["읍니다"], "answer": "주문이 완료되었읍니다 라고 나옴" },
+    "impact": { "keywords": ["1명"], "answer": "한 명" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "주문 완료 화면 문구가 '주문이 완료되었읍니다' 로 나온다", "from": ["주문이 완료되었읍니다"], "confidence": "high" },
+      "reproSteps": { "value": ["주문한다", "주문 완료 화면을 본다"], "from": ["주문하고 나오는 화면"], "confidence": "high" },
+      "expected": { "value": "주문이 완료되었습니다", "from": [], "confidence": "medium" },
+      "actual": { "value": "주문이 완료되었읍니다", "from": ["주문이 완료되었읍니다"], "confidence": "high" },
+      "impact": null,
+      "environment": null,
+      "alreadyRuledOut": null
+    },
+    "draft": {
+      "title": "주문 완료 문구 맞춤법",
+      "acceptanceCriteria": ["주문 완료 화면에 '주문이 완료되었습니다' 가 나온다"],
+      "outOfScope": ["다른 화면 문구 전체 검토"],
+      "summary": { "forRequester": "주문 완료 화면의 옛 맞춤법을 고치는 일이에요", "forDeveloper": "views 의 주문 완료 문구 오타" },
+      "slug": "order complete copy",
+      "type": "copy",
+      "needsVisualCheck": true
+    },
+    "review": { "questions": [] }
+  }
+}

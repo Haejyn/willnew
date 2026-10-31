@@ -1,0 +1,31 @@
+{
+  "id": "10-usage-question",
+  "source": "synthetic",
+  "note": "직접 만든 문의. 사용법과 정책 질문 (반품 기한, 단순 변심 배송비). docs/policy.md 로 답할 수 있고 개발할 것이 없다",
+  "text": "고객: 반품 신청은 며칠안에 해야돼요?\n고객: 받은지 5일 됐는데 사이즈가 안맞아서요\n고객: 단순변심이면 배송비도 제가 내야되나요? 무료배송으로 받았는데ㅠ",
+  "category": "question",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["반품"], "answer": "반품 기한과 단순 변심 배송비 문의" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "반품 기한과 단순 변심 반품 배송비를 묻는다", "from": ["반품 신청은 며칠안에", "배송비도 제가 내야되나요"], "confidence": "high" },
+      "reproSteps": null,
+      "expected": null,
+      "actual": null,
+      "environment": null,
+      "impact": { "value": { "customers": 1 }, "from": [], "confidence": "low" },
+      "alreadyRuledOut": null
+    },
+    "draft": {
+      "title": "반품 기한과 배송비 문의",
+      "acceptanceCriteria": ["반품 기한과 단순 변심 배송비 안내가 고객에게 전달된다"],
+      "outOfScope": ["반품 정책 변경"],
+      "summary": { "forRequester": "정책 안내로 답할 수 있는 질문이에요 (7일 안, 왕복 6,000원)", "forDeveloper": "개발 건 아님. 정책 질문" },
+      "slug": "return policy question",
+      "type": "other"
+    },
+    "review": { "questions": ["개발할 것이 없어 보여요. 정책 안내로 끝낼까요"] }
+  }
+}

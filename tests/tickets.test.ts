@@ -436,6 +436,73 @@ describe("티켓 흐름 서버", () => {
     expect((await get(app, "/api/tickets")).status).toBe(401);
   });
 
+  it("팀 모드 판단: 보내기 전 티켓은 보낸 사람만 다루고 보며, 담당자는 개발자만, redactionsRef 는 id", async () => {
+    const { app, chat } = team(noAi());
+    let t = (await post(app, "/api/intake", T.cs, { text: "주문 내역에 주문이 두 번 보여요. 연락은 010-0000-2222 로 주세요" })).body;
+    const key = t.key;
+    expect(t.redactionsRef).toBe(t.id);
+    expect(JSON.stringify(t)).not.toMatch(/redactions[\\/]/);
+
+    // 개발자도 보내기 전 티켓에 답하거나 칸을 고치거나 보내지 못한다
+    expect((await post(app, `/api/tickets/${key}/messages`, T.dev, { questionId: t.next.id, kind: "unknown" })).status).toBe(403);
+    expect((await call(app, "PATCH", `/api/tickets/${key}/fields`, T.dev, { field: "title", value: "개발자가 고침" })).status).toBe(403);
+    expect((await post(app, `/api/tickets/${key}/customer-answer`, T.dev, { field: "problem", answer: "x" })).status).toBe(403);
+    expect((await post(app, `/api/tickets/${key}/send`, T.dev)).status).toBe(403);
+
+    // /api/requests 도 보낸 사람에게만
+    const ids = async (tok: string) => (await get(app, "/api/requests", tok)).body.map((r: { id: string }) => r.id);
+    expect(await ids(T.dev)).not.toContain(t.id);
+    expect(await ids(T.cs2)).not.toContain(t.id);
+    expect(await ids(T.cs)).toContain(t.id);
+    expect((await get(app, `/api/requests/${t.id}`, T.dev)).status).toBe(403);
+    expect((await get(app, `/api/requests/${t.id}/stream`, T.dev)).status).toBe(403);
+    const mine = (await get(app, `/api/requests/${t.id}`, T.cs)).body;
+    expect(mine.redactionsRef).toBe(t.id);
+    // 채널에도 보내기 전에는 카드가 없다
+    expect(chat.list(t.channel).some((m) => m.requestId === t.id)).toBe(false);
+
+    t = await answerAll(app, key, T.cs);
+    t = (await post(app, `/api/tickets/${key}/send`, T.cs)).body;
+    expect(t.status).toBe("open");
+    expect(await ids(T.dev)).toContain(t.id);
+    expect(chat.list(t.channel).some((m) => m.requestId === t.id && m.kind === "request")).toBe(true);
+
+    // 담당자: members 의 개발자만
+    expect((await post(app, `/api/tickets/${key}/assign`, T.dev, { assignee: "한지우" })).body.error).toBe("담당자는 팀의 개발자 중에서 골라 주세요");
+    expect((await post(app, `/api/tickets/${key}/assign`, T.dev, { assignee: "없는사람" })).status).toBe(400);
+    expect((await post(app, `/api/tickets/${key}/assign`, T.dev, { assignee: "이해준", priority: "P2" })).body).toMatchObject({ assignee: "이해준", status: "assigned" });
+  });
+
+  it("요청자 확인 (check): run 없이 preview 에서 의도대로예요, 다시 봐 주세요", async () => {
+    const { ai } = fakeAi({ draft: { ...DRAFT, needsVisualCheck: true }, review: { questions: [] }, relay });
+    const { app, chat } = team(ai);
+    let t = (await post(app, "/api/intake", T.cs, { text: "주문 완료 화면 문구가 이상해요" })).body;
+    const key = t.key;
+    t = await answerAll(app, key, T.cs);
+    await call(app, "PATCH", `/api/tickets/${key}/fields`, T.cs, { field: "acceptanceCriteria", confirm: true });
+    expect((await post(app, `/api/tickets/${key}/send`, T.cs)).body.status).toBe("open");
+    expect((await post(app, `/api/tickets/${key}/check`, T.cs, { verdict: "ok" })).status).toBe(409);
+    await post(app, `/api/tickets/${key}/work`, T.dev, { agent: "none" });
+    t = (await post(app, `/api/tickets/${key}/done`, T.dev, { summary: "문구 고쳤어요" })).body;
+    expect(t.status).toBe("preview");
+
+    // 보낸 사람만. 개발자, 다른 CS 는 안 된다
+    expect((await post(app, `/api/tickets/${key}/check`, T.dev, { verdict: "ok" })).status).toBe(403);
+    expect((await post(app, `/api/tickets/${key}/check`, T.cs2, { verdict: "ok" })).status).toBe(403);
+    expect((await post(app, `/api/tickets/${key}/check`, T.cs, { verdict: "maybe" })).status).toBe(400);
+
+    t = (await post(app, `/api/tickets/${key}/check`, T.cs, { verdict: "changes", note: "버튼 글자가 아직 옛날 거예요" })).body;
+    expect(t.status).toBe("in_progress");
+    expect(t.actions.at(-1)).toMatchObject({ who: "한지우", what: "check", why: "다시 봐 주세요: 버튼 글자가 아직 옛날 거예요" });
+    expect(chat.thread(t.channel, t.threadId).some((m) => m.text === "다시 봐 주세요: 버튼 글자가 아직 옛날 거예요")).toBe(true);
+    t = (await post(app, `/api/tickets/${key}/done`, T.dev, { summary: "버튼도 고쳤어요" })).body;
+    expect(t.status).toBe("preview");
+    t = (await post(app, `/api/tickets/${key}/check`, T.cs, { verdict: "ok" })).body;
+    expect(t.status).toBe("code_review");
+    expect(t.actions.at(-1)).toMatchObject({ what: "check", why: "의도대로예요" });
+    expect((await post(app, `/api/tickets/${key}/check`, T.cs, { verdict: "ok" })).status).toBe(409);
+  });
+
   it("SSE: 처음 ticket, 다음 질문의 delta, 대기열 위치", async () => {
     const { ai } = fakeAi({ ask: askFor });
     const { app } = solo(ai);
