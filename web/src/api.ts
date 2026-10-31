@@ -247,12 +247,14 @@ function readToken(): string {
 }
 const TOKEN = typeof window === "undefined" ? "" : readToken();
 /** query token: EventSource, WebSocket and <img> cannot send headers */
-const withToken = (url: string) => (TOKEN ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}` : url);
-const get = (url: string, init?: RequestInit) =>
+export const withToken = (url: string) => (TOKEN ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(TOKEN)}` : url);
+export const get = (url: string, init?: RequestInit) =>
   fetch(url, TOKEN ? { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), authorization: `Bearer ${TOKEN}` } } : init);
 
 /** Team mode answers 401 with { team: true } when the token is missing or unknown; the app shows the invite screen. */
 const unauthorized = new Set<() => void>();
+/** tickets/api.ts reads its own error bodies (409 has more than a message) and still tells the app about a 401 */
+export const notifyUnauthorized = () => unauthorized.forEach((cb) => cb());
 export function onUnauthorized(cb: () => void): () => void {
   unauthorized.add(cb);
   return () => unauthorized.delete(cb);
