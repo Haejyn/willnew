@@ -1,0 +1,37 @@
+{
+  "id": "02-shipping-fee",
+  "source": "examples/shop",
+  "textFile": "examples/shop/inquiries/02-shipping-fee.md",
+  "note": "데모 문의 원문 그대로. shop 의 심은 버그 2 (3만원 정확히일 때 배송비 경계값). 주소, 주문번호가 섞여 있다",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["배송비"], "answer": "3만원 딱 맞췄는데 배송비 3천원 붙음" },
+    "reproSteps": { "keywords": ["텀블러", "30,000", "30000", "3만원"], "answer": "텀블러 15000원 2개 담기 → 쿠폰 없이 결제" },
+    "expected": { "keywords": ["무료"], "answer": "30,000원이면 배송비 무료" },
+    "actual": { "keywords": ["3,000", "3000", "33,000"], "answer": "배송비 3,000원 붙어서 33,000원 결제됨" },
+    "environment": { "keywords": ["pc", "PC", "크롬"], "customer": "pc 크롬이요" },
+    "impact": { "keywords": ["1명"], "answer": "한 명" },
+    "alreadyRuledOut": { "keywords": ["쿠폰"], "answer": "쿠폰 안 씀" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "상품 금액이 정확히 30,000원인데 배송비 3,000원이 붙는다", "from": ["딱 3만원 맞춰서 샀는데 배송비 3천원"], "confidence": "high" },
+      "reproSteps": { "value": ["텀블러 15,000원짜리 2개를 담는다", "쿠폰 없이 결제한다"], "from": ["텀블러 2개", "쿠폰은 안썼어요"], "confidence": "high" },
+      "expected": { "value": "30,000원 이상이라 배송비 무료", "from": ["3만원 이상 무료배송"], "confidence": "high" },
+      "actual": { "value": "배송비 3,000원이 붙어 33,000원 결제", "from": ["33,000원 결제"], "confidence": "high" },
+      "impact": { "value": { "customers": 1 }, "from": ["ORD-20261028-0003"], "confidence": "medium" },
+      "alreadyRuledOut": null,
+      "environment": null
+    },
+    "draft": {
+      "title": "3만원 딱 맞췄는데 배송비가 붙어요",
+      "acceptanceCriteria": ["상품 금액이 정확히 30,000원이면 배송비가 0원이다", "29,999원이면 배송비 3,000원이 붙는다"],
+      "outOfScope": ["이미 결제된 주문의 배송비 환불 처리"],
+      "summary": { "forRequester": "무료배송 기준 금액에 딱 맞으면 배송비가 붙는 문제예요", "forDeveloper": "무료배송 비교가 >= 가 아니라 > 로 보임" },
+      "slug": "shipping fee boundary",
+      "type": "bug"
+    },
+    "review": { "questions": ["무료배송 기준이 할인 전 금액인지 할인 후 금액인지 정책을 알려 주세요"] }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "id": "01-coupon-total",
+  "source": "examples/shop",
+  "textFile": "examples/shop/inquiries/01-coupon-total.md",
+  "note": "데모 문의 원문 그대로. 기획서 4절 쿠폰 시나리오. shop 의 심은 버그 1 (쿠폰 할인이 최종 금액에 안 들어감)",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["쿠폰", "금액"], "answer": "쿠폰 적용해도 최종 결제 금액이 그대로" },
+    "reproSteps": { "keywords": ["장바구니", "WELCOME5000", "쿠폰"], "answer": "마우스, 데스크매트 장바구니에 담기 → 결제 화면에서 WELCOME5000 적용" },
+    "expected": { "keywords": ["38,000", "38000"], "answer": "최종 결제 금액 38,000원" },
+    "actual": { "keywords": ["43,000", "43000"], "answer": "할인 -5,000원은 뜨는데 최종 금액 43,000원 그대로" },
+    "environment": { "keywords": ["크롬", "윈도우"], "customer": "윈도우 크롬이요" },
+    "impact": { "keywords": ["1명"], "answer": "한 명" }
+  },
+  "reviewAnswer": "정액 5000원 쿠폰이에요",
+  "fake": {
+    "extract": {
+      "problem": { "value": "쿠폰을 적용해도 최종 결제 금액이 줄지 않는다", "from": ["쿠폰 넣었는데 결제 금액이 그대로", "최종 결제 금액은 43,000원"], "confidence": "high" },
+      "reproSteps": { "value": ["마우스와 데스크매트를 장바구니에 담는다", "쿠폰 WELCOME5000 을 넣고 적용을 누른다"], "from": ["마우스랑 데스크매트", "코드 WELCOME5000"], "confidence": "medium" },
+      "expected": { "value": "최종 결제 금액이 38,000원", "from": ["38000원 되야"], "confidence": "high" },
+      "actual": { "value": "할인 -5,000원은 뜨지만 최종 결제 금액은 43,000원 그대로", "from": ["43,000원 그대로"], "confidence": "high" },
+      "impact": { "value": { "customers": 1 }, "from": [], "confidence": "medium" },
+      "environment": null
+    },
+    "draft": {
+      "title": "쿠폰 넣었는데 결제 금액이 그대로",
+      "acceptanceCriteria": ["WELCOME5000 을 적용하면 최종 결제 금액이 5,000원 줄어든다"],
+      "outOfScope": [],
+      "summary": { "forRequester": "쿠폰 할인이 합계에 안 들어가는 문제예요", "forDeveloper": "할인 줄은 보이는데 total 계산에 쿠폰이 빠짐" },
+      "slug": "coupon total stale",
+      "type": "bug"
+    },
+    "review": { "questions": ["정액 쿠폰인지 정률 쿠폰인지 알려 주세요"] }
+  }
+}

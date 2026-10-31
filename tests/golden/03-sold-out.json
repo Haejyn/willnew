@@ -1,0 +1,35 @@
+{
+  "id": "03-sold-out",
+  "source": "examples/shop",
+  "textFile": "examples/shop/inquiries/03-sold-out.md",
+  "note": "데모 문의 원문 그대로. shop 의 심은 버그 3 (상세 화면에서 품절 상품을 담을 수 있음). 고객이 다른 사람도 그럴 거라고 말하지만 근거는 없다",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["품절"], "answer": "품절 상품인데 상세 화면에서 장바구니 담기가 됨" },
+    "reproSteps": { "keywords": ["상세", "장바구니", "에코백"], "answer": "목록에서 품절 에코백 누르기 → 상세에서 장바구니 담기 → 결제" },
+    "expected": { "keywords": ["담을 수 없", "막", "못"], "answer": "품절이면 담을 수 없어야 함" },
+    "actual": { "keywords": ["담기", "결제"], "answer": "장바구니에 담기고 결제까지 됨" },
+    "environment": { "keywords": ["아이폰", "사파리", "모바일"], "customer": "아이폰 사파리요" },
+    "impact": { "keywords": ["1명"], "answer": "한 명 (확인된 건)" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "품절 상품을 상세 화면에서 장바구니에 담고 결제할 수 있다", "from": ["장바구니 담기가 되던데요"], "confidence": "high" },
+      "reproSteps": { "value": ["목록에서 품절로 보이는 에코백을 누른다", "상세 화면에서 장바구니에 담는다", "결제한다"], "from": ["눌러서 들어가면 장바구니 담기", "결제까지 했어요"], "confidence": "high" },
+      "expected": { "value": "품절 상품은 담을 수 없어야 한다", "from": ["처음부터 못사게 막아놨어야죠"], "confidence": "medium" },
+      "actual": { "value": "장바구니에 담기고 결제까지 됐다", "from": ["결제까지 했어요"], "confidence": "high" },
+      "impact": { "value": { "customers": 5, "note": "다른 사람들도 사고 있을 수 있음" }, "from": ["다른 사람들도"], "confidence": "low" },
+      "environment": { "value": { "browser": "모바일 웹" }, "from": [], "confidence": "medium" }
+    },
+    "draft": {
+      "title": "품절 상품이 상세 화면에서 담겨요",
+      "acceptanceCriteria": ["재고 0인 상품은 상세 화면에서 장바구니 담기 버튼이 막혀 있다", "주문 API 가 재고 0인 상품 주문을 거절한다"],
+      "outOfScope": ["재입고 알림"],
+      "summary": { "forRequester": "품절인데 상세 화면에서 담기가 되는 문제예요", "forDeveloper": "목록은 stock 을 보는데 상세의 담기 버튼과 주문 API 가 재고를 안 봄" },
+      "slug": "sold out cart",
+      "type": "bug"
+    },
+    "review": { "questions": ["같은 식으로 결제된 주문이 더 있는지 주문 목록에서 확인할 수 있나요", "모바일 앱에서도 같은지 알려 주세요"] }
+  }
+}

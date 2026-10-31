@@ -5,6 +5,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { ADAPTERS, installed } from "./adapters.js";
+import { createAi, type Ai } from "./ai/index.js";
 import { Chat } from "./chat.js";
 import type { Members } from "./members.js";
 import { computeMetrics, computeTeamMetrics } from "./metrics.js";
@@ -12,9 +13,10 @@ import { RequestManager } from "./requests.js";
 import { RunManager } from "./runs.js";
 import { memberOf, publicMember, teamAuth } from "./team-auth.js";
 import { Terminals } from "./terminal.js";
+import { publicRequest, ticketRoutes, TicketFlow } from "./tickets/index.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
 import { rulesTriage } from "./triage.js";
-import type { ChatMessage, CreateRunInput, RequestUpdate, Run, RunUpdate } from "./types.js";
+import type { ChatMessage, CreateRunInput, Request, RequestUpdate, Run, RunUpdate } from "./types.js";
 
 const WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
@@ -22,11 +24,17 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 
 const lite = (r: Run): Run => ({ ...r, agents: r.agents.map((a) => ({ ...a, events: [], diff: { ...a.diff, patch: "" } })) });
 
-function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
+type Update = RunUpdate | ChatMessage | RequestUpdate;
+
+/** 보내기 전(draft, clarifying, waiting_customer, spec_ready) 티켓 */
+const BEFORE_SEND = new Set(["draft", "clarifying", "waiting_customer", "spec_ready"]);
+const ticketBeforeSend = (r: Request) => r.category !== undefined && BEFORE_SEND.has(r.status);
+
+function sse(c: any, bus: import("node:events").EventEmitter, topic: string, map: (u: Update) => Update = (u) => u) {
   return streamSSE(c, async (stream) => {
-    const queue: (RunUpdate | ChatMessage | RequestUpdate)[] = [];
+    const queue: Update[] = [];
     let wake: (() => void) | null = null;
-    const on = (u: RunUpdate | ChatMessage | RequestUpdate) => { queue.push(u); wake?.(); };
+    const on = (u: Update) => { queue.push(map(u)); wake?.(); };
     bus.on(topic, on);
     stream.onAbort(() => { bus.off(topic, on); wake?.(); });
     while (!stream.aborted) {
@@ -40,10 +48,13 @@ function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
 
 export function createApp(opts: { repo: string; check: string; token?: string; preview?: string; previewBaseUrl?: string; reviewers?: string[]; ship?: "merge" | "pr"; deployCheck?: string; deployEnv?: string; manager?: RunManager; requests?: RequestManager;
   /** team mode: people come from members.json, every /api call needs a person token */
-  members?: Members; noSelfApprove?: boolean }) {
+  members?: Members; noSelfApprove?: boolean;
+  /** the AI layer (ai/index.ts). Tests pass one with a fake Ollama */
+  ai?: Ai }) {
   const runs = opts.manager ?? new RunManager({ preview: opts.preview, previewBaseUrl: opts.previewBaseUrl, ship: { mode: opts.ship ?? "merge", deployCheck: opts.deployCheck, deployEnv: opts.deployEnv } });
   const requests = opts.requests ?? new RequestManager(runs);
   const chat = new Chat(runs, opts.repo, opts.check, opts.reviewers, requests);
+  const ai = opts.ai ?? createAi();
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   const terminals = new Terminals();
@@ -55,11 +66,17 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return { run, agent };
   };
 
-  // team mode: the person token decides who is calling and what they may do (team-auth.ts)
-  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests, noSelfApprove: opts.noSelfApprove }));
+  // the ticket path (tickets/): intake → clarify → draft → send → assign → work → done, git sync
+  const tickets = new TicketFlow({ requests, ai, repo: opts.repo, check: opts.check, channel: chat.channels[0].id });
+
+  // team mode: the person token decides who is calling and what they may do (team-auth.ts). Ticket routes name a
+  // ticket by key (T-42) or id, so the guard looks both up
+  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests: { get: (k) => requests.get(k) ?? tickets.find(k) }, noSelfApprove: opts.noSelfApprove }));
 
   if (opts.token && !opts.members) {
     app.use("/api/*", async (c, next) => {
+      // a GitHub webhook cannot send the token; with WILLNEW_GITHUB_SECRET its signature is checked instead (tickets/routes.ts)
+      if (c.req.method === "POST" && c.req.path === "/api/git/events" && process.env.WILLNEW_GITHUB_SECRET) return next();
       const t = c.req.header("authorization")?.replace(/^Bearer /, "") ?? c.req.query("token");
       if (t !== opts.token) return c.json({ error: "unauthorized" }, 401);
       await next();
@@ -76,6 +93,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
   app.get("/api/agents", (c) => c.json(Object.values(ADAPTERS).map((a) => ({ id: a.id, name: a.name, installed: installed(a) }))));
   app.get("/api/config", (c) => c.json({ repo: opts.repo, check: opts.check, preview: runs.previewCommand, previewBaseUrl: runs.previewBaseUrl, previewLocalOnly: runs.previewLink(0).localOnly,
     ship: runs.shipper.mode, deploy: runs.shipper.tracksDeploy, deployEnv: runs.shipper.opts.deployEnv ?? "production", team: opts.members ? true : undefined }));
+  // Ollama state, models and digests, queue size, routing per task. Never key values. Developers only in team mode
+  app.get("/api/ai/status", async (c) => c.json(await ai.status()));
   app.get("/api/runs", (c) => c.json(runs.list().map(lite)));
   app.post("/api/runs", async (c) => {
     const body = (await c.req.json()) as CreateRunInput;
@@ -191,13 +210,23 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(chat.react(c.req.param("id"), c.req.param("mid"), String(emoji ?? ""), String(user ?? "anonymous")));
   });
 
-  // requests (bridge): list, one, live updates, clarify answers, the developer's decision
-  app.get("/api/requests", (c) => c.json(requests.list()));
+  // requests (bridge): list, one, live updates, clarify answers, the developer's decision.
+  // Team mode: a ticket that was not sent yet is only for the person who wrote it (tickets/routes.ts does the same)
+  const canSee = (c: any, r: Request) => {
+    const m = memberOf(c);
+    return !m || !ticketBeforeSend(r) || r.requester === m.name;
+  };
+  app.get("/api/requests", (c) => c.json(requests.list().filter((r) => canSee(c, r)).map(publicRequest)));
   app.get("/api/requests/:id", (c) => {
     const r = requests.get(c.req.param("id"));
-    return r ? c.json(r) : c.json({ error: "not found" }, 404);
+    if (!r) return c.json({ error: "not found" }, 404);
+    return canSee(c, r) ? c.json(publicRequest(r)) : c.json({ error: "보내기 전 티켓은 보낸 사람만 볼 수 있어요" }, 403);
   });
-  app.get("/api/requests/:id/stream", (c) => sse(c, requests.bus, `request:${c.req.param("id")}`));
+  app.get("/api/requests/:id/stream", (c) => {
+    const r = requests.get(c.req.param("id"));
+    if (r && !canSee(c, r)) return c.json({ error: "보내기 전 티켓은 보낸 사람만 볼 수 있어요" }, 403);
+    return sse(c, requests.bus, `request:${c.req.param("id")}`, (u) => ("request" in u && "requestId" in u ? { ...u, request: publicRequest(u.request) } : u));
+  });
   app.post("/api/requests/:id/answer", async (c) => {
     const { questionId, answer, by } = await c.req.json();
     return c.json(await requests.answer(c.req.param("id"), { questionId: String(questionId ?? ""), answer: String(answer ?? ""), by: String(by ?? "anonymous") }));
@@ -224,6 +253,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(requests.cancel(c.req.param("id"), String(by ?? "anonymous"), reason ? String(reason) : undefined));
   });
 
+  ticketRoutes(app, { flow: tickets, requests, team: !!opts.members, members: opts.members });
+
   // built web UI
   app.get("*", (c) => {
     const p = c.req.path === "/" ? "/index.html" : c.req.path;
@@ -233,5 +264,5 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
   });
 
-  return { app, runs, requests, chat, injectWebSocket, terminals };
+  return { app, runs, requests, chat, injectWebSocket, terminals, ai, tickets };
 }

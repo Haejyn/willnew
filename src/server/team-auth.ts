@@ -5,10 +5,18 @@
  * do. Solo mode never installs this.
  *
  *   developer only    제안 확인(decide), 결과 승인과 반려(review, merge), 바로 맡기기(POST /api/runs, direct message),
- *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens)
+ *                     요청자 확인 건너뛰기(skip), 확인할 화면 고치기(screens), AI 상태 보기(GET /api/ai/status)
  *   requester only    되묻기 답(answer): the request's requester
  *   requester or dev  요청자 확인 의도대로예요, 다시 봐 주세요: the request's requester, or any developer
  *   nobody            터미널 (팀 모드에서는 끈다)
+ *
+ * 티켓 (tickets/routes.ts, :key 는 T-42 나 요청 id)
+ *   anyone            intake
+ *   requester only    messages, customer-answer, fields, send: 그 티켓을 보낸 사람 (개발자도 막는다)
+ *                     개발자 질문에 답하기(asks/:id/answer), 요청자 확인(check): 그 티켓을 보낸 사람
+ *   developer only    assign, work, ask, note, decline, done, git sync
+ *   읽기              보내기 전 티켓은 보낸 사람만 본다 (tickets/routes.ts, app.ts 의 /api/requests)
+ *   no person token   GitHub 웹훅(POST /api/git/events): 서명은 tickets/routes.ts 가 본다
  *   noSelfApprove     approving your own request, or a result you are assigned to, is refused
  */
 import type { Context, MiddlewareHandler } from "hono";
@@ -44,6 +52,7 @@ function tokenOf(c: Context): string | undefined {
 export function denied(m: Member, method: string, path: string, body: Record<string, unknown>, o: Omit<TeamAuthOptions, "members">): string | null {
   let x: RegExpExecArray | null;
   if (/^\/api\/runs\/[^/]+\/agents\/[^/]+\/terminal$/.test(path)) return "팀 모드에서는 터미널을 쓸 수 없어요";
+  if (method === "GET" && path === "/api/ai/status") return dev(m) ? null : "AI 상태는 개발자만 볼 수 있어요";
   if (method === "GET") return null;
 
   if (method === "POST" && path === "/api/runs") return dev(m) ? null : "바로 맡기기는 개발자만 할 수 있어요";
@@ -65,6 +74,23 @@ export function denied(m: Member, method: string, path: string, body: Record<str
 
   if (method === "PUT" && /^\/api\/requests\/[^/]+\/screens$/.test(path)) return dev(m) ? null : "확인할 화면은 개발자만 고칠 수 있어요";
 
+  // tickets
+  if (method === "POST" && path === "/api/git/sync") return dev(m) ? null : "git 상태 알림은 개발자만 보낼 수 있어요";
+  if (method === "POST" && /^\/api\/tickets\/[^/]+\/(?:assign|work|ask|note|decline|done)$/.test(path)) return dev(m) ? null : "개발자만 할 수 있어요";
+  if (method === "POST" && (x = /^\/api\/tickets\/([^/]+)\/asks\/[^/]+\/answer$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || req.requester === m.name ? null : "개발자 질문은 티켓을 보낸 사람만 답할 수 있어요";
+  }
+  if (method === "POST" && (x = /^\/api\/tickets\/([^/]+)\/check$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || req.requester === m.name ? null : "요청자 확인은 티켓을 보낸 사람만 할 수 있어요";
+  }
+  // 보내기 전 정리는 보낸 사람 몫이다. 개발자도 대신 답하거나 보내지 않는다
+  if ((x = /^\/api\/tickets\/([^/]+)\/(?:messages|customer-answer|fields|send)$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || req.requester === m.name ? null : "티켓을 보낸 사람만 할 수 있어요";
+  }
+
   const review = method === "POST" ? /^\/api\/runs\/([^/]+)\/review$/.exec(path) : null;
   const merge = method === "POST" ? /^\/api\/runs\/([^/]+)\/agents\/[^/]+\/merge$/.exec(path) : null;
   if (review || merge) {
@@ -83,6 +109,8 @@ export function denied(m: Member, method: string, path: string, body: Record<str
 
 export function teamAuth(o: TeamAuthOptions): MiddlewareHandler {
   return async (c, next) => {
+    // GitHub 웹훅은 사람 토큰이 없다. 서명은 tickets/routes.ts 가 본다 (raw 본문이 필요해서 여기서 읽지 않는다)
+    if (c.req.method === "POST" && c.req.path === "/api/git/events") return next();
     const m = o.members.byToken(tokenOf(c));
     if (!m) return c.json({ error: "초대 링크로 들어와 주세요", team: true }, 401);
     current.set(c, m);

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { AgentRun } from "./api";
-import { IconCheck, IconExternal, IconX } from "./icons";
+import { IconCheck, IconExternal, IconSpark, IconX } from "./icons";
 
 export function Spinner({ size = 12 }: { size?: number }) {
   return <span className="spin" style={{ width: size, height: size }} aria-label="진행 중" />;
@@ -244,7 +244,7 @@ export function LinkChip({ url }: { url: string }) {
   );
 }
 
-/** AI가 다시 쓴 글: 왼쪽 2px 선, 그리고 원문을 인용으로 펼치는 "원문 보기". */
+/** AI가 다시 쓴 글. 선으로 감싸지 않고, 원문을 펼치는 "원문 보기" 앞에 달빛 아이콘을 둔다. */
 export function AiText({ children, original, read, label = "원문 보기" }: { children: ReactNode; original?: string; read?: boolean; label?: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -253,6 +253,7 @@ export function AiText({ children, original, read, label = "원문 보기" }: { 
       {original ? (
         <>
           <button type="button" className="ai-orig" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            <IconSpark size={12} filled />
             {open ? "원문 접기" : label}
           </button>
           {open ? <blockquote className="quote">{original}</blockquote> : null}

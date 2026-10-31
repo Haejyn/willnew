@@ -1,0 +1,37 @@
+{
+  "id": "09-english-mixed",
+  "source": "synthetic",
+  "note": "직접 만든 문의. 영어가 섞인 말투. 소문자로 넣은 쿠폰 코드가 거절된다는 신고 (정책상 대소문자는 가리지 않는다). 이메일은 가짜",
+  "text": "고객: Hi, checkout page 에서 coupon apply 하면 error 떠요\n고객: \"Invalid coupon\" 이라고 나오는데 sale10 code 맞게 넣었어요\n고객: Mac Safari 17 쓰고 있고 refresh 도 해봤어요\n상담원: 확인해 보겠습니다. 장바구니 금액이 얼마셨을까요?\n고객: around 25,000원? receipt 는 james.park@example.com 으로 주세요",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["coupon", "쿠폰", "Invalid"], "answer": "소문자 sale10 넣으면 Invalid coupon 오류" },
+    "reproSteps": { "keywords": ["sale10", "checkout", "결제"], "answer": "결제 화면 → 쿠폰 sale10 입력 → 적용" },
+    "expected": { "keywords": ["할인", "10%", "적용"], "answer": "10% 할인 적용" },
+    "actual": { "keywords": ["Invalid", "오류", "error"], "answer": "Invalid coupon 오류" },
+    "environment": { "keywords": ["Safari", "사파리", "Mac"], "answer": "Mac Safari 17" },
+    "impact": { "keywords": ["1명"], "answer": "한 명" },
+    "alreadyRuledOut": { "keywords": ["새로고침", "refresh"], "answer": "새로고침" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "쿠폰 적용 시 Invalid coupon 오류가 뜬다", "from": ["coupon apply 하면 error"], "confidence": "high" },
+      "reproSteps": { "value": ["결제 화면에서 쿠폰 코드 sale10 을 넣는다", "적용을 누른다"], "from": ["sale10 code 맞게 넣었어요"], "confidence": "high" },
+      "actual": { "value": "\"Invalid coupon\" 오류", "from": ["Invalid coupon"], "confidence": "high" },
+      "environment": { "value": { "browser": "Safari 17", "os": "Mac" }, "from": ["Mac Safari 17"], "confidence": "high" },
+      "alreadyRuledOut": { "value": ["새로고침"], "from": ["refresh 도 해봤어요"], "confidence": "high" },
+      "expected": { "value": "SALE10 10% 할인이 적용된다", "from": [], "confidence": "medium" },
+      "impact": null
+    },
+    "draft": {
+      "title": "소문자 쿠폰 코드가 거절돼요",
+      "acceptanceCriteria": ["sale10 처럼 소문자로 넣어도 SALE10 과 같게 적용된다"],
+      "outOfScope": [],
+      "summary": { "forRequester": "쿠폰 코드를 소문자로 넣으면 오류가 나는 문제예요", "forDeveloper": "쿠폰 조회가 대소문자를 가리는 것으로 보임. 정책은 대소문자 무시" },
+      "slug": "coupon code case",
+      "type": "bug"
+    },
+    "review": { "questions": [] }
+  }
+}

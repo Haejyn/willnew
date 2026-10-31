@@ -11,6 +11,11 @@ const flag = (name: string, fallback?: string) => {
 };
 
 const cmd = argv[0] ?? "serve";
+// developer CLI: login, list, show, work, ask, note, decline, done, --version (src/cli/)
+if (["login", "list", "show", "work", "ask", "note", "decline", "done", "--version", "-v", "version"].includes(cmd)) {
+  const { runCli } = await import("../cli/index.js");
+  process.exit(await runCli(cmd, argv.slice(1)));
+}
 // team mode people: members.json (src/server/members-cli.ts)
 if (cmd === "invite" || cmd === "runner-token") {
   const { membersCli } = await import("./members-cli.js");

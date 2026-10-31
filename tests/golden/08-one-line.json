@@ -1,0 +1,34 @@
+{
+  "id": "08-one-line",
+  "source": "synthetic",
+  "note": "직접 만든 문의. 정보가 거의 없는 한 줄. 나머지 칸은 고객에게 물어야 채워진다",
+  "text": "결제가 안돼요",
+  "category": "new_bug",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["결제"], "answer": "결제가 안 됨" },
+    "reproSteps": { "keywords": ["결제하기", "장바구니"], "customer": "장바구니에서 결제하기 누르면 아무것도 안돼요" },
+    "actual": { "keywords": ["아무", "반응"], "customer": "눌러도 아무 반응 없어요" },
+    "environment": { "keywords": ["크롬", "pc", "PC"], "customer": "pc 크롬이요" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "결제가 안 된다", "from": ["결제가 안돼요"], "confidence": "medium" },
+      "reproSteps": null,
+      "expected": null,
+      "actual": null,
+      "environment": null,
+      "impact": null,
+      "alreadyRuledOut": null
+    },
+    "draft": {
+      "title": "결제가 안 돼요",
+      "acceptanceCriteria": ["장바구니에서 결제하기를 누르면 결제가 진행된다"],
+      "outOfScope": [],
+      "summary": { "forRequester": "결제 버튼이 반응하지 않는 문제예요", "forDeveloper": "PC 크롬, 결제하기 클릭 무반응. 재현 정보 적음" },
+      "slug": "checkout no response",
+      "type": "bug"
+    },
+    "review": { "questions": ["오류 문구가 떴는지 알려 주세요", "결제 수단이 무엇이었는지 알려 주세요"] }
+  }
+}
