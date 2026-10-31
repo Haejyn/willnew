@@ -6,14 +6,14 @@ import { useMedia, useNow, type User } from "../util";
 import { age, type ListQuery, type Request, type RequestStatus, type TicketSummary } from "./api";
 import { Priority, StatusDot, useAct, useTicketApi, useTicketList } from "./parts";
 
-type Filter = "open" | "mine" | "unassigned" | "cs" | "customer" | "done";
+// 고객 답 대기(waiting_customer)는 보내기 전 티켓이라 개발자에게 보이지 않는다(서버도 주지 않는다)
+type Filter = "open" | "mine" | "unassigned" | "cs" | "done";
 const OPEN: RequestStatus[] = ["open", "assigned", "in_progress", "waiting_requester", "preview", "code_review"];
 const FILTERS: { id: Filter; name: string; q: ListQuery }[] = [
   { id: "open", name: "열린 티켓", q: { status: OPEN } },
   { id: "mine", name: "내 티켓", q: { assignee: "me", status: OPEN } },
   { id: "unassigned", name: "담당자 없음", q: { status: ["open"] } },
   { id: "cs", name: "CS 답 대기", q: { status: ["waiting_requester"] } },
-  { id: "customer", name: "고객 답 대기", q: { status: ["waiting_customer"] } },
   { id: "done", name: "끝난 티켓", q: { status: ["merged", "deployed", "closed", "declined"] } },
 ];
 const PRIORITIES: NonNullable<Request["priority"]>[] = ["P0", "P1", "P2", "P3"];
@@ -97,7 +97,7 @@ export function Inbox({ api, user, go, me }: { api: Api; user: User; go: (p: str
       </div>
       {error && !list ? <ErrorBox error={`불러오기 실패. ${error}`} onRetry={reload} /> : null}
       {!list && !error ? <div className="skel card-skel" aria-busy /> : null}
-      {list && !list.length ? <Empty title={filter === "mine" ? "맡은 티켓이 없어요" : "해당하는 티켓이 없어요"}>CS 가 보낸 티켓이 여기에 쌓여요.</Empty> : null}
+      {list && !list.length ? <Empty title={filter === "mine" ? "맡은 티켓이 없어요" : "해당하는 티켓이 없어요"} /> : null}
       {list?.length ? (
         phone ? (
           <div className="mcards">
@@ -120,15 +120,15 @@ export function Inbox({ api, user, go, me }: { api: Api; user: User; go: (p: str
             ))}
           </div>
         ) : (
-          <div className="panel table-scroll">
+          <div className="table-scroll">
             <table className="tbl tk-tbl">
               <thead>
                 <tr>
                   <th>키</th>
                   <th>제목</th>
                   <th>상태</th>
-                  <th>우선순위</th>
-                  <th>담당자</th>
+                  <th title="사람이 정해요. AI 는 채우지 않아요">우선순위</th>
+                  <th title="사람이 정해요. AI 는 채우지 않아요">담당자</th>
                   <th className="num">영향 고객</th>
                   <th className="num">나이</th>
                 </tr>
@@ -160,7 +160,6 @@ export function Inbox({ api, user, go, me }: { api: Api; user: User; go: (p: str
           </div>
         )
       ) : null}
-      <p className="t-meta tk-foot">우선순위와 담당자는 사람이 정해요. AI 는 이 두 칸을 채우지 않아요.</p>
     </div>
   );
 }

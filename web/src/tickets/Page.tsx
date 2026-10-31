@@ -44,7 +44,7 @@ function TicketByKey({ api, k, user, go }: { api: Api; k: string; user: User; go
   const dev = user.role === "dev";
   if (isIntake(ticket.status)) {
     if (dev && ticket.requester !== user.name)
-      return <Empty title="아직 보내지 않은 티켓이에요">{ticket.requester}님이 확인하고 보내면 여기서 볼 수 있어요.</Empty>;
+      return <Empty title={`${ticket.requester}님이 확인하고 보내면 열 수 있어요`} />;
     // 초안이 만들어졌으면(제목이 있으면) 초안 확인. 대리 검토 질문도 여기서 먼저 묻는다
     const drafted = ticket.status === "spec_ready" || (ticket.status === "clarifying" && !!ticket.spec?.title && !!ticket.spec?.acceptanceCriteria?.length);
     if (drafted) return <DraftReview ticket={ticket} setTicket={setTicket} user={user} go={go} delta={delta} />;

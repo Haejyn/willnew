@@ -64,6 +64,7 @@ export function NewTicket({ go, me }: { user: User; go: (p: string) => void; me?
               한 줄로 적기
             </button>
           </div>
+          <p className="tk-privacy">전화번호, 카드 번호 같은 개인정보는 정리하기 전에 가려요. 대화에 이미 있는 내용은 다시 묻지 않아요.</p>
           <label className="field">
             <span className="sr">문의 내용</span>
             <textarea
@@ -79,7 +80,6 @@ export function NewTicket({ go, me }: { user: User; go: (p: string) => void; me?
               }}
             />
           </label>
-          <p className="t-meta">전화번호, 카드 번호 같은 개인정보는 정리하기 전에 가려요. 이미 대화에 있는 내용은 다시 묻지 않아요.</p>
           {demo ? (
             <div className="examples tk-examples">
               <button type="button" className="chip" onClick={() => { setMode("log"); setText(DEMO_TRANSCRIPT); }}>
@@ -117,12 +117,12 @@ export function QuestionCard({ t, q, onAnswer, busy, n, note }: { t: Ticket; q: 
   const free = !q.choices.length;
   return (
     <section className="cq tk-q slide-in" aria-label="질문">
-      {note ? <p className="t-meta tk-q-note">{note}</p> : null}
+      {note ? <span className="tk-q-note">{note}</span> : null}
       <div className="cq-head">
         <span className="cq-q">{q.question}</span>
         {n ? <span className="t-meta mono nowrap">{n}번째</span> : null}
       </div>
-      {q.why ? <p className="t-meta tk-why">{q.why}</p> : null}
+      {q.why ? <p className="tk-why">{q.why}</p> : null}
       {free ? null : (
         <div className="chips cq-chips">
           {q.choices.map((c) => (
