@@ -56,12 +56,11 @@ export function DraftReview({ ticket: t, setTicket, user, go, delta }: { ticket:
           <div className="tk-head">
             <span className="mono t-meta">{t.key}</span>
             <h1 className="t-page">{spec?.title || t.title}</h1>
-            <p className="t-meta">초안 확인. 보내기 전에는 개발자에게 보이지 않아요</p>
           </div>
 
           {t.next ? (
             mine ? (
-              <QuestionCard t={t} q={t.next} onAnswer={answer} busy={busy === "answer"} note="대리 개발자 검토. 이 티켓을 받은 개발자가 처음 물을 만한 질문이에요" />
+              <QuestionCard t={t} q={t.next} onAnswer={answer} busy={busy === "answer"} note="대리 개발자 검토" />
             ) : (
               <p className="t-meta">{t.requester}님 답 기다리는 중</p>
             )
@@ -74,13 +73,12 @@ export function DraftReview({ ticket: t, setTicket, user, go, delta }: { ticket:
 
           {review.length ? (
             <section className="rq-sec" aria-label="대리 개발자 검토">
-              <h2 className="sec-t">대리 개발자 검토</h2>
+              <h2 className="sec-t">{t.next ? "답하면 초안에 들어갈 검토 질문" : "초안에 반영한 검토 질문"}</h2>
               <ul className="rq-list">
                 {review.map((q) => (
                   <li key={q}>{q}</li>
                 ))}
               </ul>
-              <p className="t-meta">{t.next ? "위 질문에 답하면 초안에 들어가요" : "이 질문들은 초안에 반영했어요"}</p>
             </section>
           ) : null}
 
@@ -127,14 +125,14 @@ export function DraftReview({ ticket: t, setTicket, user, go, delta }: { ticket:
             <div className="errbox tk-refused" role="alert">
               <div>
                 <p>{refused.error}</p>
-                {refused.unconfirmed?.length ? <p className="t-meta">확인할 칸: {refused.unconfirmed.map(fieldLabel).join(", ")}</p> : null}
+                {refused.unconfirmed?.length ? <p>확인할 칸: {refused.unconfirmed.map(fieldLabel).join(", ")}</p> : null}
               </div>
             </div>
           ) : null}
 
           {mine ? (
             <div className="tk-sendbar">
-              <span className="t-meta">{t.next ? "질문에 먼저 답해 주세요" : left.length ? `추정 칸 ${left.length}개를 확인하면 보낼 수 있어요` : "개발팀 티켓함으로 보내요"}</span>
+              <span className="t-meta">{t.next ? "질문에 먼저 답해 주세요" : left.length ? `추정 칸 ${left.length}개를 확인하면 보낼 수 있어요` : "보내면 개발팀 티켓함에 올라가요. 그 전에는 개발자에게 안 보여요"}</span>
               <button className="btn m" disabled={!!t.next || left.length > 0 || sending || t.status !== "spec_ready"} onClick={() => void run("send", send)}>
                 {sending ? <Spinner size={12} /> : <IconSend size={16} />}이대로 보내기
               </button>

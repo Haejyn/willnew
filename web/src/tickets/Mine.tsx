@@ -52,7 +52,7 @@ function AskCard({ t, asks, now, onAnswered }: { t: TicketSummary; asks?: Ask[];
   const [text, setText] = useState<Record<string, string>>({});
   const open = (asks ?? []).filter((a) => !a.answer);
   return (
-    <article className="mine-card embed tk-mine-ask" style={{ ["--bar" as string]: "var(--accent)" }}>
+    <article className="mine-card tk-mine-ask">
       <Head t={t} now={now} right={<span className="t-meta">{t.assignee ?? "개발자"}</span>} />
       {asks === undefined ? <div className="skel tk-skel-line" /> : null}
       {open.map((a) => (
@@ -82,7 +82,7 @@ function AskCard({ t, asks, now, onAnswered }: { t: TicketSummary; asks?: Ask[];
 function HeldCard({ t, full, now }: { t: TicketSummary; full?: Ticket; now: number }) {
   const held = full ? heldFields(full) : [];
   return (
-    <article className="mine-card embed" style={{ ["--bar" as string]: "var(--warn)" }}>
+    <article className="mine-card">
       <Head t={t} now={now} />
       {full ? (
         <>
@@ -136,9 +136,7 @@ export function TicketMine({ go, me }: { user: User; go: (p: string) => void; me
           </div>
         ) : null}
         {list && !list.length ? (
-          <Empty title="아직 보낸 티켓이 없어요" action={<a className="btn m" href="#/tickets/new"><IconPlus size={16} /> 새 문의</a>}>
-            고객 문의를 붙여 넣으면 빈 칸만 물어보고 개발팀에 보낼 티켓으로 정리해요.
-          </Empty>
+          <Empty title="아직 보낸 티켓이 없어요" action={<a className="btn m" href="#/tickets/new"><IconPlus size={16} /> 새 문의</a>} />
         ) : null}
 
         {groups.ask.length ? (

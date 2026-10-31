@@ -1,7 +1,7 @@
 /** 티켓 화면들이 같이 쓰는 조각: 살아 있는 티켓, 목록, 상태 점, 출처, 확신도, 복사 버튼, 진행 단계, 고객 원문, 칸 목록. */
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { STATUS_KO } from "../../../src/server/request-state";
-import { IconCheck, IconChevron, IconEdit, IconLink } from "../icons";
+import { IconCheck, IconChevron, IconEdit, IconLink, IconSpark } from "../icons";
 import { Spinner, useToast } from "../ui";
 import {
   CONF_KO,
@@ -129,8 +129,14 @@ export function ConfDot({ c }: { c: Confidence }) {
   return <span className={`st tk-conf ${cls}`} title="확신도">{CONF_KO[c]}</span>;
 }
 
+/** AI 가 짐작해 채운 칸. 달빛 글자로, 사람이 확인하면 "확인함" 으로 바뀐다 */
 export function GuessBadge() {
-  return <span className="warn-chip tk-guess">추정</span>;
+  return (
+    <span className="tk-guess">
+      <IconSpark size={12} filled />
+      추정
+    </span>
+  );
 }
 
 /** 칸의 출처 칩들. 말이면 그 말을 툴팁으로 */

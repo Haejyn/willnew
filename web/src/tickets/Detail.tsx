@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Api } from "../api";
-import { IconArrowLeft, IconBranch, IconCheck, IconExternal, IconPlay, IconSend, IconTerminal } from "../icons";
+import { IconArrowLeft, IconBranch, IconCheck, IconExternal, IconPlay, IconSend } from "../icons";
 import { AiText, Avatar, Spinner } from "../ui";
 import { clockTime, relTime, useNow, type User } from "../util";
 import { workCommand, type Ask, type Request, type Ticket } from "./api";
@@ -128,7 +128,7 @@ function DevActions({ t, user, onTicket }: { t: Ticket; user: User; onTicket: (t
           </button>
         ) : null}
         <CopyBtn text={t.branch ?? ""} label="브랜치 이름" disabled={!t.branch} title={t.branch ? t.branch : "작업을 시작하면 브랜치가 생겨요"} ok="브랜치 이름을 복사했어요" />
-        <CopyBtn text={workCommand(key)} label={<span className="mono">{workCommand(key)}</span>} ok="명령을 복사했어요. 터미널에 붙여 넣어 주세요" />
+        <CopyBtn text={workCommand(key)} label={<span className="mono">{workCommand(key)}</span>} title="터미널에 붙여 넣으면 브랜치, .willnew/ticket.md, 권한 설정 틀까지 한 번에 만들어요" ok="명령을 복사했어요. 터미널에 붙여 넣어 주세요" />
       </div>
       {!ended ? (
         <div className="row-btns">
@@ -212,6 +212,7 @@ function Warnings({ t }: { t: Ticket }) {
       {inj.length ? (
         <div className="tk-warn-block">
           <span className="st bad">지시처럼 보이는 문장 {inj.length}</span>
+          <p className="tk-warn-note">고객이 쓴 글이에요. 에이전트에게는 비신뢰 구역으로만 넘어가요.</p>
           <ul className="rq-list risk">
             {inj.map((x, i) => (
               <li key={i}>
@@ -219,12 +220,12 @@ function Warnings({ t }: { t: Ticket }) {
               </li>
             ))}
           </ul>
-          <p className="t-meta">고객이 쓴 글이에요. 에이전트에게는 비신뢰 구역으로만 넘어가요.</p>
         </div>
       ) : null}
       {claims.length ? (
         <div className="tk-warn-block">
           <span className="st warn">고객 주장 {claims.length}</span>
+          <p className="tk-warn-note">고객 원문에만 있는 말이에요. 우선순위와 담당자는 사람이 정해요.</p>
           <ul className="rq-list">
             {claims.map((c) => (
               <li key={c}>
@@ -232,7 +233,6 @@ function Warnings({ t }: { t: Ticket }) {
               </li>
             ))}
           </ul>
-          <p className="t-meta">고객 원문에만 있는 말이에요. 우선순위와 담당자는 사람이 정해요.</p>
         </div>
       ) : null}
     </section>
@@ -361,7 +361,7 @@ export function TicketDetail({ api, ticket: t, setTicket, user, go }: { api: Api
             <section className="rq-sec">
               <h2 className="sec-t">이번엔 안 하기로 했어요</h2>
               <AiText read original={dev ? undefined : t.decline.reason}>{dev ? t.decline.reason : t.decline.forRequester}</AiText>
-              {t.decline.alternatives.length ? <p className="t-meta">대신: {t.decline.alternatives.map((a) => a.title).join(", ")}</p> : null}
+              {t.decline.alternatives.length ? <p>대신: {t.decline.alternatives.map((a) => a.title).join(", ")}</p> : null}
             </section>
           ) : null}
 
@@ -406,9 +406,6 @@ export function TicketDetail({ api, ticket: t, setTicket, user, go }: { api: Api
               <section className="tk-orig" onClick={loadRaw}>
                 <Original text={raw ?? "불러오는 중"} label="고객 원문 (개인정보 가림, 비신뢰)" />
               </section>
-              <p className="t-meta tk-cli">
-                <IconTerminal size={14} /> 터미널: <code>{workCommand(key)}</code> 로 브랜치, <code>.willnew/ticket.md</code>, 권한 설정 틀까지 한 번에
-              </p>
             </>
           ) : (
             <>
