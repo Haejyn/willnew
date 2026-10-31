@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   checkPromises, customerClaims, datamark, detectInjection, loadRedactions, luhnValid, redact, redactionsDir, residualPii, restore,
-  rrnValid, saveRedactions,
+  isRrn, rrnChecksumOk, saveRedactions,
 } from "../src/server/safety/index.js";
 
 const INQUIRIES = resolve("examples/shop/inquiries");
@@ -46,20 +46,36 @@ describe("redact: 데모 문의 5건", () => {
 });
 
 describe("redact: 종류별", () => {
-  it("주민등록번호는 체크섬이 맞을 때만", () => {
-    expect(rrnValid("900101-1234568")).toBe(true);
-    expect(rrnValid("900101-1234567")).toBe(false);
-    expect(rrnValid("901301-1234568")).toBe(false);   // 13월
-    expect(kinds("주민번호 900101-1234568 입니다")).toEqual(["rrn"]);
-    expect(kinds("주민번호 9001011234568")).toEqual(["rrn"]);
-    expect(redact("주민번호 900101-1234567 입니다").items).toEqual([]);   // 체크섬 틀림, 계좌로도 안 잡는다
-    expect(residualPii("주민번호 900101-1234567")).toEqual([]);
+  it("주민등록번호 체크섬 공식", () => {
+    expect(rrnChecksumOk("900101-1234568")).toBe(true);
+    expect(rrnChecksumOk("900101-1234567")).toBe(false);
+    expect(rrnChecksumOk("000229-5123452")).toBe(true);   // 옛 외국인 공식
+    expect(rrnChecksumOk("000229-5123450")).toBe(true);   // 내국인 공식
+    expect(rrnChecksumOk("000229-5123451")).toBe(false);
   });
 
-  it("외국인등록번호(성별 자리 5~8)는 두 공식 다 받는다", () => {
-    expect(kinds("등록번호 000229-5123452")).toEqual(["rrn"]);
-    expect(kinds("등록번호 000229-5123450")).toEqual(["rrn"]);
-    expect(kinds("등록번호 000229-5123451")).toEqual([]);
+  it("하이픈이나 공백으로 나뉜 6-7 꼴은 체크섬이 틀려도 잡는다 (2020-10 이후 번호)", () => {
+    expect(isRrn("900101-1234567")).toBe(true);
+    expect(kinds("주민번호 900101-1234568 입니다")).toEqual(["rrn"]);
+    expect(kinds("주민번호 900101-1234567 입니다")).toEqual(["rrn"]);
+    expect(kinds("주민번호 211015 3456789")).toEqual(["rrn"]);
+    expect(kinds("등록번호 000229-5123451")).toEqual(["rrn"]);   // 외국인 꼴도
+    expect(residualPii("주민번호 900101-1234567")).toEqual([{ kind: "rrn", excerpt: "900101-1234567" }]);
+  });
+
+  it("나뉜 꼴이라도 생년월일이나 성별 자리가 틀리면 잡지 않는다", () => {
+    expect(isRrn("901301-1234568")).toBe(false);   // 13월
+    expect(isRrn("900132-1234568")).toBe(false);   // 32일
+    expect(isRrn("900101-9234568")).toBe(false);   // 성별 자리 9
+    for (const t of ["번호 901301-1234568", "번호 900101-0234567"]) expect(redact(t).items, t).toEqual([]);   // 계좌로도 안 잡는다
+  });
+
+  it("붙여 쓴 13자리는 체크섬까지 맞아야 잡는다", () => {
+    expect(isRrn("9001011234568")).toBe(true);
+    expect(isRrn("9001011234567")).toBe(false);
+    expect(kinds("주민번호 9001011234568")).toEqual(["rrn"]);
+    expect(kinds("주민번호 9001011234567")).toEqual([]);
+    expect(kinds("외국인 0002295123452")).toEqual(["rrn"]);
   });
 
   it("카드번호는 Luhn, 공백이나 하이픈 허용", () => {
@@ -111,6 +127,12 @@ describe("redact: 종류별", () => {
     for (const t of ["안녕하세요 고객님", "기사님이 안 오셨어요", "사장님 확인 부탁", "회원님 쿠폰", "판매자님 답 주세요", "기존 고객님께는", "택배기사님 연락"]) {
       expect(redact(t).items, t).toEqual([]);
     }
+  });
+
+  it("찾은 이름을 다른 자리에서 가릴 때 뒤에 조사나 호칭만 붙은 경우만", () => {
+    const r = redact("지우님 안녕하세요. 지우개가 없어요. 지우는 내일 와요. 지우씨, 지우에게, 지우랑 지우와 지우의 책. 지우기 버튼");
+    expect(r.text).toBe("[NAME_1]님 안녕하세요. 지우개가 없어요. [NAME_1]는 내일 와요. [NAME_1]씨, [NAME_1]에게, [NAME_1]랑 [NAME_1]와 [NAME_1]의 책. 지우기 버튼");
+    expect(redact("홍길동이랑 홍길동고객 홍길동을 홍길동도 홍길동동", { names: ["홍길동"] }).text).toBe("[NAME_1]이랑 [NAME_1]고객 [NAME_1]을 [NAME_1]도 홍길동동");
   });
 
   it("같은 값은 같은 표시, 다른 값은 다음 번호", () => {

@@ -45,17 +45,32 @@ function birthOk(ymd: string): boolean {
   return m >= 1 && m <= 12 && d >= 1 && d <= 31;
 }
 
-/** 주민등록번호 체크섬. 외국인등록번호(성별 자리 5~8)는 옛 외국인 공식도 받는다 */
-export function rrnValid(raw: string): boolean {
-  const n = digits(raw);
-  if (n.length !== 13 || !birthOk(n)) return false;
+/** 13자리이고 앞 6자리가 생년월일 꼴, 성별 자리가 1~8 (외국인등록번호 5~8 포함) */
+function rrnShapeOk(n: string): boolean {
   const g = Number(n[6]);
-  if (g < 1 || g > 8) return false;
+  return n.length === 13 && birthOk(n) && g >= 1 && g <= 8;
+}
+
+/** 주민등록번호 체크섬. 내국인 공식 또는 옛 외국인 공식(성별 자리 5~8). 2020-10 이후 번호는 맞지 않을 수 있다 */
+export function rrnChecksumOk(raw: string): boolean {
+  const n = digits(raw);
+  if (!rrnShapeOk(n)) return false;
+  const g = Number(n[6]);
   const w = [2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5];
   const sum = w.reduce((s, x, i) => s + x * Number(n[i]), 0);
   const last = Number(n[12]);
   if ((11 - (sum % 11)) % 10 === last) return true;
   return g >= 5 && (13 - (sum % 11)) % 10 === last;
+}
+
+/**
+ * 주민등록번호로 잡을지. 하이픈이나 공백으로 나뉜 6-7 꼴은 생년월일과 성별 자리만 본다(2020-10 이후 번호는 끝자리가
+ * 체크섬이 아니라서). 붙여 쓴 13자리는 바코드, 상품코드와 겹치므로 체크섬까지 맞아야 한다
+ */
+export function isRrn(raw: string): boolean {
+  const n = digits(raw);
+  if (!rrnShapeOk(n)) return false;
+  return /\D/.test(raw.trim()) || rrnChecksumOk(n);
 }
 
 export function luhnValid(raw: string): boolean {
@@ -79,7 +94,7 @@ function accountShapeOk(value: string, before: string): boolean {
   if (n.length < 10 || n.length > 14) return false;
   const groups = value.split("-");
   if (groups[0].length < 3) return false;
-  if (/^\d{6}-\d{7}$/.test(value)) return false;   // 주민번호 꼴(체크섬이 틀려도 계좌로 잡지 않는다)
+  if (/^\d{6}-\d{7}$/.test(value)) return false;   // 주민번호 꼴(생년월일이 안 맞아도 계좌로 잡지 않는다)
   if (/^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-/.test(value)) return false;   // 2026-10-27-...
   if (/^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/.test(groups[0])) return false;   // 20261028-0003
   return !ORDER_CONTEXT.test(before);
@@ -123,12 +138,16 @@ function ruleNames(text: string): string[] {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** 이름 바로 뒤에 붙어도 되는 조사와 호칭. 그 밖의 한글이 붙으면("지우개") 다른 낱말로 본다 */
+const NAME_TAIL = "(?=[^가-힣]|$|님|씨|고객|은|는|이|가|을|를|에게|께|의|도|랑|과|와)";
+
+/** 사전과 규칙으로 찾은 이름을 글 안의 모든 자리에서 찾는다 */
 function nameHits(text: string, names: Iterable<string>): Hit[] {
   const list = [...new Set([...names].map((n) => n.trim()).filter((n) => n.length >= 2))].sort((a, b) => b.length - a.length);
   const hits: Hit[] = [];
   for (const name of list) {
     const ascii = /^[\x00-\x7f]+$/.test(name);
-    const re = new RegExp(ascii ? `(?<![\\w])${escapeRe(name)}(?![\\w])` : `(?<![가-힣])${escapeRe(name)}`, ascii ? "gi" : "g");
+    const re = new RegExp(ascii ? `(?<![\\w])${escapeRe(name)}(?![\\w])` : `(?<![가-힣])${escapeRe(name)}${NAME_TAIL}`, ascii ? "gi" : "g");
     for (const m of matches(re, text)) hits.push({ kind: "name", start: m.index, end: m.index + m[0].length, value: m[0] });
   }
   return hits;
@@ -142,7 +161,7 @@ function candidates(text: string, names: Iterable<string>): Hit[] {
   const before = (at: number) => text.slice(Math.max(0, at - 16), at);
   // 구분자 없는 13자리 이상은 바코드, 상품코드와 겹친다. 그런 말 바로 뒤면 건너뛴다
   const codeLike = (m: RegExpExecArray) => /^\d+$/.test(m[0]) && CODE_CONTEXT.test(before(m.index));
-  for (const m of matches(RRN, text)) if (rrnValid(m[0]) && !codeLike(m)) add("rrn", m.index, m[0]);
+  for (const m of matches(RRN, text)) if (isRrn(m[0]) && !codeLike(m)) add("rrn", m.index, m[0]);
   for (const m of matches(CARD, text)) if (luhnValid(m[0]) && !codeLike(m)) add("card", m.index, m[0]);
   for (const m of matches(PHONE, text)) add("phone", m.index, m[0]);
   for (const m of matches(ACCOUNT_DASHED, text)) {
