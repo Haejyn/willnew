@@ -1,0 +1,189 @@
+/* 티켓 화면. 값은 전부 테마 변수(글자 네 단계, --sp-1..8, 층 l1 → l2 → float, 역할 색)만 쓴다. 새 색은 없다. */
+
+/* ------------------------------------------------------------------ 작은 조각 */
+.tk-pri { display: inline-grid; place-items: center; min-width: 28px; height: 20px; padding: 0 var(--sp-1); border-radius: var(--sp-1); background: var(--ctl); color: var(--text); font-size: var(--fs-meta); line-height: var(--lh-meta); font-weight: 600; }
+.tk-conf { font-weight: var(--fw-meta); }
+.tk-guess { min-height: 20px; padding: 0 var(--sp-2); }
+.tk-srcs { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); min-width: 0; }
+.tk-src { display: inline-flex; align-items: center; height: 20px; padding: 0 var(--sp-2); border-radius: var(--sp-1); background: var(--l1); color: var(--text3); font-size: var(--fs-meta); line-height: var(--lh-meta); white-space: nowrap; cursor: default; }
+.tk-src[title] { box-shadow: inset 0 0 0 1px var(--l2); }
+.tk-skel-line { height: 20px; border-radius: var(--r-ctrl); background: var(--l1); }
+.tk-sel { height: 28px; border: 0; border-radius: var(--r-ctrl); background: var(--ctl); color: var(--text); padding: 0 var(--sp-2); font-size: var(--fs-meta); line-height: var(--lh-meta); font-weight: var(--fw-meta); max-width: 140px; }
+.tk-sel:hover:not(:disabled) { background: var(--sel); }
+.tk-sel option { background: var(--bg); color: var(--text); }
+.tk-head { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.tk-head h1 { overflow-wrap: anywhere; }
+.tk-back { align-self: flex-start; margin-left: calc(-1 * var(--sp-3)); }
+.tk-formmode { white-space: normal; align-items: baseline; }
+.tk-formmode::before { transform: translateY(-1px); }
+
+/* 진행: 보냄 → 담당자 → 작업 → 검토 → 반영 */
+.tk-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
+.tk-steps li { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-meta); line-height: var(--lh-meta); font-weight: var(--fw-meta); color: var(--text3); white-space: nowrap; }
+.tk-steps li:not(:last-child)::after { content: ""; width: 16px; height: 1px; margin-left: var(--sp-1); background: var(--sel); }
+.tk-steps li i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--text3); }
+.tk-steps li.done { color: var(--text2); }
+.tk-steps li.done i { background: var(--text2); box-shadow: none; }
+.tk-steps li.done:last-of-type i { background: var(--ok); }
+.tk-steps li.now { color: var(--text); font-weight: 600; }
+.tk-steps li.now i { background: var(--text); box-shadow: 0 0 0 3px var(--sel); }
+.tk-steps.stop li.now { color: var(--text2); }
+
+/* ------------------------------------------------------------------ 칸 목록 */
+.tk-fields { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.tk-field { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--sp-3); padding: var(--sp-2) var(--sp-2); margin: 0 calc(-1 * var(--sp-2)); border-radius: var(--r-ctrl); transition: background var(--dur) var(--ease); }
+.tk-field dt { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1); font-size: var(--fs-meta); line-height: var(--lh-body); font-weight: var(--fw-meta); color: var(--text3); }
+.tk-field dd { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-1); }
+.tk-val { color: var(--text); overflow-wrap: anywhere; }
+.tk-val .dim { color: var(--text3); }
+.tk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); }
+.tk-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-1); }
+.tk-field.need { background: var(--l1); box-shadow: var(--l2-rim); }
+.tk-field.fresh { background: var(--l2); }
+.tk-confirmed { font-weight: var(--fw-meta); }
+.tk-ol { margin: 0; padding-left: var(--sp-5); display: flex; flex-direction: column; gap: 2px; }
+.tk-edit { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-edit-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
+.tk-edit-grid .field.wide { grid-column: span 2; }
+
+/* ------------------------------------------------------------------ 새 문의: 붙여 넣기 */
+.tk-new { max-width: 720px; }
+.tk-intake-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+.tk-intake-form textarea { min-height: 96px; }
+.tk-intake-form .seg { align-self: flex-start; }
+.tk-examples { justify-content: flex-start; }
+
+/* 새 문의: 대화 + 오른쪽 초안 (L1 면) */
+.tk-intake { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 380px; min-height: 0; }
+.tk-intake-main { min-height: 0; overflow-y: auto; padding: var(--sp-7) var(--sp-7) var(--sp-8); display: flex; flex-direction: column; gap: var(--sp-5); }
+.tk-intake-head { max-width: 720px; width: 100%; margin: 0 auto; display: flex; align-items: baseline; gap: var(--sp-2); }
+.tk-chat { max-width: 720px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: var(--sp-4); }
+.tk-pair { display: flex; flex-direction: column; gap: var(--sp-3); }
+.tk-msg { display: flex; gap: var(--sp-3); align-items: flex-start; min-width: 0; }
+.tk-msg.me { justify-content: flex-end; }
+.tk-bubble { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; max-width: min(560px, 100%); }
+.tk-msg.bot .tk-bubble { padding-top: 2px; }
+.tk-msg.me .tk-bubble { padding: var(--sp-2) var(--sp-4); border-radius: var(--r-panel) var(--r-panel) var(--sp-1) var(--r-panel); background: var(--l2); }
+.tk-bubble p { margin: 0; font-size: var(--fs-read); line-height: var(--lh-read); overflow-wrap: anywhere; }
+.tk-who { font-size: var(--fs-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--role-bot); }
+.tk-pasted { white-space: pre-wrap; color: var(--text2); }
+.tk-pasted.clip { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.tk-queue::before { background: var(--warn); }
+.tk-queue { font-size: var(--fs-body); }
+.tk-delta { white-space: pre-wrap; color: var(--text); font-size: var(--fs-title) !important; line-height: var(--lh-title) !important; font-weight: var(--fw-title); }
+.tk-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--text2); animation: dots 1s infinite; }
+.tk-q { margin-left: 40px; }
+.tk-q-note { margin: 0; }
+.tk-why { margin: 0; }
+.tk-q-alt { padding-top: var(--sp-1); border-top: 1px solid var(--l2); }
+
+.tk-draft { min-height: 0; overflow-y: auto; padding: var(--sp-6) var(--sp-5); background: var(--l1); display: flex; flex-direction: column; gap: var(--sp-4); }
+.tk-draft-title { margin: 0; font-weight: 600; color: var(--text); }
+.tk-draft .tk-field { grid-template-columns: 88px minmax(0, 1fr); }
+
+/* 고객에게 물을 것 */
+.tk-asks { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); border-radius: var(--r-card); background: var(--l2); }
+.tk-asks .card-head { flex-wrap: wrap; }
+.tk-ask-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+.tk-ask-list li { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-ask-list li.done .tk-ask-q { color: var(--text3); }
+.tk-ask-q { margin: 0; color: var(--text); }
+.tk-ask-list .rq-other { flex-wrap: wrap; }
+.tk-ask-list .rq-other input { min-width: 140px; }
+.tk-msg .tk-asks { margin-top: var(--sp-2); }
+
+/* 휴대폰: 초안은 아래 시트 */
+.tk-intake.phone { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+.tk-intake.phone .tk-intake-main { padding: var(--sp-5) var(--sp-4) var(--sp-6); }
+.tk-intake.phone .tk-q { margin-left: 0; }
+.tk-sheet-bar { display: flex; align-items: center; gap: var(--sp-2); width: 100%; height: 48px; padding: 0 var(--sp-4); border: 0; background: var(--l2); box-shadow: var(--l2-rim); color: var(--text); font-weight: 600; }
+.tk-sheet-chev { margin-left: auto; transform: rotate(-90deg); transition: transform var(--dur) var(--ease); }
+.tk-sheet-bar.open .tk-sheet-chev { transform: rotate(90deg); }
+.tk-sheet-back { position: fixed; inset: 0; z-index: 130; background: var(--scrim); display: flex; align-items: flex-end; }
+.tk-sheet { width: 100%; max-height: 82vh; display: flex; flex-direction: column; border-radius: var(--r-panel) var(--r-panel) 0 0; background: var(--float); backdrop-filter: var(--float-blur); -webkit-backdrop-filter: var(--float-blur); box-shadow: var(--shadow-float), var(--rim); animation: rise var(--dur) var(--ease); overflow: hidden; padding-bottom: env(safe-area-inset-bottom); }
+.tk-sheet-grip { flex: none; align-self: center; width: 40px; height: 20px; border: 0; background: none; position: relative; }
+.tk-sheet-grip::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 4px; border-radius: 2px; background: var(--sel); }
+.tk-sheet .tk-draft { background: transparent; padding: var(--sp-2) var(--sp-4) var(--sp-6); }
+.app:has(.tk-sheet-back) .tabbar { display: none; }
+
+/* ------------------------------------------------------------------ 초안 확인 */
+.tk-review .rq-main, .tk-detail .rq-main { gap: var(--sp-5); }
+.tk-sendbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-panel); background: var(--float); backdrop-filter: var(--float-blur); -webkit-backdrop-filter: var(--float-blur); box-shadow: var(--shadow-float), var(--rim); }
+.tk-refused { align-items: flex-start; }
+.tk-refused p { margin: 0; }
+.tk-todo { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); counter-reset: todo; }
+.tk-todo li { display: flex; align-items: center; gap: var(--sp-2); color: var(--text3); font-size: var(--fs-body); }
+.tk-todo li::before { counter-increment: todo; content: counter(todo); display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--l1); font-size: var(--fs-meta); font-weight: 600; flex: none; }
+.tk-todo li.done { color: var(--text2); }
+.tk-todo li.done::before { content: ""; background: transparent; width: 0; margin-right: -8px; }
+.tk-todo li.now { color: var(--text); font-weight: 600; }
+.tk-todo li.now::before { background: var(--accent); color: var(--on-accent); }
+.tk-orig .prow-t { padding: var(--sp-1) 0; }
+
+/* ------------------------------------------------------------------ 티켓함 */
+.tk-inbox .page-head { margin-bottom: var(--sp-4); }
+.tk-filters { margin-bottom: var(--sp-4); }
+.tk-filters .chip { min-height: 32px; padding: var(--sp-1) var(--sp-3); }
+.tk-tbl tbody tr { cursor: pointer; }
+.tk-tbl tbody tr:hover td { background: var(--l2); }
+.tk-tbl tbody tr:focus-visible { outline: none; }
+.tk-tbl tbody tr:focus-visible td { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+.tk-tbl td { vertical-align: middle; height: var(--row); }
+.tk-title-cell { min-width: 220px; }
+.tk-title-cell a { display: block; overflow-wrap: anywhere; }
+.tk-title-cell a:hover { text-decoration: underline; }
+.tk-title-cell .t-meta { display: block; font-weight: var(--fw-meta); }
+.tk-who-cell { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.tk-foot { margin-top: var(--sp-4); }
+.tk-card { cursor: pointer; }
+.tk-card .row-btns { margin-top: var(--sp-2); }
+
+/* ------------------------------------------------------------------ 상세 */
+.tk-dev-acts { display: flex; flex-direction: column; gap: var(--sp-3); }
+.tk-thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+.tk-thread li { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-thread-q, .tk-thread-a { display: flex; flex-direction: column; gap: var(--sp-1); }
+.tk-thread-q p, .tk-thread-a p { margin: 0; }
+.tk-thread-a { margin-left: var(--sp-5); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-card); background: var(--l2); }
+.tk-thread .lab { color: var(--text3); }
+.tk-warn-block { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-warn-block + .tk-warn-block { padding-top: var(--sp-3); border-top: 1px solid var(--l2); }
+.tk-warn q { color: var(--text); }
+.tk-ctx { grid-template-columns: 64px minmax(0, 1fr); }
+.tk-branch { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-code); overflow-wrap: anywhere; }
+.tk-cli { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
+
+/* ------------------------------------------------------------------ 내 티켓 */
+.tk-mine .turn-head { gap: var(--sp-3); }
+.tk-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-group .sec-h { display: flex; gap: var(--sp-2); padding: 0; }
+.tk-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tk-card-title:hover h2 { text-decoration: underline; }
+.tk-mine-q { display: flex; flex-direction: column; gap: var(--sp-3); }
+.tk-sent-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.tk-sent-who { display: inline-flex; align-items: center; gap: var(--sp-1); }
+
+/* ------------------------------------------------------------------ 설정의 AI */
+.tk-ai { display: flex; flex-direction: column; gap: var(--sp-2); padding-top: var(--sp-3); border-top: 1px solid var(--l2); }
+.tk-ai .st { white-space: normal; }
+/* AI 칸이 더해져 설정 팝오버가 길어졌다: 낮은 창에서는 안에서 스크롤 */
+.pop:has(.tk-ai) { max-height: calc(100dvh - var(--sp-6)); overflow-y: auto; }
+.rq-sec > p { margin: 0; }
+.tk-held { font-size: var(--fs-meta); line-height: var(--lh-meta); color: var(--text3); }
+
+/* ------------------------------------------------------------------ 폭 */
+@media (max-width: 1180px) {
+  .tk-intake { grid-template-columns: minmax(0, 1fr) 320px; }
+}
+@media (max-width: 767.98px) {
+  .tk-field, .tk-draft .tk-field { grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); }
+  .tk-field dt { flex-direction: row; align-items: center; }
+  .tk-edit-grid { grid-template-columns: minmax(0, 1fr); }
+  .tk-edit-grid .field.wide { grid-column: auto; }
+  .tk-sendbar { bottom: var(--sp-2); }
+  .tk-sendbar .btn { flex: 1 1 100%; }
+  .tk-mine .turn-head { flex-wrap: wrap; }
+  .tk-new-btn { order: 3; }
+  .tk-thread-a { margin-left: var(--sp-3); }
+  .tk-q-alt .btn { flex: 1; }
+}
