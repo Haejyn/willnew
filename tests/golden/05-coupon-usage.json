@@ -1,0 +1,32 @@
+{
+  "id": "05-coupon-usage",
+  "source": "examples/shop",
+  "textFile": "examples/shop/inquiries/05-coupon-usage.md",
+  "note": "데모 문의 원문 그대로. 버그가 아니라 정책 질문 (docs/policy.md: 쿠폰은 한 주문에 하나). 버그 티켓으로 만들면 틀린 분류",
+  "category": "question",
+  "injection": false,
+  "fields": {
+    "problem": { "keywords": ["쿠폰"], "answer": "쿠폰 두 개를 넣으면 앞에 넣은 게 빠짐" },
+    "reproSteps": { "keywords": ["WELCOME5000", "SALE10"], "answer": "WELCOME5000 넣기 → SALE10 넣기" },
+    "actual": { "keywords": ["SALE10", "없어", "빠"], "answer": "SALE10 만 남음" }
+  },
+  "fake": {
+    "extract": {
+      "problem": { "value": "쿠폰 두 개를 차례로 넣으면 앞에 넣은 쿠폰이 없어진다", "from": ["앞에꺼가 없어져요"], "confidence": "high" },
+      "reproSteps": { "value": ["WELCOME5000 을 넣는다", "SALE10 을 넣는다"], "from": ["WELCOME5000 넣고 SALE10 넣으면"], "confidence": "high" },
+      "expected": { "value": "두 쿠폰이 같이 적용된다", "from": ["두개 같이 쓰는거"], "confidence": "low" },
+      "actual": { "value": "SALE10 만 남는다", "from": ["SALE10만 남고"], "confidence": "high" },
+      "environment": null,
+      "impact": { "value": { "customers": 1 }, "from": [], "confidence": "low" }
+    },
+    "draft": {
+      "title": "쿠폰 두 개를 같이 못 써요",
+      "acceptanceCriteria": ["쿠폰은 한 주문에 하나만 적용된다는 안내가 결제 화면에 보인다"],
+      "outOfScope": ["쿠폰 중복 사용 허용"],
+      "summary": { "forRequester": "쿠폰은 한 주문에 하나만 쓸 수 있어요. 안내 문구가 필요한지 확인하는 티켓이에요", "forDeveloper": "정책상 정상 동작. 안내 부족 여부만 확인" },
+      "slug": "coupon single use",
+      "type": "other"
+    },
+    "review": { "questions": ["버그가 아니라 정책 질문 같아요. 고객에게 정책 안내로 끝낼지 정해 주세요"] }
+  }
+}
