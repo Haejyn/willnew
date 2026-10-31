@@ -9,6 +9,12 @@
  *   requester only    되묻기 답(answer): the request's requester
  *   requester or dev  요청자 확인 의도대로예요, 다시 봐 주세요: the request's requester, or any developer
  *   nobody            터미널 (팀 모드에서는 끈다)
+ *
+ * 티켓 (tickets/routes.ts, :key 는 T-42 나 요청 id)
+ *   requester or dev  intake 는 누구나. messages, customer-answer, fields, send: 그 티켓을 보낸 사람, 또는 개발자
+ *   developer only    assign, work, ask, note, decline, done, git sync
+ *   requester only    개발자 질문에 답하기(asks/:id/answer): 그 티켓을 보낸 사람
+ *   no person token   GitHub 웹훅(POST /api/git/events): 서명은 tickets/routes.ts 가 본다
  *   noSelfApprove     approving your own request, or a result you are assigned to, is refused
  */
 import type { Context, MiddlewareHandler } from "hono";
@@ -66,6 +72,18 @@ export function denied(m: Member, method: string, path: string, body: Record<str
 
   if (method === "PUT" && /^\/api\/requests\/[^/]+\/screens$/.test(path)) return dev(m) ? null : "확인할 화면은 개발자만 고칠 수 있어요";
 
+  // tickets
+  if (method === "POST" && path === "/api/git/sync") return dev(m) ? null : "git 상태 알림은 개발자만 보낼 수 있어요";
+  if (method === "POST" && /^\/api\/tickets\/[^/]+\/(?:assign|work|ask|note|decline|done)$/.test(path)) return dev(m) ? null : "개발자만 할 수 있어요";
+  if (method === "POST" && (x = /^\/api\/tickets\/([^/]+)\/asks\/[^/]+\/answer$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || req.requester === m.name ? null : "개발자 질문은 티켓을 보낸 사람만 답할 수 있어요";
+  }
+  if ((x = /^\/api\/tickets\/([^/]+)\/(?:messages|customer-answer|fields|send)$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || dev(m) || req.requester === m.name ? null : "티켓을 보낸 사람만 할 수 있어요";
+  }
+
   const review = method === "POST" ? /^\/api\/runs\/([^/]+)\/review$/.exec(path) : null;
   const merge = method === "POST" ? /^\/api\/runs\/([^/]+)\/agents\/[^/]+\/merge$/.exec(path) : null;
   if (review || merge) {
@@ -84,6 +102,8 @@ export function denied(m: Member, method: string, path: string, body: Record<str
 
 export function teamAuth(o: TeamAuthOptions): MiddlewareHandler {
   return async (c, next) => {
+    // GitHub 웹훅은 사람 토큰이 없다. 서명은 tickets/routes.ts 가 본다 (raw 본문이 필요해서 여기서 읽지 않는다)
+    if (c.req.method === "POST" && c.req.path === "/api/git/events") return next();
     const m = o.members.byToken(tokenOf(c));
     if (!m) return c.json({ error: "초대 링크로 들어와 주세요", team: true }, 401);
     current.set(c, m);

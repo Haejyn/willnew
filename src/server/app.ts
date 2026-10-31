@@ -13,6 +13,7 @@ import { RequestManager } from "./requests.js";
 import { RunManager } from "./runs.js";
 import { memberOf, publicMember, teamAuth } from "./team-auth.js";
 import { Terminals } from "./terminal.js";
+import { ticketRoutes, TicketFlow } from "./tickets/index.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
 import { rulesTriage } from "./triage.js";
 import type { ChatMessage, CreateRunInput, RequestUpdate, Run, RunUpdate } from "./types.js";
@@ -59,11 +60,17 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return { run, agent };
   };
 
-  // team mode: the person token decides who is calling and what they may do (team-auth.ts)
-  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests, noSelfApprove: opts.noSelfApprove }));
+  // the ticket path (tickets/): intake → clarify → draft → send → assign → work → done, git sync
+  const tickets = new TicketFlow({ requests, ai, repo: opts.repo, check: opts.check, channel: chat.channels[0].id });
+
+  // team mode: the person token decides who is calling and what they may do (team-auth.ts). Ticket routes name a
+  // ticket by key (T-42) or id, so the guard looks both up
+  if (opts.members) app.use("/api/*", teamAuth({ members: opts.members, runs, requests: { get: (k) => requests.get(k) ?? tickets.find(k) }, noSelfApprove: opts.noSelfApprove }));
 
   if (opts.token && !opts.members) {
     app.use("/api/*", async (c, next) => {
+      // a GitHub webhook cannot send the token; with WILLNEW_GITHUB_SECRET its signature is checked instead (tickets/routes.ts)
+      if (c.req.method === "POST" && c.req.path === "/api/git/events" && process.env.WILLNEW_GITHUB_SECRET) return next();
       const t = c.req.header("authorization")?.replace(/^Bearer /, "") ?? c.req.query("token");
       if (t !== opts.token) return c.json({ error: "unauthorized" }, 401);
       await next();
@@ -230,6 +237,8 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(requests.cancel(c.req.param("id"), String(by ?? "anonymous"), reason ? String(reason) : undefined));
   });
 
+  ticketRoutes(app, { flow: tickets, requests, team: !!opts.members });
+
   // built web UI
   app.get("*", (c) => {
     const p = c.req.path === "/" ? "/index.html" : c.req.path;
@@ -239,5 +248,5 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream" } });
   });
 
-  return { app, runs, requests, chat, injectWebSocket, terminals, ai };
+  return { app, runs, requests, chat, injectWebSocket, terminals, ai, tickets };
 }
