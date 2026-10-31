@@ -13,10 +13,10 @@ import { RequestManager } from "./requests.js";
 import { RunManager } from "./runs.js";
 import { memberOf, publicMember, teamAuth } from "./team-auth.js";
 import { Terminals } from "./terminal.js";
-import { ticketRoutes, TicketFlow } from "./tickets/index.js";
+import { publicRequest, ticketRoutes, TicketFlow } from "./tickets/index.js";
 import { TEAMS, TEMPLATES } from "./templates.js";
 import { rulesTriage } from "./triage.js";
-import type { ChatMessage, CreateRunInput, RequestUpdate, Run, RunUpdate } from "./types.js";
+import type { ChatMessage, CreateRunInput, Request, RequestUpdate, Run, RunUpdate } from "./types.js";
 
 const WEB_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
@@ -24,11 +24,17 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 
 const lite = (r: Run): Run => ({ ...r, agents: r.agents.map((a) => ({ ...a, events: [], diff: { ...a.diff, patch: "" } })) });
 
-function sse(c: any, bus: import("node:events").EventEmitter, topic: string) {
+type Update = RunUpdate | ChatMessage | RequestUpdate;
+
+/** 보내기 전(draft, clarifying, waiting_customer, spec_ready) 티켓 */
+const BEFORE_SEND = new Set(["draft", "clarifying", "waiting_customer", "spec_ready"]);
+const ticketBeforeSend = (r: Request) => r.category !== undefined && BEFORE_SEND.has(r.status);
+
+function sse(c: any, bus: import("node:events").EventEmitter, topic: string, map: (u: Update) => Update = (u) => u) {
   return streamSSE(c, async (stream) => {
-    const queue: (RunUpdate | ChatMessage | RequestUpdate)[] = [];
+    const queue: Update[] = [];
     let wake: (() => void) | null = null;
-    const on = (u: RunUpdate | ChatMessage | RequestUpdate) => { queue.push(u); wake?.(); };
+    const on = (u: Update) => { queue.push(map(u)); wake?.(); };
     bus.on(topic, on);
     stream.onAbort(() => { bus.off(topic, on); wake?.(); });
     while (!stream.aborted) {
@@ -204,13 +210,23 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(chat.react(c.req.param("id"), c.req.param("mid"), String(emoji ?? ""), String(user ?? "anonymous")));
   });
 
-  // requests (bridge): list, one, live updates, clarify answers, the developer's decision
-  app.get("/api/requests", (c) => c.json(requests.list()));
+  // requests (bridge): list, one, live updates, clarify answers, the developer's decision.
+  // Team mode: a ticket that was not sent yet is only for the person who wrote it (tickets/routes.ts does the same)
+  const canSee = (c: any, r: Request) => {
+    const m = memberOf(c);
+    return !m || !ticketBeforeSend(r) || r.requester === m.name;
+  };
+  app.get("/api/requests", (c) => c.json(requests.list().filter((r) => canSee(c, r)).map(publicRequest)));
   app.get("/api/requests/:id", (c) => {
     const r = requests.get(c.req.param("id"));
-    return r ? c.json(r) : c.json({ error: "not found" }, 404);
+    if (!r) return c.json({ error: "not found" }, 404);
+    return canSee(c, r) ? c.json(publicRequest(r)) : c.json({ error: "보내기 전 티켓은 보낸 사람만 볼 수 있어요" }, 403);
   });
-  app.get("/api/requests/:id/stream", (c) => sse(c, requests.bus, `request:${c.req.param("id")}`));
+  app.get("/api/requests/:id/stream", (c) => {
+    const r = requests.get(c.req.param("id"));
+    if (r && !canSee(c, r)) return c.json({ error: "보내기 전 티켓은 보낸 사람만 볼 수 있어요" }, 403);
+    return sse(c, requests.bus, `request:${c.req.param("id")}`, (u) => ("request" in u && "requestId" in u ? { ...u, request: publicRequest(u.request) } : u));
+  });
   app.post("/api/requests/:id/answer", async (c) => {
     const { questionId, answer, by } = await c.req.json();
     return c.json(await requests.answer(c.req.param("id"), { questionId: String(questionId ?? ""), answer: String(answer ?? ""), by: String(by ?? "anonymous") }));
@@ -237,7 +253,7 @@ export function createApp(opts: { repo: string; check: string; token?: string; p
     return c.json(requests.cancel(c.req.param("id"), String(by ?? "anonymous"), reason ? String(reason) : undefined));
   });
 
-  ticketRoutes(app, { flow: tickets, requests, team: !!opts.members });
+  ticketRoutes(app, { flow: tickets, requests, team: !!opts.members, members: opts.members });
 
   // built web UI
   app.get("*", (c) => {

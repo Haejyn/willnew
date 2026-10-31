@@ -4,6 +4,7 @@
  */
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import type { Members } from "../members.js";
 import type { RequestManager } from "../requests.js";
 import { memberOf } from "../team-auth.js";
 import type { RequestUpdate } from "../types.js";
@@ -24,7 +25,7 @@ const BEFORE_SEND = ["draft", "clarifying", "waiting_customer", "spec_ready"];
 const who = (b: Record<string, unknown>) => String(b.user ?? b.by ?? "").trim() || "anonymous";
 const opt = (x: unknown) => (x === undefined || x === null ? undefined : String(x));
 
-export function ticketRoutes(app: Hono, deps: { flow: TicketFlow; requests: RequestManager; team: boolean }) {
+export function ticketRoutes(app: Hono, deps: { flow: TicketFlow; requests: RequestManager; team: boolean; members?: Members }) {
   const { flow, requests } = deps;
 
   /** TicketError 는 그 상태 코드로, 나머지는 app.onError (400) */
@@ -130,7 +131,11 @@ export function ticketRoutes(app: Hono, deps: { flow: TicketFlow; requests: Requ
 
   app.post("/api/tickets/:key/assign", handle(async (c) => {
     const b = await body(c);
-    return flow.assign(key(c), { assignee: opt(b.assignee), priority: opt(b.priority), by: who(b) });
+    const assignee = opt(b.assignee)?.trim() || undefined;
+    // 팀 모드: 담당자는 members 에 있는 개발자만. 비우면 배정하는 사람 자신 (이미 개발자다)
+    if (deps.members && assignee !== undefined && deps.members.get(assignee)?.role !== "developer")
+      throw new TicketError("담당자는 팀의 개발자 중에서 골라 주세요", 400);
+    return flow.assign(key(c), { assignee, priority: opt(b.priority), by: who(b) });
   }));
   app.post("/api/tickets/:key/work", handle(async (c) => {
     const b = await body(c);
@@ -157,6 +162,12 @@ export function ticketRoutes(app: Hono, deps: { flow: TicketFlow; requests: Requ
   app.post("/api/tickets/:key/done", handle(async (c) => {
     const b = await body(c);
     return flow.done(key(c), { prUrl: opt(b.prUrl), summary: opt(b.summary), by: who(b) });
+  }));
+
+  // 요청자 확인: 의도대로예요(ok) → code_review, 다시 봐 주세요(changes) → in_progress
+  app.post("/api/tickets/:key/check", handle(async (c) => {
+    const b = await body(c);
+    return flow.check(key(c), { verdict: String(b.verdict ?? ""), note: opt(b.note), by: who(b) });
   }));
 
   app.post("/api/git/sync", handle(async (c) => {

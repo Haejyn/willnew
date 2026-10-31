@@ -147,7 +147,7 @@ export class TicketFlow {
 
   view(req: Request): Ticket {
     const next = req.status === "clarifying" ? (req.questions.find((q) => !q.answer) ?? null) : null;
-    return { ...req, next, unconfirmed: unconfirmedFields(req.spec) };
+    return { ...publicRequest(req), next, unconfirmed: unconfirmedFields(req.spec) };
   }
 
   summary(r: Request): TicketSummary {
@@ -208,7 +208,11 @@ export class TicketFlow {
       category: "new_bug", type: "bug", affected: [{ who: input.user, at: now, ref: "intake" }], utterances, spec: emptySpec(title),
       injectionFlags: [], customerClaims: [], edits: [], llm: [], actions: [], asks: [], notes: [], createdAt: now, updatedAt: now,
     };
-    if (red.items.length) req.redactionsRef = saveRedactions(id, red.items);
+    // redactionsRef 는 요청 id 만 둔다. 서버의 파일 경로는 응답과 저장소에 남기지 않는다 (loadRedactions 는 id 를 받는다)
+    if (red.items.length) {
+      saveRedactions(id, red.items);
+      req.redactionsRef = id;
+    }
     this.scan(req);
     this.o.requests.adopt(req);
     return this.locked(req, async () => {
@@ -478,6 +482,27 @@ export class TicketFlow {
     });
   }
 
+  /**
+   * 요청자 확인 (preview). run 이 없는 티켓 경로라서 RequestManager.requesterCheck 대신 여기서 본다.
+   * ok (의도대로예요) → code_review, changes (다시 봐 주세요) → in_progress. 고칠 점은 메모로 개발자에게 간다
+   */
+  check(k: string, input: { verdict: string; note?: string; by: string }): Ticket {
+    const req = this.need(k);
+    if (input.verdict !== "ok" && input.verdict !== "changes") throw new TicketError("verdict 는 ok 나 changes 예요", 400);
+    if (req.status !== "preview") throw new TicketError("지금은 확인할 화면이 없어요", 409);
+    const note = String(input.note ?? "").trim() ? this.redactMore(req, String(input.note).trim()).slice(0, 1000) : "";
+    if (input.verdict === "ok") {
+      transition(req, "code_review");
+      this.act(req, input.by, "check", note ? `의도대로예요: ${note}` : "의도대로예요");
+    } else {
+      transition(req, "in_progress");
+      this.act(req, input.by, "check", note ? `다시 봐 주세요: ${note}` : "다시 봐 주세요");
+    }
+    this.save(req);
+    this.o.requests.bus.emit("ticket_check", req, { verdict: input.verdict, note, by: input.by });
+    return this.view(req);
+  }
+
   // ------------------------------------------------------------------------------------------ git
 
   /** CLI 가 보고한 것. PR 이 있으면 열림, merged 면 병합 */
@@ -646,7 +671,10 @@ export class TicketFlow {
     const prev = req.redactionsRef ? loadRedactions(req.redactionsRef) : [];
     const r = redact(text, { names: this.o.names, prev });
     const fresh = r.items.filter((it) => !prev.some((p) => p.token === it.token));
-    if (fresh.length) req.redactionsRef = saveRedactions(req.id, [...prev, ...fresh]);
+    if (fresh.length) {
+      saveRedactions(req.id, [...prev, ...fresh]);
+      req.redactionsRef = req.id;
+    }
     return r.text;
   }
 
@@ -697,6 +725,14 @@ export class TicketFlow {
     });
     return p;
   }
+}
+
+/**
+ * 응답에 내보내는 요청. 가린 값 파일 위치(redactionsRef)는 요청 id 로만 내보낸다. 예전에 서버 파일 경로로 저장된 것도
+ * 경로를 빼고 id 로 바꾼다
+ */
+export function publicRequest<T extends Request>(r: T): T {
+  return r.redactionsRef === undefined || r.redactionsRef === r.id ? r : { ...r, redactionsRef: r.id };
 }
 
 /** 양식 모드 초안: 칸에서 그대로 */

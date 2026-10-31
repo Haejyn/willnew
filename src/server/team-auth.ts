@@ -11,9 +11,11 @@
  *   nobody            터미널 (팀 모드에서는 끈다)
  *
  * 티켓 (tickets/routes.ts, :key 는 T-42 나 요청 id)
- *   requester or dev  intake 는 누구나. messages, customer-answer, fields, send: 그 티켓을 보낸 사람, 또는 개발자
+ *   anyone            intake
+ *   requester only    messages, customer-answer, fields, send: 그 티켓을 보낸 사람 (개발자도 막는다)
+ *                     개발자 질문에 답하기(asks/:id/answer), 요청자 확인(check): 그 티켓을 보낸 사람
  *   developer only    assign, work, ask, note, decline, done, git sync
- *   requester only    개발자 질문에 답하기(asks/:id/answer): 그 티켓을 보낸 사람
+ *   읽기              보내기 전 티켓은 보낸 사람만 본다 (tickets/routes.ts, app.ts 의 /api/requests)
  *   no person token   GitHub 웹훅(POST /api/git/events): 서명은 tickets/routes.ts 가 본다
  *   noSelfApprove     approving your own request, or a result you are assigned to, is refused
  */
@@ -79,9 +81,14 @@ export function denied(m: Member, method: string, path: string, body: Record<str
     const req = o.requests.get(decodeURIComponent(x[1]));
     return !req || req.requester === m.name ? null : "개발자 질문은 티켓을 보낸 사람만 답할 수 있어요";
   }
+  if (method === "POST" && (x = /^\/api\/tickets\/([^/]+)\/check$/.exec(path))) {
+    const req = o.requests.get(decodeURIComponent(x[1]));
+    return !req || req.requester === m.name ? null : "요청자 확인은 티켓을 보낸 사람만 할 수 있어요";
+  }
+  // 보내기 전 정리는 보낸 사람 몫이다. 개발자도 대신 답하거나 보내지 않는다
   if ((x = /^\/api\/tickets\/([^/]+)\/(?:messages|customer-answer|fields|send)$/.exec(path))) {
     const req = o.requests.get(decodeURIComponent(x[1]));
-    return !req || dev(m) || req.requester === m.name ? null : "티켓을 보낸 사람만 할 수 있어요";
+    return !req || req.requester === m.name ? null : "티켓을 보낸 사람만 할 수 있어요";
   }
 
   const review = method === "POST" ? /^\/api\/runs\/([^/]+)\/review$/.exec(path) : null;

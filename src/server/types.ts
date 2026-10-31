@@ -406,7 +406,7 @@ export type DecisionKind =
   | "reopen";
 
 /** What a person did on a ticket (ticket-plan.md F10 감사 기록). Kept apart from DecisionKind, which the web maps one to one */
-export type TicketActionKind = "send" | "assign" | "work" | "ask" | "answer" | "note" | "decline" | "done" | "confirm" | "edit";
+export type TicketActionKind = "send" | "assign" | "work" | "ask" | "answer" | "note" | "decline" | "done" | "confirm" | "edit" | "check";
 
 export interface TicketAction {
   who: string;
